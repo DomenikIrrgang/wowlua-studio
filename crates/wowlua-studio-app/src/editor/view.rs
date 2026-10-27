@@ -6,6 +6,7 @@
 //! are laid out; positions come from each line's laid-out text, so wide
 //! characters, tabs and hints place the caret right.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use egui::{
@@ -463,44 +464,228 @@ impl Rows {
     }
 }
 
-/// A line as it is drawn: its layout, and where each character (and the
-/// end) is in it; inlay hints are in it too.
-struct Laid {
-    galley: Arc<Galley>,
-    map: Vec<usize>,
+/// Lines longer than this (bytes) are laid out only where they are seen.
+pub const LONG_LINE: usize = 4000;
+/// A long line's characters are marked every so many.
+const MARK_EVERY: usize = 1024;
+/// The characters laid out on each side of a long line's part in view.
+const MARGIN: usize = 64;
+
+/// A long line's columns: every `MARK_EVERY`th character's byte and
+/// display column, so that a character's column (and back) is found
+/// without going over the whole line.
+pub struct Columns {
+    marks: Vec<(usize, usize)>,
 }
 
-impl Laid {
+/// The display column after `c` at `col`: tabs to the next stop.
+pub fn step(col: usize, c: char) -> usize {
+    if c == '\t' {
+        col + TAB_STOP - col % TAB_STOP
+    } else {
+        col + 1
+    }
+}
+
+impl Columns {
+    pub fn new(line: &str) -> Self {
+        let mut marks = Vec::with_capacity(line.len() / MARK_EVERY + 1);
+        let mut dcol = 0;
+        for (n, (b, c)) in line.char_indices().enumerate() {
+            if n % MARK_EVERY == 0 {
+                marks.push((b, dcol));
+            }
+            dcol = step(dcol, c);
+        }
+        if marks.is_empty() {
+            marks.push((0, 0));
+        }
+        Columns { marks }
+    }
+
+    /// The characters from mark `k`: (index, byte, display column, char).
+    fn chars_from<'a>(
+        &self,
+        line: &'a str,
+        k: usize,
+    ) -> impl Iterator<Item = (usize, usize, usize, char)> + 'a {
+        let (byte, dcol) = self.marks[k];
+        line[byte..]
+            .char_indices()
+            .scan(dcol, |d, (b, c)| {
+                let at = *d;
+                *d = step(*d, c);
+                Some((b, at, c))
+            })
+            .enumerate()
+            .map(move |(i, (b, d, c))| (k * MARK_EVERY + i, byte + b, d, c))
+    }
+
+    /// Character `col`'s display column (the end's past the last).
+    fn dcol(&self, line: &str, col: usize) -> usize {
+        let k = (col / MARK_EVERY).min(self.marks.len() - 1);
+        let mut end = self.marks[k].1;
+        for (i, _, d, c) in self.chars_from(line, k) {
+            if i == col {
+                return d;
+            }
+            end = step(d, c);
+        }
+        end
+    }
+
+    /// Character `col`'s byte.
+    fn byte(&self, line: &str, col: usize) -> usize {
+        let k = (col / MARK_EVERY).min(self.marks.len() - 1);
+        self.chars_from(line, k)
+            .find(|&(i, ..)| i == col)
+            .map_or(line.len(), |(_, b, ..)| b)
+    }
+
+    /// The first character at display column `dcol` or after it (the
+    /// line's length past its end).
+    fn col(&self, line: &str, dcol: usize) -> usize {
+        let k = self
+            .marks
+            .partition_point(|m| m.1 <= dcol)
+            .saturating_sub(1);
+        let mut count = k * MARK_EVERY;
+        for (i, _, d, _) in self.chars_from(line, k) {
+            if d >= dcol {
+                return i;
+            }
+            count = i + 1;
+        }
+        count
+    }
+}
+
+/// A line as it is drawn: its layout, and where each character (and the
+/// end) is in it; inlay hints are in it too. A long line is laid out from
+/// character `from` only, as far as it is seen, starting at `x0`; its
+/// other characters are placed by their columns.
+struct Laid<'a> {
+    galley: Arc<Galley>,
+    map: Vec<usize>,
+    from: usize,
+    x0: f32,
+    long: Option<(&'a str, &'a Columns, f32)>,
+}
+
+impl Laid<'_> {
     /// The x of character `col`.
     fn x(&self, col: usize) -> f32 {
-        let i = self.map[col.min(self.map.len() - 1)];
-        self.galley.pos_from_cursor(CCursor::new(i)).min.x
+        if let Some((line, cols, char_w)) = self.long
+            && (col < self.from || col >= self.from + self.map.len())
+        {
+            return cols.dcol(line, col) as f32 * char_w;
+        }
+        let i = self.map[col.saturating_sub(self.from).min(self.map.len() - 1)];
+        self.x0 + self.galley.pos_from_cursor(CCursor::new(i)).min.x
     }
 
     /// The character at `x`.
     fn col_at(&self, x: f32) -> usize {
-        let i = self.galley.cursor_from_pos(Vec2::new(x, 0.0)).index.0;
-        self.map
-            .iter()
-            .position(|&m| m >= i)
-            .unwrap_or(self.map.len() - 1)
+        if let Some((line, cols, char_w)) = self.long
+            && (x < self.x0 || x > self.x0 + self.galley.size().x)
+        {
+            return cols.col(line, (x.max(0.0) / char_w).round() as usize);
+        }
+        let i = self
+            .galley
+            .cursor_from_pos(Vec2::new(x - self.x0, 0.0))
+            .index
+            .0;
+        self.from
+            + self
+                .map
+                .iter()
+                .position(|&m| m >= i)
+                .unwrap_or(self.map.len() - 1)
     }
 }
 
-/// Lays out a line in its colours (character columns), with the hints at
-/// their columns (`st-inlay`).
+/// What laying out a line needs besides it.
+struct LayCx<'a> {
+    highlights: &'a [Vec<(usize, usize, Syntax)>],
+    hints: &'a [(Pos, String)],
+    long: Option<&'a HashMap<usize, Columns>>,
+    font: FontId,
+    char_w: f32,
+}
+
+/// Line `line` as it is drawn where `view` (x, from the text's left) is
+/// seen.
+fn lay_line<'a>(
+    ui: &Ui,
+    doc: &'a Document,
+    line: usize,
+    view: egui::Rangef,
+    cx: &LayCx<'a>,
+    p: &Palette,
+) -> Laid<'a> {
+    let text = doc.line(line);
+    let colours = cx.highlights.get(line).map_or(&[][..], |h| h.as_slice());
+    if let Some(cols) = cx.long.and_then(|l| l.get(&line)) {
+        // The characters in view, and a margin on each side.
+        let left = (view.min.max(0.0) / cx.char_w) as usize;
+        let right = (view.max.max(0.0) / cx.char_w) as usize;
+        let first = cols.col(text, left.saturating_sub(MARGIN));
+        let last = cols.col(text, right + MARGIN);
+        let chars: Vec<char> = text[cols.byte(text, first)..]
+            .chars()
+            .take(last - first)
+            .collect();
+        let start = colours.partition_point(|h| h.1 <= first);
+        let shifted: Vec<(usize, usize, Syntax)> = colours[start..]
+            .iter()
+            .take_while(|h| h.0 < last)
+            .map(|h| (h.0.saturating_sub(first), h.1.min(last) - first, h.2))
+            .collect();
+        let dcol = cols.dcol(text, first);
+        let (galley, map) = lay(ui, &chars, dcol, &shifted, &[], &cx.font, p);
+        return Laid {
+            galley,
+            map,
+            from: first,
+            x0: dcol as f32 * cx.char_w,
+            long: Some((text, cols, cx.char_w)),
+        };
+    }
+    let mut here: Vec<(usize, &str)> = cx
+        .hints
+        .iter()
+        .filter(|(pos, _)| pos.line == line)
+        .map(|(pos, label)| (pos.col, label.as_str()))
+        .collect();
+    here.sort_by_key(|h| h.0);
+    let chars: Vec<char> = text.chars().collect();
+    let (galley, map) = lay(ui, &chars, 0, colours, &here, &cx.font, p);
+    Laid {
+        galley,
+        map,
+        from: 0,
+        x0: 0.0,
+        long: None,
+    }
+}
+
+/// Lays out a line's characters in their colours (character columns),
+/// with the hints at their columns (`st-inlay`); `tab_col` is the display
+/// column of the first, for its tabs' stops. Returns the layout and each
+/// character's place in it.
 fn lay(
     ui: &Ui,
-    line: &str,
+    chars: &[char],
+    mut tab_col: usize,
     highlights: &[(usize, usize, Syntax)],
     hints: &[(usize, &str)],
     font: &FontId,
     p: &Palette,
-) -> Laid {
+) -> (Arc<Galley>, Vec<usize>) {
     let mut job = LayoutJob::default();
-    let mut map = Vec::with_capacity(line.len() + 1);
+    let mut map = Vec::with_capacity(chars.len() + 1);
     let mut index = 0;
-    let mut tab_col = 0;
     let mut run = String::new();
     let mut run_style: Option<Syntax> = None;
     let flush = |job: &mut LayoutJob, run: &mut String, style_of: Option<Syntax>| {
@@ -520,7 +705,6 @@ fn lay(
         valign: egui::Align::Center,
         ..Default::default()
     };
-    let chars: Vec<char> = line.chars().collect();
     let mut h = 0;
     // The highlights are in order: the one at a column is found by
     // walking on, not by searching them all for each character.
@@ -563,10 +747,7 @@ fn lay(
     }
     flush(&mut job, &mut run, run_style);
     job.wrap.max_rows = 1;
-    Laid {
-        galley: ui.fonts_mut(|f| f.layout_job(job)),
-        map,
-    }
+    (ui.fonts_mut(|f| f.layout_job(job)), map)
 }
 
 /// The code: the gutter and the visible rows; the keyboard, the pointer
@@ -622,6 +803,7 @@ fn code(
 
     let widest = tab.widest();
     tab.highlights(cx.system);
+    tab.long_lines();
     let foldable: Vec<(usize, usize)> = tab.foldable(cx.system).to_vec();
     let version = tab.doc.version;
     // Hints and lenses are shown for the text they were made for.
@@ -657,21 +839,12 @@ fn code(
     let mut hover_at: Option<(Pos, Pos2)> = None;
     let mut clear_hover = false;
     let mut unfold: Option<usize> = None;
-    let laid_of = |ui: &Ui, doc: &Document, line: usize| {
-        let mut here: Vec<(usize, &str)> = hints
-            .iter()
-            .filter(|(pos, _)| pos.line == line)
-            .map(|(pos, label)| (pos.col, label.as_str()))
-            .collect();
-        here.sort_by_key(|h| h.0);
-        lay(
-            ui,
-            doc.line(line),
-            highlights.get(line).map_or(&[][..], |h| h.as_slice()),
-            &here,
-            &font,
-            p,
-        )
+    let lay_cx = LayCx {
+        highlights,
+        hints: &hints,
+        long: tab.long.as_ref().map(|(_, l)| l),
+        font: font.clone(),
+        char_w,
     };
     let output = egui::ScrollArea::both()
         .id_salt(("wowlua-studio-code", &doc.path))
@@ -686,9 +859,11 @@ fn code(
             }
             let pos_at = |ui: &Ui, doc: &Document, point: Pos2| match rows.at(point.y - origin.y) {
                 Row::Lens(line) => Pos::new(line, 0),
-                Row::Line(line) => {
-                    Pos::new(line, laid_of(ui, doc, line).col_at(point.x - origin.x))
-                }
+                Row::Line(line) => Pos::new(
+                    line,
+                    lay_line(ui, doc, line, viewport.x_range(), &lay_cx, p)
+                        .col_at(point.x - origin.x),
+                ),
             };
 
             // The pointer: place the caret, select by dragging, words and
@@ -748,7 +923,7 @@ fn code(
             for &(row, top) in rows.between(viewport.min.y, viewport.max.y) {
                 let y = origin.y + top;
                 let line = row.line();
-                let laid = laid_of(ui, doc, line);
+                let laid = lay_line(ui, doc, line, viewport.x_range(), &lay_cx, p);
                 let text = doc.line(line);
                 if let Row::Lens(_) = row {
                     // The lens: how many places refer to the function.
@@ -878,7 +1053,7 @@ fn code(
                 }
             }
             if reveal {
-                let laid = laid_of(ui, doc, head.line);
+                let laid = lay_line(ui, doc, head.line, viewport.x_range(), &lay_cx, p);
                 let x = origin.x + laid.x(head.col);
                 let y = origin.y + rows.y_of(head.line);
                 ui.scroll_to_rect(
@@ -2050,6 +2225,25 @@ mod tests {
         assert_eq!(shown, "    a   b");
         assert_eq!(map, [0, 4, 5, 8, 9]);
         assert_eq!(char_col("\ta", 2), 1);
+    }
+
+    #[test]
+    fn a_long_line_s_columns_are_found_from_its_marks() {
+        // Tabs and a two-byte letter, across several marks.
+        let line = "ä\tcd".repeat(1000);
+        let cols = Columns::new(&line);
+        let (_, map) = display(&line);
+        for col in [0, 1, 2, 3, 1023, 1024, 1025, 2047, 2048, 3999, 4000] {
+            assert_eq!(cols.dcol(&line, col), map[col], "column of {col}");
+        }
+        for dcol in [0, 1, 3, 4, 5, 4095, 4096, 4097, 9000, 9999] {
+            assert_eq!(cols.col(&line, dcol), char_col(&line, dcol), "at {dcol}");
+        }
+        for col in [0, 1, 1025, 3999] {
+            let byte = line.char_indices().nth(col).unwrap().0;
+            assert_eq!(cols.byte(&line, col), byte, "byte of {col}");
+        }
+        assert_eq!(cols.byte(&line, 4000), line.len());
     }
 
     #[test]

@@ -8,6 +8,7 @@ pub mod doc;
 pub mod json;
 pub mod view;
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::system::{Highlight, Syntax, System};
@@ -43,6 +44,9 @@ pub struct Tab {
     highlights: Option<(u64, LineHighlights)>,
     /// The longest line's width in characters, for the version.
     widest: Option<(u64, usize)>,
+    /// The columns of the lines too long to lay out whole (a data file on
+    /// one line), for the version: they are drawn where they are seen.
+    pub long: Option<(u64, HashMap<usize, view::Columns>)>,
     /// The file changed on disk while it had unsaved edits (S049).
     pub clash: Option<Clash>,
     /// The caret moved: scroll it into view.
@@ -259,6 +263,7 @@ impl Tab {
             doc,
             highlights: None,
             widest: None,
+            long: None,
             clash: None,
             reveal: true,
             preview: false,
@@ -327,17 +332,24 @@ impl Tab {
     }
 
     /// The longest line's width in display columns.
+    /// The long lines' columns, made again when the text changed.
+    pub fn long_lines(&mut self) {
+        let version = self.doc.version;
+        if self.long.as_ref().is_none_or(|(v, _)| *v != version) {
+            let lines = (0..self.doc.line_count())
+                .filter(|&i| self.doc.line(i).len() > view::LONG_LINE)
+                .map(|i| (i, view::Columns::new(self.doc.line(i))))
+                .collect();
+            self.long = Some((version, lines));
+        }
+    }
+
     pub fn widest(&mut self) -> usize {
         let version = self.doc.version;
         if self.widest.is_none_or(|(v, _)| v != version) {
+            // Counted, not drawn: a line can be megabytes long.
             let w = (0..self.doc.line_count())
-                .map(|i| {
-                    view::display(self.doc.line(i))
-                        .1
-                        .last()
-                        .copied()
-                        .unwrap_or(0)
-                })
+                .map(|i| self.doc.line(i).chars().fold(0, view::step))
                 .max()
                 .unwrap_or(0);
             self.widest = Some((version, w));
@@ -346,8 +358,6 @@ impl Tab {
     }
 }
 
-/// Files the lexer highlights: wowlua and Lua. Large data files stay
-/// plain, so typing in them stays fast.
 /// The colours of the wowlua code blocks in a hover's markdown, as the
 /// editor's. The server's first block is a type (`name: T` or `T`): it is
 /// highlighted as the local `local name: T` declares, for the server to
@@ -406,6 +416,8 @@ fn is_named(code: &str) -> bool {
     })
 }
 
+/// Files the lexer highlights: wowlua and Lua. Large data files stay
+/// plain, so typing in them stays fast.
 fn highlighted(path: &Path) -> bool {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     matches!(ext, "wowlua" | "lua")

@@ -117,14 +117,8 @@ fn a_file_on_one_long_line_stays_within_the_budget() {
         ms(at(0.99)),
         ms(at(1.0))
     );
-    // Not yet the budget: the line is laid out whole each frame. It no
-    // longer hangs (laying it out searched every colour per character).
     if !cfg!(debug_assertions) {
-        assert!(
-            at(0.99) <= Duration::from_secs(1),
-            "p99 {:.3} ms",
-            ms(at(0.99))
-        );
+        assert!(at(0.99) <= BUDGET, "p99 {:.3} ms", ms(at(0.99)));
     }
 }
 
