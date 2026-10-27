@@ -9,8 +9,18 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+dirs = "7.0"
 eframe.workspace = true
+png = "0.18"
 wowlua-driver.workspace = true
+wowlua-studio-app.workspace = true
+wowlua-studio-ui.workspace = true
+
+# The system menu bar and the window buttons in Studio's bar (S013, S022).
+[target.'cfg(target_os = "macos")'.dependencies]
+muda = { version = "0.21", default-features = false }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSButton", "NSControl", "NSResponder", "NSView", "NSWindow"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSGeometry"] }
 
 [lints]
 workspace = true

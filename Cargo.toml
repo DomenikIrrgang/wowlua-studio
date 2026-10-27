@@ -15,6 +15,11 @@ authors = ["Domenik Irrgang"]
 # wgpu 30, the version wowlua-render draws the game's screen with, so both
 # share one device.
 eframe = "0.37"
+egui = "0.37"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+wowlua-studio-ui = { path = "crates/wowlua-studio-ui" }
+wowlua-studio-app = { path = "crates/wowlua-studio-app" }
 
 # wowlua, pinned to a release (decision S004). To work on both repositories
 # at once, point these at a local checkout in `.cargo/config.toml` (see
@@ -22,7 +27,8 @@ eframe = "0.37"
 wowlua-driver = { git = "https://github.com/DomenikIrrgang/wowlua", tag = "v0.13.0" }
 
 [workspace.lints.rust]
-unsafe_code = "forbid"
+# Denied, not forbidden: one macOS module may allow it (decision S022).
+unsafe_code = "deny"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }

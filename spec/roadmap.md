@@ -45,6 +45,23 @@ palette.
 panels; a panel is dragged to another dock, split and floated; the theme
 switches; every frame's UI is built within the budget (S014).
 
+Until M2 opens workspaces, the shell shows with no folder open; M2 adds
+the start page the design shows then (no rail, no status bar).
+
+Built 2026-10-27: the design system's tokens, fonts, icons, the [wl]
+mark, buttons, segmented controls, badges, key caps and icon buttons
+(selects, tables, cards and callouts come with the first page that uses
+them); the title bar, rail and status bar, Studio's window buttons and
+resize edges on Windows and Linux, the menu bar on macOS; docking with a
+preset per page (S017), splitters, drag and drop onto the panels board's
+five drop zones, a panel menu (move, split, float, maximize, close),
+floating windows, `ctrl shift m`; the command palette (S018) and the
+command registry behind it, the menus and the keys (S019); settings and
+layouts saved in the system's folder for application data. The frame
+budget is checked in CI's optimized builds: 0.08 ms median and 0.17 ms
+at the 99th percentile on an Apple M-series laptop. Not yet checked by
+hand: dragging and floating panels, and the window on Windows and Linux.
+
 ## M2: Workspaces
 
 Artboard: start.
@@ -65,6 +82,9 @@ Artboards: editor, search.
   definition, references, rename, outline, folding, format on save.
 - Problems, output and a terminal; text search across the workspace;
   JSON with schemas (`wowlua.json`, world profiles).
+- Background jobs in the status bar (the jobs board): the check is the
+  first; the later milestones' builds, test runs, installs, publishes
+  and recordings run as jobs too.
 
 ## M4: Tests and coverage
 
@@ -165,3 +185,16 @@ Asked when their milestone starts; nothing here is decided yet.
 - Installers and code signing per system (first release).
 - The GitHub app Studio signs in with, and who registers it (M12).
 - Whether "sign in with Claude" is possible for a third-party app (M14).
+
+## Design changes owed
+
+Where Studio was decided to differ from the canvas, or the canvas is
+missing a part; the canvas is updated to match.
+
+None open. Brought up to date on 2026-10-27: the panels board's presets
+for every page (S017), the palette's prompt (S018), the menus (S019), the
+app icon and the title bar's mark (S020, S023), the status bar without the
+theme (S021), the start page without GitHub and Claude (S024), the
+question when opening another folder (S025, a new board), the registry's
+dependencies (S010, a new board) and the profiler's recordings from the
+game (S011).
