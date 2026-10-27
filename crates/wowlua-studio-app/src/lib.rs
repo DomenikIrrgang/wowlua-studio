@@ -22,6 +22,7 @@ pub mod start;
 pub mod state;
 pub mod system;
 pub mod terminal;
+pub mod tests;
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -104,6 +105,10 @@ pub struct Studio {
     terminal: terminal::TerminalState,
     /// The problems panel shows the editor's file only.
     problems_this_file: bool,
+    /// The tests page (S052).
+    tests: tests::TestsState,
+    /// The workspace's world profiles (`tests/profiles/*.json`), by name.
+    profiles: Vec<String>,
     /// Background jobs (S044); the checks running, by package.
     jobs: jobs::Jobs,
     checks: std::collections::HashMap<PathBuf, u64>,
@@ -126,6 +131,11 @@ pub struct Studio {
     queued_files: Vec<PathBuf>,
     /// A query for the find bar, once a file is open.
     queued_find: Option<String>,
+    /// Run every test once the workspace and its test files are there
+    /// (the screenshot's `runtests` step).
+    queued_run: bool,
+    /// A tab of the tests page's results to show once it is open.
+    queued_tab: Option<tests::Tab>,
     /// The commands changed: the menu bar is made again.
     menus_changed: bool,
     /// When the layouts or settings changed and are not saved yet.
@@ -185,6 +195,8 @@ impl Studio {
             schemas: std::collections::HashMap::new(),
             terminal: terminal::TerminalState::default(),
             problems_this_file: false,
+            tests: tests::TestsState::default(),
+            profiles: Vec::new(),
             jobs: jobs::Jobs::default(),
             checks: std::collections::HashMap::new(),
             outline: None,
@@ -196,6 +208,8 @@ impl Studio {
             queued: Vec::new(),
             queued_files: Vec::new(),
             queued_find: None,
+            queued_run: false,
+            queued_tab: None,
             menus_changed: false,
             unsaved_since: None,
             focused: true,
@@ -245,6 +259,23 @@ impl Studio {
     /// is open (the screenshot's `find:` step).
     pub fn find(&mut self, query: &str) {
         self.queued_find = Some(query.to_owned());
+    }
+
+    /// Shows a tab of the tests page's results: `failure`, `snapshot`,
+    /// `screenshot` or `output` (the screenshot's `testtab:` step).
+    pub fn tests_tab(&mut self, name: &str) {
+        self.queued_tab = Some(match name {
+            "snapshot" => tests::Tab::Snapshot,
+            "screenshot" => tests::Tab::Screenshot,
+            "output" => tests::Tab::Output,
+            _ => tests::Tab::Failure,
+        });
+    }
+
+    /// Runs every test once the workspace is open (the screenshot's
+    /// `runtests` step).
+    pub fn run_tests(&mut self) {
+        self.queued_run = true;
     }
 
     /// Where the active editor's hover is shown for: a line and a column.
@@ -298,6 +329,14 @@ impl Studio {
                 && let Some(query) = self.queued_find.take()
             {
                 self.editors.finder.show_with(&query, true);
+            }
+            if let Some(tab) = self.queued_tab.filter(|_| self.tests.files.is_some()) {
+                self.queued_tab = None;
+                self.tests.tab = tab;
+            }
+            if self.queued_run && self.tests.files.is_some() {
+                self.queued_run = false;
+                self.queue(Command::RunAllTests);
             }
         }
         self.lsp
@@ -449,6 +488,9 @@ impl Studio {
         let search_state = &mut self.search;
         let term_state = &mut self.terminal;
         let problems_this_file = &mut self.problems_this_file;
+        let tests_state = &mut self.tests;
+        let profiles = &self.profiles;
+        let mut tests_action = None;
         let mut search_action = None;
         let outline = &self.outline;
         let system = &*self.host.system;
@@ -503,6 +545,16 @@ impl Studio {
             Panel::Search => search_action = search::show(ui, search_state, &workspace.root),
             Panel::Output => search::output(ui, &lsp_state.log),
             Panel::Terminal => terminal::show(ui, term_state, system, &workspace.root, mac),
+            Panel::TestExplorer => {
+                if let Some(a) = tests::explorer(ui, tests_state, workspace) {
+                    tests_action = Some(a);
+                }
+            }
+            Panel::TestResults => {
+                if let Some(a) = tests::results(ui, tests_state, workspace, system, profiles) {
+                    tests_action = Some(a);
+                }
+            }
             _ => dock::placeholder(ui, panel),
         };
         let changed = dock::show(ui, area, layout, &mut self.dock, &mut content);
@@ -511,6 +563,24 @@ impl Studio {
         }
         if let Some(path) = opened {
             self.open_file(&path, ctx);
+        }
+        match tests_action {
+            Some(tests::Action::Run(request)) => self.start_tests(request, ctx),
+            Some(tests::Action::Stop) => self.host.system.test_stop(),
+            Some(tests::Action::Open(path, line)) => {
+                let at = lsp::Wire { line, character: 0 };
+                let place = lsp::Location {
+                    path,
+                    start: at,
+                    end: at,
+                };
+                self.show_place(&place, ctx);
+                self.queue(Command::ShowPage(Page::Files));
+            }
+            Some(tests::Action::ShowCoverage) => {
+                self.queue(Command::ShowPanel(Panel::Coverage, dock::Dock::Main));
+            }
+            None => {}
         }
         if let Some(l) = go_to {
             self.go_to(&l, ctx);
@@ -894,6 +964,7 @@ impl Studio {
                 self.search.tab = search::Tab::Rename;
                 self.reveal_search();
             }
+            R::Tests { path, tests } => self.tests.discovered(path, tests),
             R::Symbols { path, symbols } => {
                 let version = self
                     .editors
@@ -1107,7 +1178,10 @@ impl Studio {
             return;
         };
         match self.editors.save(i, &*self.host.system) {
-            Ok(true) => self.lsp.saved(&path, &*self.host.system),
+            Ok(true) => {
+                self.lsp.saved(&path, &*self.host.system);
+                self.saved_for_tests(&path, ctx);
+            }
             // The disk changed: the banner asks first (S049).
             Ok(false) => {}
             Err(error) => self.notify(
@@ -1247,6 +1321,7 @@ impl Studio {
                         self.host.system.open(&w.root);
                     }
                 }
+                Event::Tests { run, event } => self.test_event(run, event, ctx),
                 Event::Searched { search, found } => {
                     if self.search.running.as_ref() == Some(&search) {
                         self.search.running = None;
@@ -1342,11 +1417,202 @@ impl Studio {
             self.dock = DockState::default();
             self.menus_changed = true;
         }
+        if !again {
+            self.open_tests(&workspace);
+        }
         self.branch = self.host.system.branch(&workspace.root);
         self.reload_recents();
         self.recents.opened(&workspace, self.host.system.now());
         self.save_recents();
         self.workspace = Some(workspace);
+    }
+
+    /// A workspace's tests: its test files listed and read by the server,
+    /// the last results it keeps, its world profiles.
+    fn open_tests(&mut self, workspace: &Workspace) {
+        let system = &*self.host.system;
+        self.tests = tests::TestsState::default();
+        let mut files: Vec<PathBuf> = Vec::new();
+        let roots: Vec<PathBuf> = if workspace.members.is_empty() {
+            vec![workspace.root.clone()]
+        } else {
+            workspace.members.iter().map(|m| m.dir.clone()).collect()
+        };
+        for root in &roots {
+            for f in system.test_files(root) {
+                if !files.contains(&f) {
+                    files.push(f);
+                }
+            }
+        }
+        for f in &files {
+            self.lsp.tests(f, system);
+        }
+        self.tests.files = Some(files);
+        if let Some(kept) = self
+            .kept_tests()
+            .remove(&workspace.root.to_string_lossy().into_owned())
+        {
+            self.tests.restore(kept);
+        }
+        self.profiles = system
+            .list(&workspace.root.join("tests").join("profiles"))
+            .into_iter()
+            .filter(|e| !e.is_dir && e.name.ends_with(".json"))
+            .map(|e| e.name.trim_end_matches(".json").to_owned())
+            .collect();
+    }
+
+    /// The tests every workspace keeps (`tests.json`), by its root.
+    fn kept_tests(&self) -> std::collections::BTreeMap<String, tests::Kept> {
+        self.host
+            .store
+            .load("tests.json")
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_default()
+    }
+
+    /// Keeps this workspace's results (the last ten workspaces').
+    fn keep_tests(&self) {
+        let Some(w) = &self.workspace else {
+            return;
+        };
+        let mut all = self.kept_tests();
+        let key = w.root.to_string_lossy().into_owned();
+        all.remove(&key);
+        while all.len() >= 10 {
+            let Some(first) = all.keys().next().cloned() else {
+                break;
+            };
+            all.remove(&first);
+        }
+        all.insert(key, self.tests.kept());
+        if let Ok(text) = serde_json::to_string(&all) {
+            self.host.store.save("tests.json", &text);
+        }
+    }
+
+    /// Runs tests: a job in the status bar, the results as they come.
+    fn start_tests(&mut self, request: system::TestRequest, ctx: &Context) {
+        let Some(w) = &self.workspace else {
+            return;
+        };
+        if self.tests.running.is_some() {
+            return;
+        }
+        let run = self.tests.next_run();
+        let now = ctx.input(|i| i.time);
+        let detail = match request.filters.len() {
+            0 => "the whole suite".to_owned(),
+            1 => request.filters[0].clone(),
+            n => format!("{n} tests or files"),
+        };
+        let job = self.jobs.begin(
+            "tests",
+            &w.name,
+            &detail,
+            0.0,
+            Some(Panel::TestResults),
+            now,
+        );
+        let root = w.root.clone();
+        self.tests.begin(run, request.clone(), job);
+        self.host.system.test_run(&root, run, request);
+    }
+
+    /// A test run's news: its job, its end.
+    fn test_event(&mut self, run: u64, event: system::TestEvent, ctx: &Context) {
+        let Some(job) = self
+            .tests
+            .running
+            .as_ref()
+            .filter(|r| r.run == run)
+            .map(|r| r.job)
+        else {
+            return;
+        };
+        let done = self.tests.event(run, event);
+        let now = ctx.input(|i| i.time);
+        if let Some(r) = &self.tests.running {
+            let progress = (r.planned > 0).then(|| r.done as f32 / r.planned as f32);
+            let detail = if r.planned == 0 {
+                r.status.clone()
+            } else {
+                format!(
+                    "{} of {} files · {} failed so far",
+                    r.done, r.planned, r.failed
+                )
+            };
+            self.jobs.update(job, progress, &detail);
+        }
+        let Some(done) = done else {
+            return;
+        };
+        let (passed, failed, _, files) = self.tests.counts();
+        if let Some(error) = &done.error {
+            self.jobs.end(
+                job,
+                jobs::State::Failed(format!("no test ran: {error}")),
+                None,
+                now,
+            );
+        } else if failed > 0 {
+            self.jobs.end(
+                job,
+                jobs::State::Failed(format!("{failed} failed · {passed} passed")),
+                None,
+                now,
+            );
+        } else {
+            let detail = format!("{passed} passed in {files} files");
+            self.jobs.end(job, jobs::State::Done, Some(detail), now);
+        }
+        self.keep_tests();
+    }
+
+    /// A file saved: its tests read again, and with run on save the tests
+    /// it affects run.
+    fn saved_for_tests(&mut self, path: &Path, ctx: &Context) {
+        let Some(w) = &self.workspace else {
+            return;
+        };
+        let is_test = path.to_string_lossy().ends_with(".test.wowlua");
+        if is_test {
+            if let Some(files) = &mut self.tests.files
+                && !files.iter().any(|f| f == path)
+            {
+                files.push(path.to_path_buf());
+                files.sort();
+            }
+            self.lsp.tests(path, &*self.host.system);
+        }
+        if !self.tests.run_on_save
+            || self.tests.running.is_some()
+            || path.extension().is_none_or(|e| e != "wowlua")
+        {
+            return;
+        }
+        let affected = self.host.system.affected_tests(&w.root, path);
+        if affected.is_empty() {
+            return;
+        }
+        let filters = affected
+            .iter()
+            .map(|f| {
+                let package = tests::package_of(w, f);
+                f.strip_prefix(&package)
+                    .unwrap_or(f)
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect();
+        let request = system::TestRequest {
+            filters,
+            coverage: self.tests.coverage_on,
+            update_snapshots: false,
+            profile: self.tests.profile.clone(),
+        };
+        self.start_tests(request, ctx);
     }
 
     fn close_workspace(&mut self) {
@@ -1525,6 +1791,22 @@ impl Studio {
             Command::CloseEditor => {
                 let i = self.editors.active;
                 self.close_tab(i);
+            }
+            Command::RunAllTests | Command::RunFailedTests => {
+                let filters = if command == Command::RunFailedTests {
+                    self.tests.failed_filters()
+                } else {
+                    Vec::new()
+                };
+                if command == Command::RunAllTests || !filters.is_empty() {
+                    let request = system::TestRequest {
+                        filters,
+                        coverage: self.tests.coverage_on,
+                        update_snapshots: false,
+                        profile: self.tests.profile.clone(),
+                    };
+                    self.start_tests(request, ctx);
+                }
             }
             Command::Find | Command::Replace => {
                 let editor::Editors {

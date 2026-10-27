@@ -1233,17 +1233,7 @@ fn check_row(
     let x = r.left() + 14.0;
     let center = Pos2::new(x + 9.0, r.top() + 10.0 + 9.5);
     match mark {
-        // The fonts have no check mark: it is drawn.
-        Mark::Ok => {
-            painter.line(
-                vec![
-                    center + Vec2::new(-4.0, 0.0),
-                    center + Vec2::new(-1.25, 2.75),
-                    center + Vec2::new(4.0, -2.5),
-                ],
-                Stroke::new(1.75, p.success),
-            );
-        }
+        Mark::Ok => wowlua_studio_ui::widgets::check_mark(painter, center, p.success),
         Mark::Pending | Mark::Warning => {
             let (sign, color) = if mark == Mark::Pending {
                 ("·", p.ink_muted)

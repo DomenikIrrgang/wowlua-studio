@@ -3,7 +3,7 @@
 //! frames, saves the window as a PNG and quits.
 //! `WOWLUA_STUDIO_SCREENSHOT_RUN` lists commands to run first, separated
 //! by `;`: `open:<folder>`, `file:<file>`, `find:<query>`, `page:debug`, `theme:light`, `palette`,
-//! `about`, `new`, `adopt`, `stats`, `terminal`.
+//! `about`, `new`, `adopt`, `stats`, `terminal`, `runtests`, `testtab:<tab>`.
 
 use std::{
     path::PathBuf,
@@ -34,6 +34,14 @@ impl Screenshot {
             }
             if let Some(file) = step.strip_prefix("file:") {
                 studio.edit(std::path::Path::new(file));
+                continue;
+            }
+            if let Some(tab) = step.strip_prefix("testtab:") {
+                studio.tests_tab(tab);
+                continue;
+            }
+            if step == "runtests" {
+                studio.run_tests();
                 continue;
             }
             if let Some(query) = step.strip_prefix("find:") {

@@ -132,6 +132,11 @@ pub enum Reply {
         path: PathBuf,
         symbols: Vec<Symbol>,
     },
+    /// A test file's tests, from its text (`wowlua/tests`).
+    Tests {
+        path: PathBuf,
+        tests: Vec<Discovered>,
+    },
     /// The file's formatting; `then_save` when a save waits for it.
     Format {
         path: PathBuf,
@@ -190,6 +195,7 @@ enum Ask {
     Hints(PathBuf, u64),
     Lenses(PathBuf, u64),
     Fixes(PathBuf),
+    Tests(PathBuf),
 }
 
 #[derive(Default)]
@@ -438,6 +444,22 @@ impl Lsp {
         }
     }
 
+    /// Asks for a test file's tests: open or not, the server reads it
+    /// (→ [`Reply::Tests`]).
+    pub fn tests(&mut self, path: &Path, system: &dyn System) {
+        if !self.running() {
+            return;
+        }
+        let canonical = system.canonical(path);
+        let params = json!({ "textDocument": { "uri": uri_of(&canonical) } });
+        self.request(
+            system,
+            Ask::Tests(path.to_path_buf()),
+            "wowlua/tests",
+            params,
+        );
+    }
+
     pub fn symbols(&mut self, doc: &Document, system: &dyn System) {
         if let Some((_, canonical)) = self.opened.get(&doc.path) {
             let params = json!({ "textDocument": { "uri": uri_of(canonical) } });
@@ -650,6 +672,20 @@ impl Lsp {
                 new,
                 files: workspace_edit(result),
             },
+            Ask::Tests(path) => Reply::Tests {
+                path,
+                tests: result
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|t| Discovered {
+                        name: t["name"].as_str().unwrap_or("").to_owned(),
+                        line: wire(&t["selectionRange"]["start"]).line,
+                        skip: t["skip"].as_bool().unwrap_or(false),
+                        cases: t["cases"].as_bool().unwrap_or(false),
+                    })
+                    .collect(),
+            },
             Ask::Symbols(path) => {
                 let mut symbols = Vec::new();
                 if let Some(list) = result.as_array() {
@@ -712,6 +748,17 @@ impl Lsp {
             },
         })
     }
+}
+
+/// A test of a test file, as its text declares it: its name, the line of
+/// its name, whether `@skip` skips it and whether `@cases` runs it once a
+/// case.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Discovered {
+    pub name: String,
+    pub line: usize,
+    pub skip: bool,
+    pub cases: bool,
 }
 
 fn wire(v: &Json) -> Wire {

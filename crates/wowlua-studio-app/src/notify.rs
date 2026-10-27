@@ -352,14 +352,7 @@ fn ago(now: f64, at: f64) -> String {
 fn mark_at(ui: &Ui, at: Pos2, kind: Kind, p: &Palette) {
     let (sign, color) = mark(kind, p);
     if kind == Kind::Ok {
-        ui.painter().line(
-            vec![
-                at + Vec2::new(-4.0, 0.0),
-                at + Vec2::new(-1.25, 2.75),
-                at + Vec2::new(4.0, -2.5),
-            ],
-            Stroke::new(1.75, color),
-        );
+        wowlua_studio_ui::widgets::check_mark(ui.painter(), at, color);
     } else {
         ui.painter().text(
             at,

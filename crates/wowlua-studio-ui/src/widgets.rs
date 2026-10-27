@@ -115,6 +115,18 @@ pub enum ButtonKind {
     Ghost,
 }
 
+/// A check mark centred on `center` (the fonts have none: it is drawn).
+pub fn check_mark(painter: &egui::Painter, center: egui::Pos2, color: Color32) {
+    painter.line(
+        vec![
+            center + Vec2::new(-4.0, 0.0),
+            center + Vec2::new(-1.25, 2.75),
+            center + Vec2::new(4.0, -2.5),
+        ],
+        egui::Stroke::new(1.75, color),
+    );
+}
+
 /// A command button: 36 px, or 28 px `small`; an optional leading icon.
 pub fn button(
     ui: &mut Ui,

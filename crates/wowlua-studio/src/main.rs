@@ -12,6 +12,7 @@ mod native;
 mod screenshot;
 mod store;
 mod terminal;
+mod tests;
 #[cfg(target_os = "macos")]
 mod traffic_lights;
 
