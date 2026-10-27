@@ -6,6 +6,7 @@
 
 pub mod chrome;
 pub mod commands;
+pub mod coverage;
 pub mod dock;
 pub mod editor;
 pub mod explorer;
@@ -131,11 +132,13 @@ pub struct Studio {
     queued_files: Vec<PathBuf>,
     /// A query for the find bar, once a file is open.
     queued_find: Option<String>,
-    /// Run every test once the workspace and its test files are there
-    /// (the screenshot's `runtests` step).
-    queued_run: bool,
+    /// Run every test once the workspace and its test files are there,
+    /// with coverage or not (the screenshot's `runtests`, `runcoverage`).
+    queued_run: Option<bool>,
     /// A tab of the tests page's results to show once it is open.
     queued_tab: Option<tests::Tab>,
+    /// Show the coverage in the gutter once the tests page is there.
+    queued_gutter: bool,
     /// The commands changed: the menu bar is made again.
     menus_changed: bool,
     /// When the layouts or settings changed and are not saved yet.
@@ -208,8 +211,9 @@ impl Studio {
             queued: Vec::new(),
             queued_files: Vec::new(),
             queued_find: None,
-            queued_run: false,
+            queued_run: None,
             queued_tab: None,
+            queued_gutter: false,
             menus_changed: false,
             unsaved_since: None,
             focused: true,
@@ -274,8 +278,14 @@ impl Studio {
 
     /// Runs every test once the workspace is open (the screenshot's
     /// `runtests` step).
-    pub fn run_tests(&mut self) {
-        self.queued_run = true;
+    pub fn run_tests(&mut self, coverage: bool) {
+        self.queued_run = Some(coverage);
+    }
+
+    /// Shows the coverage in the editor's gutter (the screenshot's `gutter`
+    /// step).
+    pub fn coverage_gutter(&mut self) {
+        self.queued_gutter = true;
     }
 
     /// Where the active editor's hover is shown for: a line and a column.
@@ -334,8 +344,14 @@ impl Studio {
                 self.queued_tab = None;
                 self.tests.tab = tab;
             }
-            if self.queued_run && self.tests.files.is_some() {
-                self.queued_run = false;
+            if self.queued_gutter && self.tests.files.is_some() {
+                self.queued_gutter = false;
+                self.tests.cov.in_gutter = true;
+            }
+            if self.tests.files.is_some()
+                && let Some(coverage) = self.queued_run.take()
+            {
+                self.tests.coverage_on = coverage;
                 self.queue(Command::RunAllTests);
             }
         }
@@ -512,11 +528,26 @@ impl Studio {
                     .active()
                     .and_then(|t| lsp_state.diagnostics.get(&t.canonical))
                     .map_or(&[][..], Vec::as_slice);
+                // The tests' lenses and the coverage of the active file.
+                let active = editors.active().map(|t| t.doc.path.clone());
+                let lenses = active
+                    .as_deref()
+                    .map(|path| tests::lenses(tests_state, workspace, path))
+                    .unwrap_or_default();
+                let coverage = active.as_deref().and_then(|path| {
+                    tests_state
+                        .coverage
+                        .as_ref()
+                        .filter(|_| tests_state.cov.in_gutter)
+                        .and_then(|c| c.files.get(path))
+                });
                 let cx = editor::view::Cx {
                     system,
                     workspace,
                     mac,
                     diagnostics,
+                    lenses: &lenses,
+                    coverage,
                 };
                 actions.extend(editor::view::show(ui, editors, &cx));
             }
@@ -547,6 +578,15 @@ impl Studio {
             Panel::Terminal => terminal::show(ui, term_state, system, &workspace.root, mac),
             Panel::TestExplorer => {
                 if let Some(a) = tests::explorer(ui, tests_state, workspace) {
+                    tests_action = Some(a);
+                }
+            }
+            Panel::Coverage => {
+                if !tests_state.coverage_loaded {
+                    tests_state.coverage_loaded = true;
+                    tests_state.coverage = system.coverage_report(&workspace.root);
+                }
+                if let Some(a) = coverage::show(ui, tests_state, workspace, system) {
                     tests_action = Some(a);
                 }
             }
@@ -675,6 +715,7 @@ impl Studio {
                 }
             }
             A::ApplyFix(fix) => self.apply_edits(fix.edits, ctx),
+            A::Lens(click) => self.lens_clicked(click, ctx),
         }
     }
 
@@ -1568,6 +1609,30 @@ impl Studio {
             self.jobs.end(job, jobs::State::Done, Some(detail), now);
         }
         self.keep_tests();
+    }
+
+    /// A lens of the tests was clicked: run, the failure, the callers.
+    fn lens_clicked(&mut self, click: editor::view::LensClick, ctx: &Context) {
+        use editor::view::LensClick as C;
+        let Some(w) = self.workspace.clone() else {
+            return;
+        };
+        match click {
+            C::Run { file, test } => {
+                let package = tests::package_of(&w, &file);
+                let request = tests::request_for(&package, &file, test.as_deref(), &self.tests);
+                self.start_tests(request, ctx);
+            }
+            C::Failure { file, test } => {
+                self.tests.selected = Some((file, Some(test)));
+                self.tests.tab = tests::Tab::Failure;
+                self.queue(Command::ShowPage(Page::Tests));
+            }
+            C::Callers { file, line } => {
+                self.tests.pin_callers(&w, &file, line);
+                self.queue(Command::ShowPage(Page::Tests));
+            }
+        }
     }
 
     /// A file saved: its tests read again, and with run on save the tests

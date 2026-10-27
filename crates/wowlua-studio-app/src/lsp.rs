@@ -681,6 +681,7 @@ impl Lsp {
                     .map(|t| Discovered {
                         name: t["name"].as_str().unwrap_or("").to_owned(),
                         line: wire(&t["selectionRange"]["start"]).line,
+                        start: wire(&t["range"]["start"]).line,
                         skip: t["skip"].as_bool().unwrap_or(false),
                         cases: t["cases"].as_bool().unwrap_or(false),
                     })
@@ -757,6 +758,8 @@ impl Lsp {
 pub struct Discovered {
     pub name: String,
     pub line: usize,
+    /// Where its declaration starts: its first decorator's line.
+    pub start: usize,
     pub skip: bool,
     pub cases: bool,
 }

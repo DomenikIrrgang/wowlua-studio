@@ -14,6 +14,7 @@ use wowlua_studio_ui::forms::{self, CalloutKind};
 use wowlua_studio_ui::widgets::{self, ButtonKind};
 use wowlua_studio_ui::{Face, Palette, palette};
 
+use crate::editor::view::{Lens, LensAct, LensClick, Tone};
 use crate::lsp::Discovered;
 use crate::system::{System, TestDone, TestEvent, TestFile, TestOutcome, TestRequest, Workspace};
 
@@ -84,6 +85,11 @@ pub struct TestsState {
     pub run_on_save: bool,
     /// The world profile a run starts in, over `test.profile`.
     pub profile: Option<String>,
+    /// The coverage panel's.
+    pub cov: crate::coverage::CoverageView,
+    /// The explorer shows only these tests (those calling a function, from
+    /// its lens): what they are, which.
+    pub pinned: Option<(String, Vec<(PathBuf, String)>)>,
     filter: String,
     only_failed: bool,
     /// The explorer's folded nodes.
@@ -205,6 +211,7 @@ impl TestsState {
                 });
                 if let Some(c) = &done.coverage {
                     self.coverage = Some(c.clone());
+                    self.cov.minimums = None;
                 }
                 // Snapshots and screenshots written anew: their images too.
                 self.images.clear();
@@ -269,6 +276,29 @@ impl TestsState {
         (p, f, s, self.results.len())
     }
 
+    /// Pins the explorer to the tests that call the function defined at
+    /// `line` (from 1) of `file`, as the last run with coverage saw them.
+    pub fn pin_callers(&mut self, workspace: &Workspace, file: &Path, line: u32) {
+        let rel = rel_of(workspace, file);
+        let mut tests: Vec<(PathBuf, String)> = Vec::new();
+        for (path, f) in &self.results {
+            for t in &f.tests {
+                if t.functions.iter().any(|(src, l)| *src == rel && *l == line) {
+                    tests.push((path.clone(), declared(&t.name).to_owned()));
+                }
+            }
+        }
+        tests.dedup();
+        let name = self
+            .coverage
+            .as_ref()
+            .and_then(|c| c.files.get(file))
+            .and_then(|c| c.functions.get(&line))
+            .map_or_else(|| format!("{rel}:{line}"), |(n, _)| n.clone());
+        self.pinned = Some((format!("the tests that call {name}"), tests));
+        self.generation += 1;
+    }
+
     /// A test file's tests read anew (after a save).
     pub fn discovered(&mut self, path: PathBuf, tests: Vec<Discovered>) {
         self.generation += 1;
@@ -277,7 +307,7 @@ impl TestsState {
     }
 
     /// The results of the test (or a case of it) named `name` in `file`.
-    fn results_of(&self, file: &Path, name: &str) -> Vec<&crate::system::TestCase> {
+    pub(crate) fn results_of(&self, file: &Path, name: &str) -> Vec<&crate::system::TestCase> {
         self.results
             .get(file)
             .map(|f| {
@@ -320,6 +350,126 @@ impl TestsState {
             Status::Pass
         }
     }
+}
+
+/// `path` from its package's root, with `/`.
+fn rel_of(workspace: &Workspace, path: &Path) -> String {
+    let package = package_of(workspace, path);
+    path.strip_prefix(&package)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+/// The tests' lenses over a file (S052): a test file's run, each test's
+/// result and run or failure; over a source function, after a run with
+/// coverage, how many tests call it.
+pub fn lenses(state: &TestsState, workspace: &Workspace, path: &Path) -> Vec<Lens> {
+    let mut out = Vec::new();
+    let file = path.to_path_buf();
+    let click = |title: &str, line: usize, c: LensClick| Lens {
+        line,
+        title: title.to_owned(),
+        act: LensAct::Click(c),
+    };
+    let note = |title: String, line: usize, tone: Tone| Lens {
+        line,
+        title,
+        act: LensAct::Note(tone),
+    };
+    if let Some(tests) = state.discovered.get(path) {
+        out.push(click(
+            "run all tests",
+            0,
+            LensClick::Run {
+                file: file.clone(),
+                test: None,
+            },
+        ));
+        for t in tests {
+            let results = state.results_of(path, &t.name);
+            // Over the test's first decorator.
+            let line = t.start;
+            let run = || {
+                click(
+                    "run test",
+                    line,
+                    LensClick::Run {
+                        file: file.clone(),
+                        test: Some(t.name.clone()),
+                    },
+                )
+            };
+            if results.is_empty() {
+                if t.skip {
+                    out.push(note("skipped".into(), line, Tone::Muted));
+                }
+                out.push(run());
+            } else if let Some(failed) = results
+                .iter()
+                .find(|r| matches!(r.outcome, TestOutcome::Fail { .. }))
+            {
+                let at = match &failed.outcome {
+                    TestOutcome::Fail { message, stack } => places(&format!("{message}\n{stack}"))
+                        .into_iter()
+                        .find(|(_, p, _)| path.to_string_lossy().ends_with(p.as_str()))
+                        .map(|(_, _, n)| format!(" at line {n}"))
+                        .unwrap_or_default(),
+                    _ => String::new(),
+                };
+                out.push(note(format!("failed{at}"), line, Tone::Error));
+                out.push(click(
+                    "show failure",
+                    line,
+                    LensClick::Failure {
+                        file: file.clone(),
+                        test: failed.name.clone(),
+                    },
+                ));
+                out.push(run());
+            } else if results
+                .iter()
+                .all(|r| matches!(r.outcome, TestOutcome::Skip(_)))
+            {
+                out.push(note("skipped".into(), line, Tone::Muted));
+            } else {
+                let passed = if t.cases {
+                    format!("{} cases passed", results.len())
+                } else {
+                    "passed".into()
+                };
+                out.push(note(passed, line, Tone::Ok));
+                out.push(run());
+            }
+        }
+    }
+    // A source function: the tests that call it.
+    let rel = rel_of(workspace, path);
+    let mut by_line: BTreeMap<u32, BTreeSet<(PathBuf, String)>> = BTreeMap::new();
+    for (test_file, f) in &state.results {
+        for t in &f.tests {
+            for (src, line) in &t.functions {
+                if *src == rel {
+                    by_line
+                        .entry(*line)
+                        .or_default()
+                        .insert((test_file.clone(), declared(&t.name).to_owned()));
+                }
+            }
+        }
+    }
+    for (line, tests) in by_line {
+        let n = tests.len();
+        out.push(click(
+            &format!("{n} test{}", if n == 1 { "" } else { "s" }),
+            line.saturating_sub(1) as usize,
+            LensClick::Callers {
+                file: file.clone(),
+                line,
+            },
+        ));
+    }
+    out
 }
 
 /// A test's name without its case (`doubles [1, 2]` is `doubles`'s).
@@ -431,6 +581,23 @@ pub fn explorer(ui: &mut Ui, state: &mut TestsState, workspace: &Workspace) -> O
             }
         });
     });
+    if let Some((what, _)) = &state.pinned {
+        let mut clear = false;
+        forms::padded(ui, 10, 2, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(what)
+                        .font(Face::Plex.at(11.5))
+                        .color(p.amber_ink),
+                );
+                clear = forms::text_button(ui, "show all").clicked();
+            });
+        });
+        if clear {
+            state.pinned = None;
+            state.generation += 1;
+        }
+    }
     let Some(files) = &state.files else {
         empty(ui, "Looking for the test files…", p);
         return None;
@@ -786,8 +953,16 @@ fn rows(state: &TestsState, workspace: &Workspace, files: &[PathBuf]) -> Vec<Row
                     }
                     let fkey = format!("f:{}", f.display());
                     let discovered = state.discovered.get(f).cloned().unwrap_or_default();
+                    let pinned = state.pinned.as_ref().map(|(_, list)| list);
+                    if pinned.is_some_and(|list| !list.iter().any(|(p, _)| p == f)) {
+                        continue;
+                    }
                     let tests: Vec<&Discovered> = discovered
                         .iter()
+                        .filter(|t| {
+                            pinned
+                                .is_none_or(|list| list.iter().any(|(p, n)| p == f && *n == t.name))
+                        })
                         .filter(|t| {
                             fname.is_empty()
                                 || t.name.to_lowercase().contains(&fname)

@@ -3,7 +3,8 @@
 //! frames, saves the window as a PNG and quits.
 //! `WOWLUA_STUDIO_SCREENSHOT_RUN` lists commands to run first, separated
 //! by `;`: `open:<folder>`, `file:<file>`, `find:<query>`, `page:debug`, `theme:light`, `palette`,
-//! `about`, `new`, `adopt`, `stats`, `terminal`, `runtests`, `testtab:<tab>`.
+//! `about`, `new`, `adopt`, `stats`, `terminal`, `runtests`, `runcoverage`,
+//! `testtab:<tab>`, `coverage`, `gutter`.
 
 use std::{
     path::PathBuf,
@@ -40,8 +41,12 @@ impl Screenshot {
                 studio.tests_tab(tab);
                 continue;
             }
-            if step == "runtests" {
-                studio.run_tests();
+            if step == "runtests" || step == "runcoverage" {
+                studio.run_tests(step == "runcoverage");
+                continue;
+            }
+            if step == "gutter" {
+                studio.coverage_gutter();
                 continue;
             }
             if let Some(query) = step.strip_prefix("find:") {
@@ -59,6 +64,10 @@ impl Screenshot {
                 None if step == "new" => Some(Command::NewAddon),
                 None if step == "adopt" => Some(Command::AdoptAddon),
                 None if step == "stats" => Some(Command::FrameStats(true)),
+                None if step == "coverage" => Some(Command::ShowPanel(
+                    wowlua_studio_app::panels::Panel::Coverage,
+                    wowlua_studio_app::dock::Dock::Main,
+                )),
                 None if step == "terminal" => Some(Command::ShowPanel(
                     wowlua_studio_app::panels::Panel::Terminal,
                     wowlua_studio_app::dock::Dock::Bottom,

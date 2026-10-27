@@ -7,6 +7,7 @@
 //! characters, tabs and hints place the caret right.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use egui::{
@@ -61,6 +62,8 @@ pub enum Action {
     Fixes(Pos),
     /// Apply a quick fix.
     ApplyFix(Fix),
+    /// A lens of Studio's was clicked.
+    Lens(LensClick),
 }
 
 /// What the editor needs from Studio.
@@ -70,6 +73,45 @@ pub struct Cx<'a> {
     pub mac: bool,
     /// The active file's problems.
     pub diagnostics: &'a [Diag],
+    /// Studio's lenses over the active file's lines (its tests', S052).
+    pub lenses: &'a [Lens],
+    /// The active file's coverage, shown in the gutter.
+    pub coverage: Option<&'a crate::system::CoverageFile>,
+}
+
+/// A lens over a line: the language server's references, a note (a test's
+/// result), or a click Studio carries out.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Lens {
+    pub line: usize,
+    pub title: String,
+    pub act: LensAct,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum LensAct {
+    References(Pos),
+    Note(Tone),
+    Click(LensClick),
+}
+
+/// A note's colour.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tone {
+    Ok,
+    Error,
+    Muted,
+}
+
+/// What a lens's click asks of Studio.
+#[derive(Clone, Debug, PartialEq)]
+pub enum LensClick {
+    /// Run a test file's tests, or one test.
+    Run { file: PathBuf, test: Option<String> },
+    /// Show a test's failure on the tests page.
+    Failure { file: PathBuf, test: String },
+    /// Show the tests that call the function defined at `line` (from 1).
+    Callers { file: PathBuf, line: u32 },
 }
 
 /// A line as it is drawn: tabs to the next stop of four. With it each
@@ -865,7 +907,17 @@ fn code(
                 .collect()
         })
         .unwrap_or_default();
-    let mut lens_lines: Vec<usize> = lenses.iter().map(|l| l.0).collect();
+    // The server's lenses, then Studio's.
+    let lenses: Vec<Lens> = lenses
+        .into_iter()
+        .map(|(line, title, at)| Lens {
+            line,
+            title,
+            act: LensAct::References(at),
+        })
+        .chain(cx.lenses.iter().cloned())
+        .collect();
+    let mut lens_lines: Vec<usize> = lenses.iter().map(|l| l.line).collect();
     lens_lines.sort_unstable();
     lens_lines.dedup();
     let highlights: &[Vec<(usize, usize, Syntax)>] =
@@ -982,14 +1034,23 @@ fn code(
                     // The lens: how many places refer to the function.
                     let indent = text.chars().take_while(|c| c.is_whitespace()).count();
                     let mut x = origin.x + laid.x(indent);
-                    for (_, title, at) in lenses.iter().filter(|l| l.0 == line) {
+                    for lens in lenses.iter().filter(|l| l.line == line) {
+                        let color = match &lens.act {
+                            LensAct::Note(Tone::Ok) => p.success,
+                            LensAct::Note(Tone::Error) => p.error,
+                            _ => p.ink_muted,
+                        };
                         let r = ui.painter().text(
                             Pos2::new(x, y + LENS_H / 2.0),
                             Align2::LEFT_CENTER,
-                            title,
+                            &lens.title,
                             Face::Plex.at(11.0),
-                            p.ink_muted,
+                            color,
                         );
+                        x = r.right() + 12.0;
+                        if let LensAct::Note(_) = lens.act {
+                            continue;
+                        }
                         ui.painter().hline(
                             r.x_range(),
                             r.bottom() + 1.0,
@@ -997,13 +1058,16 @@ fn code(
                         );
                         let resp = ui.interact(
                             r.expand(2.0),
-                            id.with(("lens", line, title)),
+                            id.with(("lens", line, &lens.title)),
                             Sense::click(),
                         );
                         if resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
-                            actions.push(Action::References(*at));
+                            actions.push(match &lens.act {
+                                LensAct::References(at) => Action::References(*at),
+                                LensAct::Click(c) => Action::Lens(c.clone()),
+                                LensAct::Note(_) => continue,
+                            });
                         }
-                        x = r.right() + 12.0;
                     }
                     continue;
                 }
@@ -1289,6 +1353,31 @@ fn code(
             continue;
         };
         let cy = rect.top() + top - offset + LINE_H / 2.0;
+        // The coverage: run, not run, a branch one way only.
+        if let Some(cov) = cx.coverage
+            && let Some(&hits) = cov.lines.get(&(line as u32 + 1))
+        {
+            let n = line as u32 + 1;
+            let one_way = cov
+                .branches
+                .range((n, 0)..(n + 1, 0))
+                .any(|(_, [a, b])| (*a == 0) != (*b == 0));
+            let color = if hits == 0 {
+                p.error
+            } else if one_way {
+                p.warning
+            } else {
+                p.success
+            };
+            painter.rect_filled(
+                Rect::from_min_size(
+                    Pos2::new(gutter.left() + 3.0, cy - LINE_H / 2.0 + 1.0),
+                    Vec2::new(3.0, LINE_H - 2.0),
+                ),
+                CornerRadius::ZERO,
+                color,
+            );
+        }
         let color = if line == head_line {
             p.ink
         } else {
