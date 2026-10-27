@@ -34,8 +34,8 @@ palette.
 - The design system in egui: its tokens for dark and light, Martian Mono
   and IBM Plex Mono, the icons (16 × 16 strokes), buttons, selects,
   segmented controls, badges, tables, cards, callouts.
-- The title bar, the rail and the status bar; macOS's own window buttons,
-  menu bar and `cmd` (S008).
+- The title bar, the rail and the status bar; on macOS the traffic lights
+  in Studio's bar, the system menu bar and `cmd` (S008, S013).
 - Docking: left, main, bottom and right docks; panels as tabs, splits, and
   floating in windows of their own; a layout per workspace and a preset per
   page.
@@ -43,7 +43,7 @@ palette.
 
 **Exit:** every page of the rail opens its layout preset with placeholder
 panels; a panel is dragged to another dock, split and floated; the theme
-switches; frames stay within the budget M0 measured.
+switches; every frame's UI is built within the budget (S014).
 
 ## M2: Workspaces
 
@@ -159,8 +159,7 @@ change approved.
 
 Asked when their milestone starts; nothing here is decided yet.
 
-- Where launch configurations, layouts and recent workspaces are kept
-  (M1, M2, M6).
+- Where launch configurations are kept (M6).
 - The terminal: a full terminal emulator or a command runner (M3).
 - Git through the `git` program or a library (M11).
 - Installers and code signing per system (first release).
