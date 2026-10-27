@@ -378,8 +378,15 @@ fn run(
         flavor: Some(flavor.clone()),
         profile: None,
     };
+    // Only a scene that changed goes to the UI thread, which draws it: a
+    // still UI costs no drawing.
+    let mut last: Option<wowlua_engine::scene::Scene> = None;
     let hook: session::FrameHook = Box::new(move |vm| {
         let scene = wowlua_engine::scene::build(vm);
+        if last.as_ref() == Some(&scene) {
+            return;
+        }
+        last = Some(scene.clone());
         if let Ok(mut f) = frames.lock() {
             f.scene = Some(scene);
             f.count += 1;

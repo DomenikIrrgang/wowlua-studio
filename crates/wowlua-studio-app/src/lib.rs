@@ -143,6 +143,8 @@ pub struct Studio {
     queued_game: bool,
     /// Pick what draws at a point once the addon runs (`gamepick:x,y`).
     queued_pick: Option<(f64, f64)>,
+    /// The game's settings once the addon runs (`gamesize:WxH[@scale]`).
+    queued_size: Option<((u32, u32), Option<f32>)>,
     /// A tab of the tests page's results to show once it is open.
     queued_tab: Option<tests::Tab>,
     /// Show the coverage in the gutter once the tests page is there.
@@ -223,6 +225,7 @@ impl Studio {
             queued_run: None,
             queued_game: false,
             queued_pick: None,
+            queued_size: None,
             queued_tab: None,
             queued_gutter: false,
             menus_changed: false,
@@ -297,6 +300,12 @@ impl Studio {
     /// runs (the screenshot's `gamepick:x,y` step).
     pub fn game_pick(&mut self, x: f64, y: f64) {
         self.queued_pick = Some((x, y));
+    }
+
+    /// Sets the game's settings once the addon runs (the screenshot's
+    /// `gamesize:1280x720@0.8` step).
+    pub fn game_size(&mut self, size: (u32, u32), ui_scale: Option<f32>) {
+        self.queued_size = Some((size, ui_scale));
     }
 
     /// Runs every test once the workspace is open (the screenshot's
@@ -379,6 +388,11 @@ impl Studio {
                 && let Some((x, y)) = self.queued_pick.take()
             {
                 self.game.pick(&*self.host.system, x, y);
+            }
+            if self.game.running()
+                && let Some((size, ui_scale)) = self.queued_size.take()
+            {
+                self.game.set_screen(&*self.host.system, size, ui_scale);
             }
             if self.tests.files.is_some()
                 && let Some(coverage) = self.queued_run.take()

@@ -96,6 +96,46 @@ struct Row {
     children: bool,
 }
 
+/// An event told, as the events panel shows it (made once, when read).
+#[derive(Clone, Debug)]
+struct EventRow {
+    event: String,
+    args: String,
+    frames: String,
+    time: String,
+}
+
+impl EventRow {
+    fn of(e: &Json) -> EventRow {
+        let texts = |v: &Json| -> Vec<String> {
+            v.as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(str::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let frames = texts(&e["frames"]);
+        EventRow {
+            event: e["event"].as_str().unwrap_or("").to_owned(),
+            args: texts(&e["args"]).join(", "),
+            frames: match frames.len() {
+                0 => "—".to_owned(),
+                1 => frames[0].clone(),
+                n => format!("{} +{}", frames[0], n - 1),
+            },
+            time: if frames.is_empty() {
+                String::new()
+            } else {
+                e["ms"]
+                    .as_f64()
+                    .map_or(String::new(), |ms| format!("{ms:.2} ms"))
+            },
+        }
+    }
+}
+
 /// An input given: what, the details, and its answer.
 #[derive(Clone, Debug)]
 struct Given {
@@ -127,10 +167,12 @@ pub struct GameState {
     rows: Option<((u64, String, usize), Vec<Row>)>,
     pub selected: Option<usize>,
     inspected: Option<Json>,
+    /// The workspace's files the inspector named, as found (once each).
+    files: HashMap<String, Option<PathBuf>>,
     // The units.
     units: Vec<Json>,
     // The events and input.
-    events: VecDeque<Json>,
+    events: VecDeque<EventRow>,
     given: Vec<Given>,
     pub shots: Vec<PathBuf>,
     // The screen.
@@ -244,17 +286,21 @@ impl GameState {
             }
             (Asked::Units, Ok(Json::Array(list))) => self.units = list,
             (Asked::Events, Ok(Json::Array(list))) => {
-                for e in list {
+                for e in &list {
                     if self.events.len() == EVENTS_KEPT {
                         self.events.pop_front();
                     }
-                    self.events.push_back(e);
+                    self.events.push_back(EventRow::of(e));
                 }
             }
             (Asked::Input(i), r) => {
                 if let Some(g) = self.given.get_mut(i) {
                     g.result = Some(r.map(|_| ()));
                 }
+                self.polled.remove("tree");
+            }
+            (Asked::Target | Asked::Settings, Ok(_)) => {
+                self.polled.remove("tree");
             }
             (Asked::Shot(path), Ok(_)) => {
                 self.toast = Some((format!("saved {}", path.display()), now));
@@ -282,8 +328,9 @@ impl GameState {
 
     /// Asks again, every `every` seconds, what a shown panel shows.
     fn poll(&mut self, now: f64, key: &'static str, every: f64) -> bool {
-        let last = self.polled.get(key).copied().unwrap_or(f64::MIN);
-        if now - last < every || !self.running() {
+        // (never asked, or asked again: at once)
+        let due = self.polled.get(key).is_none_or(|last| now - last >= every);
+        if !due || !self.running() {
             return false;
         }
         self.polled.insert(key, now);
@@ -304,6 +351,16 @@ impl GameState {
         }
         let i = self.given.len() - 1;
         self.ask(system, Asked::Input(i), GameRequest::Input(input));
+    }
+
+    /// Sets the game's settings: the window's size and the UI scale.
+    pub fn set_screen(&mut self, system: &dyn System, size: (u32, u32), ui_scale: Option<f32>) {
+        self.size = size;
+        self.use_ui_scale = ui_scale.is_some();
+        if let Some(s) = ui_scale {
+            self.ui_scale = s;
+        }
+        self.apply_settings(system);
     }
 
     /// Picks what draws at a point of the screen for the inspector.
@@ -327,7 +384,10 @@ impl GameState {
             GameRequest::SetScreen {
                 width: f64::from(w),
                 height: f64::from(h),
-                ui_scale: self.use_ui_scale.then_some(f64::from(self.ui_scale)),
+                // (the slider's steps, as the game writes the CVar: 0.8)
+                ui_scale: self
+                    .use_ui_scale
+                    .then_some((f64::from(self.ui_scale) * 100.0).round() / 100.0),
             },
         );
     }
@@ -345,7 +405,7 @@ impl GameState {
             }
             self.rows = Some((key, out));
         }
-        &self.rows.as_ref().map_or(&[][..], |(_, r)| r.as_slice())[..]
+        self.rows.as_ref().map_or(&[][..], |(_, r)| r.as_slice())
     }
 }
 
@@ -404,8 +464,8 @@ pub fn screen(
     let p = palette(ui.ctx());
     let now = ui.input(|i| i.time);
     let mut action = None;
-    toolbar(ui, state, system, &p);
-    rule(ui, &p);
+    toolbar(ui, state, system, p);
+    rule(ui, p);
     if let Some((text, at)) = &state.toast {
         if now - at > 4.0 {
             state.toast = None;
@@ -508,7 +568,7 @@ pub fn screen(
                 egui::Color32::WHITE,
             );
             pointer(ui, state, system, &response, rect, scale);
-            outline(ui, state, rect, scale, &p);
+            outline(ui, state, rect, scale, p);
         });
     action
 }
@@ -829,38 +889,41 @@ pub fn frames(ui: &mut Ui, state: &mut GameState, system: &dyn System) {
     let p = palette(ui.ctx());
     let now = ui.input(|i| i.time);
     if !state.running() {
-        empty(
-            ui,
-            "No session: the frame tree is the running client's.",
-            &p,
-        );
+        empty(ui, "No session: the frame tree is the running client's.", p);
         return;
     }
-    if state.poll(now, "tree", 2.0) && !state.waiting(&Asked::Tree) {
+    // Read when shown, then again after input, a target, the game's
+    // settings, `hidden` or the refresh button: a large UI's whole tree
+    // read on a timer cost its frames (SuuUI's: 200 ms each).
+    if state.poll(now, "tree", f64::INFINITY) && !state.waiting(&Asked::Tree) {
         let hidden = state.hidden;
         state.ask(system, Asked::Tree, GameRequest::FrameTree { hidden });
     }
-    ui.ctx()
-        .request_repaint_after(std::time::Duration::from_secs(2));
     forms::padded(ui, 10, 8, |ui| {
         ui.horizontal(|ui| {
             forms::text_input(
                 ui,
                 &mut state.query,
-                (ui.available_width() - 80.0).max(60.0),
+                (ui.available_width() - 150.0).max(60.0),
                 "filter frames",
             );
             if forms::checkbox(ui, &mut state.hidden, "hidden", None) {
                 state.polled.remove("tree");
             }
+            if forms::text_button(ui, "refresh").clicked() {
+                state.polled.remove("tree");
+            }
         });
     });
-    rule(ui, &p);
+    rule(ui, p);
     let selected = state.selected;
     let mut toggled = None;
     let mut picked = None;
-    let rows = state.rows().to_vec();
+    state.rows();
+    // (taken while drawn, put back after: not copied each frame)
+    let (key, rows) = state.rows.take().unwrap_or_default();
     if rows.is_empty() {
+        state.rows = Some((key, rows));
         let text = if state.query.is_empty() {
             "Reading the frame tree…".to_owned()
         } else {
@@ -869,7 +932,7 @@ pub fn frames(ui: &mut Ui, state: &mut GameState, system: &dyn System) {
                 state.query.trim()
             )
         };
-        empty(ui, &text, &p);
+        empty(ui, &text, p);
         return;
     }
     let open = state.open.clone();
@@ -928,10 +991,11 @@ pub fn frames(ui: &mut Ui, state: &mut GameState, system: &dyn System) {
                 }
             }
         });
-    if let Some(id) = toggled {
-        if !state.open.remove(&id) {
-            state.open.insert(id);
-        }
+    state.rows = Some((key, rows));
+    if let Some(id) = toggled
+        && !state.open.remove(&id)
+    {
+        state.open.insert(id);
     }
     if let Some(id) = picked {
         state.select(system, id);
@@ -945,7 +1009,7 @@ pub fn units(ui: &mut Ui, state: &mut GameState, system: &dyn System) {
     let p = palette(ui.ctx());
     let now = ui.input(|i| i.time);
     if !state.running() {
-        empty(ui, "No session: the units are the running world's.", &p);
+        empty(ui, "No session: the units are the running world's.", p);
         return;
     }
     if state.poll(now, "units", 1.0) && !state.waiting(&Asked::Units) {
@@ -1036,18 +1100,19 @@ pub fn inspector(
         empty(
             ui,
             "Pick a frame on the screen (inspect), or in the frame tree.",
-            &p,
+            p,
         );
         return None;
     };
     if state.inspected.is_none() && !state.waiting(&Asked::Inspect(id)) {
         state.ask(system, Asked::Inspect(id), GameRequest::Inspect(id));
     }
-    let Some(info) = state.inspected.clone() else {
-        empty(ui, "Reading the frame…", &p);
+    // (taken while drawn, put back after: not copied each frame)
+    let Some(info) = state.inspected.take() else {
+        empty(ui, "Reading the frame…", p);
         return None;
     };
-    let num = |v: &Json| v.as_f64().map_or("—".to_owned(), |n| trim(n));
+    let num = |v: &Json| v.as_f64().map_or("—".to_owned(), trim);
     egui::ScrollArea::vertical()
         .id_salt("game-inspector")
         .auto_shrink(false)
@@ -1137,7 +1202,7 @@ pub fn inspector(
                     created.clone().unwrap_or_else(|| "the client's own".into()),
                 ));
                 forms::key_values(ui, &rows);
-                section(ui, "points", &p);
+                section(ui, "points", p);
                 for pt in info["points"].as_array().into_iter().flatten() {
                     let text = format!(
                         "{} → {} {} ({}, {})",
@@ -1147,9 +1212,9 @@ pub fn inspector(
                         num(&pt["x"]),
                         num(&pt["y"]),
                     );
-                    line(ui, &text, &p);
+                    line(ui, &text, p);
                 }
-                section(ui, "scripts", &p);
+                section(ui, "scripts", p);
                 for sc in info["scripts"].as_array().into_iter().flatten() {
                     let at = place_text(&sc["at"]).unwrap_or_default();
                     let hook = if sc["hook"].as_bool() == Some(true) {
@@ -1160,9 +1225,9 @@ pub fn inspector(
                     let r = line(
                         ui,
                         &format!("{}{hook}  {at}", sc["name"].as_str().unwrap_or("")),
-                        &p,
+                        p,
                     );
-                    if let Some(place) = place_of(&sc["at"], workspace, system)
+                    if let Some(place) = place_of(&sc["at"], workspace, system, &mut state.files)
                         && r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
                     {
                         action = Some(Action::Open(place.0, place.1));
@@ -1173,12 +1238,12 @@ pub fn inspector(
                     .map(|e| e.iter().filter_map(|v| v.as_str()).collect())
                     .unwrap_or_default();
                 if !events.is_empty() {
-                    section(ui, "events", &p);
+                    section(ui, "events", p);
                     for e in events {
-                        line(ui, e, &p);
+                        line(ui, e, p);
                     }
                 }
-                section(ui, "regions", &p);
+                section(ui, "regions", p);
                 for r in info["regions"].as_array().into_iter().flatten() {
                     let shows = r["atlas"]
                         .as_str()
@@ -1195,13 +1260,13 @@ pub fn inspector(
                             r["layer"].as_str().unwrap_or(""),
                             num(&r["sublevel"])
                         ),
-                        &p,
+                        p,
                     );
                 }
                 let children = info["children"].as_array().cloned().unwrap_or_default();
-                section(ui, &format!("children · {}", children.len()), &p);
+                section(ui, &format!("children · {}", children.len()), p);
                 for c in children.iter().take(50) {
-                    if line(ui, c["label"].as_str().unwrap_or("?"), &p)
+                    if line(ui, c["label"].as_str().unwrap_or("?"), p)
                         .on_hover_cursor(egui::CursorIcon::PointingHand)
                         .clicked()
                         && let Some(cid) = c["id"].as_u64()
@@ -1211,7 +1276,7 @@ pub fn inspector(
                 }
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
-                    let code = place_of(&info["created"], workspace, system);
+                    let code = place_of(&info["created"], workspace, system, &mut state.files);
                     if ui
                         .add_enabled_ui(code.is_some(), |ui| {
                             widgets::button(ui, ButtonKind::Secondary, "go to code", true, None)
@@ -1229,6 +1294,10 @@ pub fn inspector(
                 });
             });
         });
+    // (another frame picked meanwhile reads its own)
+    if state.selected == Some(id) && state.inspected.is_none() {
+        state.inspected = Some(info);
+    }
     action
 }
 
@@ -1240,18 +1309,28 @@ fn place_text(v: &Json) -> Option<String> {
 
 /// A place in the workspace's files, when it is one (a package's source,
 /// by its path from the package's root or absolute).
-fn place_of(v: &Json, workspace: &Workspace, system: &dyn System) -> Option<(PathBuf, usize)> {
+fn place_of(
+    v: &Json,
+    workspace: &Workspace,
+    system: &dyn System,
+    found: &mut HashMap<String, Option<PathBuf>>,
+) -> Option<(PathBuf, usize)> {
     let file = v["file"].as_str()?;
     let line = (v["line"].as_u64().unwrap_or(1) as usize).max(1);
-    let path = Path::new(file);
-    if path.is_absolute() {
-        return system.exists(path).then(|| (path.to_path_buf(), line));
-    }
-    std::iter::once(&workspace.root)
-        .chain(workspace.members.iter().map(|m| &m.dir))
-        .map(|root| root.join(path))
-        .find(|full| system.exists(full))
-        .map(|full| (full, line))
+    let full = found
+        .entry(file.to_owned())
+        .or_insert_with(|| {
+            let path = Path::new(file);
+            if path.is_absolute() {
+                return system.exists(path).then(|| path.to_path_buf());
+            }
+            std::iter::once(&workspace.root)
+                .chain(workspace.members.iter().map(|m| &m.dir))
+                .map(|root| root.join(path))
+                .find(|full| system.exists(full))
+        })
+        .clone()?;
+    Some((full, line))
 }
 
 fn section(ui: &mut Ui, title: &str, p: &Palette) {
@@ -1292,7 +1371,7 @@ pub fn events(ui: &mut Ui, state: &mut GameState, system: &dyn System) {
     let p = palette(ui.ctx());
     let now = ui.input(|i| i.time);
     if !state.running() {
-        empty(ui, "No session: the events are the running client's.", &p);
+        empty(ui, "No session: the events are the running client's.", p);
         return;
     }
     if state.poll(now, "events", 0.25) && !state.waiting(&Asked::Events) {
@@ -1315,34 +1394,15 @@ pub fn events(ui: &mut Ui, state: &mut GameState, system: &dyn System) {
         );
         x += width * w;
     }
-    let events: Vec<Json> = state.events.iter().cloned().collect();
+    let events = &state.events;
     egui::ScrollArea::vertical()
         .id_salt("game-events")
         .auto_shrink(false)
         .stick_to_bottom(true)
         .show_rows(ui, ROW_H, events.len(), |ui, range| {
-            for e in &events[range] {
+            for e in events.range(range) {
                 let (rect, _) = ui.allocate_exact_size(Vec2::new(width, ROW_H), Sense::hover());
-                let args: Vec<&str> = e["args"]
-                    .as_array()
-                    .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
-                    .unwrap_or_default();
-                let frames: Vec<&str> = e["frames"]
-                    .as_array()
-                    .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
-                    .unwrap_or_default();
-                let cells = [
-                    e["event"].as_str().unwrap_or("").to_owned(),
-                    args.join(", "),
-                    match frames.len() {
-                        0 => "—".to_owned(),
-                        1 => frames[0].to_owned(),
-                        n => format!("{} +{}", frames[0], n - 1),
-                    },
-                    e["ms"]
-                        .as_f64()
-                        .map_or(String::new(), |ms| format!("{ms:.2} ms")),
-                ];
+                let cells = [&e.event, &e.args, &e.frames, &e.time];
                 let mut x = rect.left() + 10.0;
                 for (i, (c, w)) in cells.iter().zip(widths).enumerate() {
                     let clip = Rect::from_min_size(
@@ -1370,11 +1430,11 @@ pub fn input(ui: &mut Ui, state: &mut GameState) {
             ui,
             "Input goes to the client as a user's: pick click, hover, drag, type or key on the \
              screen's toolbar, or run a slash command.",
-            &p,
+            p,
         );
         return;
     }
-    let given = state.given.clone();
+    let given = &state.given;
     egui::ScrollArea::vertical()
         .id_salt("game-input")
         .auto_shrink(false)
@@ -1444,7 +1504,7 @@ pub fn screenshots(ui: &mut Ui, state: &mut GameState, system: &dyn System) {
         );
         ui.add_space(6.0);
         for s in state.shots.iter().rev() {
-            line(ui, &s.display().to_string(), &p);
+            line(ui, &s.display().to_string(), p);
         }
     });
 }
@@ -1458,4 +1518,145 @@ fn empty(ui: &mut Ui, text: &str, p: &Palette) {
 fn rule(ui: &mut Ui, p: &Palette) {
     let (r, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), Sense::hover());
     ui.painter().rect_filled(r, CornerRadius::ZERO, p.line);
+}
+
+#[cfg(test)]
+mod unit {
+    use super::*;
+    use crate::system::NoSystem;
+    use serde_json::json;
+
+    #[test]
+    fn keys_are_named_as_bindings_name_them() {
+        let none = egui::Modifiers::NONE;
+        assert_eq!(wow_key(Key::Escape, none).as_deref(), Some("ESCAPE"));
+        assert_eq!(
+            wow_key(Key::A, egui::Modifiers::SHIFT).as_deref(),
+            Some("SHIFT-A")
+        );
+        let both = egui::Modifiers {
+            alt: true,
+            ctrl: true,
+            ..none
+        };
+        assert_eq!(wow_key(Key::Num1, both).as_deref(), Some("ALT-CTRL-1"));
+        assert_eq!(wow_key(Key::F5, none).as_deref(), Some("F5"));
+        assert_eq!(wow_key(Key::Comma, none), None);
+    }
+
+    fn tree() -> Json {
+        json!([
+            { "id": 1, "type": "Frame", "name": "UIParent", "shown": true, "children": [
+                { "id": 7, "type": "Frame", "name": "DemoBox", "shown": true, "text": null },
+                { "id": 9, "type": "Button", "shown": false, "children": [
+                    { "id": 10, "type": "FontString", "text": "Hello", "shown": true }
+                ] }
+            ] },
+            { "id": 2, "type": "Frame", "name": "WorldFrame", "shown": true }
+        ])
+    }
+
+    /// A session as the page sees it: started, the tree asked and read.
+    fn running() -> GameState {
+        let mut state = GameState::default();
+        let s = state.begin();
+        state.event(
+            s,
+            GameEvent::Started {
+                addon: "Demo".into(),
+                flavor: "camelot".into(),
+                installation: None,
+            },
+            0.0,
+        );
+        state
+    }
+
+    #[test]
+    fn the_tree_shows_open_nodes_and_every_match() {
+        let mut state = running();
+        state.ask(
+            &NoSystem,
+            Asked::Tree,
+            GameRequest::FrameTree { hidden: false },
+        );
+        state.event(
+            1,
+            GameEvent::Reply {
+                id: 1,
+                result: Ok(tree()),
+            },
+            0.0,
+        );
+        let names = |s: &mut GameState| -> Vec<(usize, String)> {
+            s.rows().iter().map(|r| (r.depth, r.name.clone())).collect()
+        };
+        assert_eq!(
+            names(&mut state),
+            [(0, "UIParent".to_owned()), (0, "WorldFrame".to_owned())]
+        );
+        state.open.insert(1);
+        assert_eq!(
+            names(&mut state),
+            [
+                (0, "UIParent".to_owned()),
+                (1, "DemoBox".to_owned()),
+                (1, "Button#9".to_owned()),
+                (0, "WorldFrame".to_owned())
+            ]
+        );
+        // A query: the matches, flat, by name, type or text.
+        state.query = "hello".into();
+        assert_eq!(names(&mut state), [(0, "FontString#10".to_owned())]);
+    }
+
+    #[test]
+    fn a_pick_selects_its_frame_and_the_end_clears_the_session() {
+        let mut state = running();
+        assert!(state.running());
+        state.pick(&NoSystem, 960.0, 540.0);
+        state.event(
+            1,
+            GameEvent::Reply {
+                id: 1,
+                result: Ok(json!({ "frame": 7, "region": 8 })),
+            },
+            0.0,
+        );
+        assert_eq!(state.selected, Some(7));
+        // A reply nobody asked for, or another session's, is not heard.
+        state.event(
+            1,
+            GameEvent::Reply {
+                id: 99,
+                result: Ok(json!({ "frame": 3 })),
+            },
+            0.0,
+        );
+        state.event(2, GameEvent::Ended { error: None }, 0.0);
+        assert_eq!(state.selected, Some(7));
+        assert!(state.running());
+        state.event(
+            1,
+            GameEvent::Ended {
+                error: Some("boom".into()),
+            },
+            0.0,
+        );
+        assert!(!state.running());
+        assert_eq!(state.ended, Some(Some("boom".into())));
+    }
+
+    #[test]
+    fn settings_are_sent_as_the_game_writes_them() {
+        let mut state = running();
+        state.size = (1280, 720);
+        state.use_ui_scale = true;
+        state.ui_scale = 0.8;
+        // (f32's 0.8 is 0.800000011920929: the CVar the game writes is 0.8)
+        let sent = (f64::from(state.ui_scale) * 100.0).round() / 100.0;
+        assert_eq!(sent, 0.8);
+        state.apply_settings(&NoSystem);
+        assert!(state.waiting(&Asked::Settings));
+    }
 }
