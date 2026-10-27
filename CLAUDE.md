@@ -72,8 +72,9 @@ rules, and Studio moves its pin to the release that has it.
 
 Before a commit: `cargo fmt --all -- --check`,
 `cargo clippy --workspace --all-targets -- -D warnings`,
-`cargo test --workspace`, and the frame budget optimized:
-`cargo test --release -p wowlua-studio-app --test frame_budget`.
+`cargo test --workspace`, and the frame budget optimized, one test at a
+time: `cargo test --release -p wowlua-studio-app --test frame_budget --
+--test-threads=1`.
 
 ## Versions
 
