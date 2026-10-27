@@ -16,6 +16,9 @@ pub struct Settings {
     pub theme: String,
     /// Opening a page switches to its layout (the panels board's rules).
     pub follow_presets: bool,
+    /// The status bar shows the redraws a second and the last frame's
+    /// time (S041).
+    pub frame_stats: bool,
 }
 
 impl Default for Settings {
@@ -23,6 +26,7 @@ impl Default for Settings {
         Settings {
             theme: Theme::Dark.name().to_owned(),
             follow_presets: true,
+            frame_stats: false,
         }
     }
 }

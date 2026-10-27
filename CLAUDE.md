@@ -32,18 +32,21 @@ roadmap until the canvas has it.
 ## Crates
 
 - `wowlua-studio-ui`: the design system in egui (theme, fonts, icons, the
-  [wl] mark, widgets). egui only.
+  [wl] mark and the wordmark, widgets, form controls). egui only.
 - `wowlua-studio-app`: the application (chrome, docking, commands, the
-  palette, pages). egui and serde only: the host gives it the platform,
-  wowlua's version and a file store. Both build for wasm (CI checks).
+  palette, pages, the start page, the explorer). egui and serde only: the
+  host gives it the platform, wowlua's version, a file store and the
+  system (`system::System`: the disk, Git, wowlua's library, new windows;
+  slow work comes back as events). Both build for wasm (CI checks).
 - `wowlua-studio`: the native host (eframe, the store in the system's
-  folder for application data, macOS's menu bar) and wowlua's crates.
+  folder for application data, `native.rs`'s system, macOS's menu bar) and
+  wowlua's crates.
 
 ## Seeing it
 
 `WOWLUA_STUDIO_SCREENSHOT=out.png` draws a few frames, saves the window as
-a PNG and quits; `WOWLUA_STUDIO_SCREENSHOT_RUN="page:debug;theme:light;palette"`
-runs commands first. `WOWLUA_STUDIO_DATA=<dir>` keeps settings and layouts
+a PNG and quits; `WOWLUA_STUDIO_SCREENSHOT_RUN="open:<folder>;page:debug;theme:light;palette"`
+runs commands first (`new` and `adopt` show the start page's forms). `WOWLUA_STUDIO_DATA=<dir>` keeps settings and layouts
 there instead of the user's folder.
 
 ## wowlua

@@ -4,10 +4,13 @@
 //! for the browser too (decision S002).
 
 mod fonts;
+pub mod forms;
 pub mod icons;
 pub mod mark;
+mod raster;
 mod theme;
 pub mod widgets;
+pub mod wordmark;
 
 pub use fonts::Face;
 pub use icons::Icon;

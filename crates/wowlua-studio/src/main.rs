@@ -1,10 +1,13 @@
 //! wowlua studio: the IDE for wowlua (spec/roadmap.md). The native host
 //! of the application (`wowlua-studio-app`): the window, the files in the
-//! system's folder for application data, macOS's menu bar.
+//! system's folder for application data, the system (`native`), macOS's
+//! menu bar. `wowlua-studio <folder>` opens the folder (S031: a new window
+//! is Studio started again with it).
 
 mod frame_stats;
 #[cfg(target_os = "macos")]
 mod menu_bar;
+mod native;
 mod screenshot;
 mod store;
 #[cfg(target_os = "macos")]
@@ -87,8 +90,13 @@ impl App {
             platform: PLATFORM,
             wowlua_version: wowlua_driver::COMPILER_VERSION.to_owned(),
             store: Box::new(store::FileStore::new()),
+            system: Box::new(native::NativeSystem::new(ctx)),
         };
         let mut studio = Studio::new(ctx, host);
+        if let Some(folder) = std::env::args_os().nth(1) {
+            let folder = std::path::PathBuf::from(folder);
+            studio.open(&std::path::absolute(&folder).unwrap_or(folder));
+        }
         let screenshot = Screenshot::from_env(&mut studio);
         App {
             #[cfg(target_os = "macos")]
@@ -107,11 +115,17 @@ impl eframe::App for App {
             for command in self.menu_bar.poll() {
                 self.studio.queue(command);
             }
+            if self.studio.take_menus_changed() {
+                self.menu_bar.rebuild(&self.studio.entries());
+            }
             traffic_lights::place(_frame);
         }
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        if let Some(cpu) = frame.info().cpu_usage {
+            self.studio.set_frame_time(cpu);
+        }
         let started = std::time::Instant::now();
         self.studio.ui(ui);
         if let Some(stats) = &mut self.stats {

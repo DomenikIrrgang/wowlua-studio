@@ -46,7 +46,7 @@ panels; a panel is dragged to another dock, split and floated; the theme
 switches; every frame's UI is built within the budget (S014).
 
 Until M2 opens workspaces, the shell shows with no folder open; M2 adds
-the start page the design shows then (no rail, no status bar).
+the start page the design shows then (no rail).
 
 Built 2026-10-27: the design system's tokens, fonts, icons, the [wl]
 mark, buttons, segmented controls, badges, key caps and icon buttons
@@ -64,12 +64,40 @@ hand: dragging and floating panels, and the window on Windows and Linux.
 
 ## M2: Workspaces
 
-Artboard: start.
+Artboards: start, open another folder.
 
-- Open a package or workspace folder (all its members), recent workspaces
-  (gone, incompatible), files changed outside Studio, a WoW installation
-  found or picked.
-- A new addon (`wowlua new`) and adopting one (`wowlua init`).
+- The start page while a window has no workspace (S024): open a folder,
+  a new addon, adopt one, recent workspaces (gone, can't be checked), this
+  computer (wowlua, the WoW installation, Blizzard's UI), what's new.
+- Open a package or workspace folder with all its members, read through
+  wowlua's driver; a package whose `wowlua` requirement excludes this
+  wowlua (E4300) opens with checks off. A folder with no `wowlua.json`
+  offers to adopt it (S032). The explorer lists the members and their
+  files; files changed outside Studio show at once.
+- One workspace per window, a process per window (S025, S031).
+- A new addon through `wowlua new`'s library with its check mode, Git and
+  starter world profile (S026, wowlua T476), and adopting one through
+  `wowlua init`'s, on a new branch with the `git` program (S027).
+- The WoW installation found as `wowlua` finds it, or picked and kept in
+  `~/.wowlua/config.json` (S028); Blizzard's UI per flavor the
+  installation has, from wowlua's cache (S029); what's new from wowlua's
+  changelog (S030).
+
+Built 2026-10-27: the start page with its three forms (open, new addon,
+adopt), the recent workspaces (gone: locate or remove; can't be checked:
+a warning), this computer (wowlua, the installation with its client
+folders, Blizzard's UI per flavor with a download) and what's new; the
+design system's fields, selects, check boxes, cards, callouts and terminal
+blocks; the wordmark; opening a folder from the file menu (`ctrl o`), by
+dropping it onto the window or as `wowlua-studio <folder>`; the explorer
+with the packages, their files and the design's file icons, read again
+when files change on disk (a changed `wowlua.json` reads the workspace
+again); the title bar's workspace and branch, the status bar's flavor and
+client, the window's title; the question when opening another folder, new
+windows (`ctrl shift n`) and closing the folder. Checked by hand on macOS
+with SuuUI's workspace (it opens with checks off: it requires wowlua
+^0.12). Not yet checked by hand: creating and adopting an addon from the
+forms, Windows and Linux.
 
 ## M3: Editor
 
@@ -181,7 +209,6 @@ Asked when their milestone starts; nothing here is decided yet.
 
 - Where launch configurations are kept (M6).
 - The terminal: a full terminal emulator or a command runner (M3).
-- Git through the `git` program or a library (M11).
 - Installers and code signing per system (first release).
 - The GitHub app Studio signs in with, and who registers it (M12).
 - Whether "sign in with Claude" is possible for a third-party app (M14).
@@ -191,7 +218,19 @@ Asked when their milestone starts; nothing here is decided yet.
 Where Studio was decided to differ from the canvas, or the canvas is
 missing a part; the canvas is updated to match.
 
-None open. Brought up to date on 2026-10-27: the panels board's presets
+- The start page's Blizzard's UI row: per flavor the installation has,
+  from wowlua's cache, with a download (S029).
+- The start page's installation row lists the installation's client
+  folders with their flavors; what's new is titled with the exact
+  version (S037).
+- The adopt form's folder has a `choose…` button (S039).
+- The new-addon form's preview: `wowlua new`'s real output line
+  (`Created addon package in pull-timer`), `--check strict`, and the CI
+  workflow at `.github/workflows/ci.yml` (S036).
+- A recent workspace that can't be checked opens with `open` until the
+  editor (M3) can open its `wowlua.json`.
+
+Brought up to date on 2026-10-27: the panels board's presets
 for every page (S017), the palette's prompt (S018), the menus (S019), the
 app icon and the title bar's mark (S020, S023), the status bar without the
 theme (S021), the start page without GitHub and Claude (S024), the
