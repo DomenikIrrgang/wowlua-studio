@@ -64,12 +64,24 @@ hand: dragging and floating panels, and the window on Windows and Linux.
 
 ## M2: Workspaces
 
-Artboard: start.
+Artboards: start, open another folder.
 
-- Open a package or workspace folder (all its members), recent workspaces
-  (gone, incompatible), files changed outside Studio, a WoW installation
-  found or picked.
-- A new addon (`wowlua new`) and adopting one (`wowlua init`).
+- The start page while a window has no workspace (S024): open a folder,
+  a new addon, adopt one, recent workspaces (gone, can't be checked), this
+  computer (wowlua, the WoW installation, Blizzard's UI), what's new.
+- Open a package or workspace folder with all its members, read through
+  wowlua's driver; a package whose `wowlua` requirement excludes this
+  wowlua (E4300) opens with checks off. A folder with no `wowlua.json`
+  offers to adopt it (S032). The explorer lists the members and their
+  files; files changed outside Studio show at once.
+- One workspace per window, a process per window (S025, S031).
+- A new addon through `wowlua new`'s library with its check mode, Git and
+  starter world profile (S026, wowlua T476), and adopting one through
+  `wowlua init`'s, on a new branch with the `git` program (S027).
+- The WoW installation found as `wowlua` finds it, or picked and kept in
+  `~/.wowlua/config.json` (S028); Blizzard's UI per flavor the
+  installation has, from wowlua's cache (S029); what's new from wowlua's
+  changelog (S030).
 
 ## M3: Editor
 
@@ -181,7 +193,6 @@ Asked when their milestone starts; nothing here is decided yet.
 
 - Where launch configurations are kept (M6).
 - The terminal: a full terminal emulator or a command runner (M3).
-- Git through the `git` program or a library (M11).
 - Installers and code signing per system (first release).
 - The GitHub app Studio signs in with, and who registers it (M12).
 - Whether "sign in with Claude" is possible for a third-party app (M14).
@@ -191,7 +202,10 @@ Asked when their milestone starts; nothing here is decided yet.
 Where Studio was decided to differ from the canvas, or the canvas is
 missing a part; the canvas is updated to match.
 
-None open. Brought up to date on 2026-10-27: the panels board's presets
+- The start page's Blizzard's UI row: per flavor the installation has,
+  from wowlua's cache, with a download (S029).
+
+Brought up to date on 2026-10-27: the panels board's presets
 for every page (S017), the palette's prompt (S018), the menus (S019), the
 app icon and the title bar's mark (S020, S023), the status bar without the
 theme (S021), the start page without GitHub and Claude (S024), the
