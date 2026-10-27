@@ -89,11 +89,14 @@ fn a_dot_typed_reaches_the_language_server_before_the_completion_it_asks() {
             repeat: false,
             modifiers: egui::Modifiers::NONE,
         };
-        let _ = ctx.run_ui(input(vec![press]), |ui| studio.ui(ui));
+        let mut output = ctx.run_ui(input(vec![press]), |ui| studio.ui(ui));
+        output.textures_delta.clear();
     }
-    let _ = ctx.run_ui(input(vec![egui::Event::Text(".".into())]), |ui| {
+    let mut output = ctx.run_ui(input(vec![egui::Event::Text(".".into())]), |ui| {
         studio.ui(ui)
     });
+    // No renderer takes the textures here.
+    output.textures_delta.clear();
     let sent = sent.0.borrow();
     let asked = sent
         .iter()
