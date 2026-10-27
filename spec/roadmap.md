@@ -101,18 +101,51 @@ forms, Windows and Linux.
 
 ## M3: Editor
 
-Artboards: editor, search.
+Artboards: editor, search, notifications.
 
 - A text buffer and editor view that draw only the visible lines; the
-  wowlua grammar's highlighting and the language server's semantic tokens.
+  highlighting of wowlua's lexer and the language server's semantic
+  tokens (S045).
 - The language server in Studio's process (`wowlua_lsp::embedded`):
   diagnostics, hover, completion, signature help, quick fixes, go to
   definition, references, rename, outline, folding, format on save.
-- Problems, output and a terminal; text search across the workspace;
-  JSON with schemas (`wowlua.json`, world profiles).
+  Semantic tokens, quick fixes and folding are new in wowlua's server
+  (S042).
+- Problems, output and a terminal emulator (S043); text search across the
+  workspace; JSON with schemas (`wowlua.json`, world profiles, S046).
+- Opening another folder in a window with unsaved edits asks to save them
+  first (the open-another-folder board).
+- Files changed outside Studio: open files reload, or the changed-on-disk
+  banner with compare, keep mine, take theirs (S049); a file deleted
+  outside closes with a notification to restore it (S048).
+- Notifications: toasts and the status bar's tray (the notifications
+  board, S047).
 - Background jobs in the status bar (the jobs board): the check is the
   first; the later milestones' builds, test runs, installs, publishes
   and recordings run as jobs too.
+- Inlay hints and a references lens over functions (S050).
+- Find and replace in the file: the find bar (S051).
+
+Built 2026-10-27: the editor (tabs and preview tabs, the path, undo and
+redo, the clipboard, words and lines, indentation, IME text, the caret's
+blink) drawing only the rows on screen, with wowlua's lexer and the
+server's semantic tokens, folding from the gutter, inlay hints and
+references lenses; the embedded server on its own thread, with
+diagnostics (squiggles, the problems panel with its scope, the status
+bar's counts), hover, completion, signature help, go to definition,
+references and rename in the search panel (a rename's changes checked
+first), the outline, quick fixes (`cmd .`), format on save; text search
+with replace; the output panel; a terminal emulator; JSON completion and
+hover from wowlua's schemas; files changed or deleted outside; the
+unsaved-edits question; notifications; background jobs (the check, told
+by the server's `wowlua/checking`). wowlua 0.13.2, pinned, adds the
+server's semantic tokens, folding, inlay hints, quick fixes, lenses, the
+checking notification and a function's overloads one per line. The frame budget holds with a 4000-line file
+open: 0.09 ms median, 0.25 ms at the 99th percentile; a line of megabytes
+is laid out only where it is seen. The find bar (S051): find and replace
+in the file, every match marked. The terminal selects as a terminal app
+does (a drag, words, lines) and copies and pastes. Not yet: checked by
+hand on macOS only.
 
 ## M4: Tests and coverage
 
@@ -208,7 +241,6 @@ change approved.
 Asked when their milestone starts; nothing here is decided yet.
 
 - Where launch configurations are kept (M6).
-- The terminal: a full terminal emulator or a command runner (M3).
 - Installers and code signing per system (first release).
 - The GitHub app Studio signs in with, and who registers it (M12).
 - Whether "sign in with Claude" is possible for a third-party app (M14).
@@ -224,6 +256,7 @@ missing a part; the canvas is updated to match.
   folders with their flavors; what's new is titled with the exact
   version (S037).
 - The adopt form's folder has a `choose…` button (S039).
+- The frame stats in the status bar (S041).
 - The new-addon form's preview: `wowlua new`'s real output line
   (`Created addon package in pull-timer`), `--check strict`, and the CI
   workflow at `.github/workflows/ci.yml` (S036).

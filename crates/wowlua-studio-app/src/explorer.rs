@@ -66,7 +66,13 @@ impl Explorer {
         self.rows = None;
     }
 
-    pub fn show(&mut self, ui: &mut Ui, workspace: &Workspace, system: &dyn System) {
+    /// Draws the tree; returns the file clicked, to open.
+    pub fn show(
+        &mut self,
+        ui: &mut Ui,
+        workspace: &Workspace,
+        system: &dyn System,
+    ) -> Option<PathBuf> {
         let p = palette(ui.ctx());
         let rows = match self.rows.take() {
             Some(rows) => rows,
@@ -112,9 +118,7 @@ impl Explorer {
             },
         );
         self.rows = Some(rows);
-        if let Some(i) = clicked {
-            self.click(i);
-        }
+        clicked.and_then(|i| self.click(i))
     }
 
     /// Draws a row; returns whether it was clicked.
@@ -234,8 +238,8 @@ impl Explorer {
         response.on_hover_cursor(CursorIcon::PointingHand).clicked()
     }
 
-    fn click(&mut self, i: usize) {
-        let Some(rows) = &self.rows else { return };
+    fn click(&mut self, i: usize) -> Option<PathBuf> {
+        let rows = self.rows.as_ref()?;
         match &rows[i] {
             Row::Package { dir: path, .. } | Row::Folder { path, .. } => {
                 let path = path.clone();
@@ -243,8 +247,12 @@ impl Explorer {
                     self.expanded.insert(path);
                 }
                 self.rows = None;
+                None
             }
-            Row::File { path, .. } => self.selected = Some(path.clone()),
+            Row::File { path, .. } => {
+                self.selected = Some(path.clone());
+                self.selected.clone()
+            }
         }
     }
 
@@ -312,7 +320,7 @@ impl Explorer {
 }
 
 /// A file's icon and its colour (the icons board's file types).
-fn file_icon(path: &Path, name: &str, p: &Palette) -> (Icon, Color32) {
+pub(crate) fn file_icon(path: &Path, name: &str, p: &Palette) -> (Icon, Color32) {
     let lower = name.to_lowercase();
     let ext = lower.rsplit_once('.').map_or("", |(_, e)| e);
     let in_profiles = path

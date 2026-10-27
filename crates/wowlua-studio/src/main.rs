@@ -5,11 +5,13 @@
 //! is Studio started again with it).
 
 mod frame_stats;
+mod lsp;
 #[cfg(target_os = "macos")]
 mod menu_bar;
 mod native;
 mod screenshot;
 mod store;
+mod terminal;
 #[cfg(target_os = "macos")]
 mod traffic_lights;
 

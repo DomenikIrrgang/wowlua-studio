@@ -14,8 +14,9 @@ use wowlua_driver::project::{LoadOptions, find_manifest, load_projects};
 use wowlua_driver::scaffold::{InitRequest, NewRequest};
 use wowlua_manifest::model::{CheckMode, PackageKind};
 use wowlua_studio_app::system::{
-    Adopt, AdoptPreview, ClientFolder, Entry, Event, Installation, Member, NewAddon, Opened,
-    PackageNames, System, UiState, Workspace,
+    Adopt, AdoptPreview, ClientFolder, Entry, Event, FileChange, Found, FoundIn, Highlight, Hit,
+    Installation, MOST_FOUND, Member, NewAddon, Opened, PackageNames, Search, Syntax, System,
+    UiState, Workspace,
 };
 
 /// Folders the explorer and the watcher leave out: build output and the
@@ -30,6 +31,9 @@ pub struct NativeSystem {
     events: Receiver<Event>,
     ctx: egui::Context,
     watcher: RefCell<Option<notify::RecommendedWatcher>>,
+    /// The language server's thread, once started.
+    lsp: RefCell<Option<Sender<crate::lsp::Input>>>,
+    terminals: crate::terminal::Terminals,
 }
 
 impl NativeSystem {
@@ -40,6 +44,8 @@ impl NativeSystem {
             events,
             ctx: ctx.clone(),
             watcher: RefCell::new(None),
+            lsp: RefCell::new(None),
+            terminals: crate::terminal::Terminals::default(),
         }
     }
 
@@ -105,6 +111,60 @@ impl System for NativeSystem {
         entries
     }
 
+    fn read_file(&self, path: &Path) -> Result<String, String> {
+        let bytes =
+            std::fs::read(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+        String::from_utf8(bytes).map_err(|_| format!("{} is not UTF-8 text", path.display()))
+    }
+
+    fn write_file(&self, path: &Path, text: &str) -> Result<(), String> {
+        // Written beside the file, then moved over it: a crash never leaves
+        // half a file.
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let temp = path.with_file_name(format!(".{name}.wowlua-studio"));
+        std::fs::write(&temp, text)
+            .and_then(|()| std::fs::rename(&temp, path))
+            .map_err(|e| {
+                let _ = std::fs::remove_file(&temp);
+                format!("cannot write {}: {e}", path.display())
+            })
+    }
+
+    fn highlight(&self, text: &str) -> Vec<Highlight> {
+        let mut out = highlight(text);
+        // The names, as the server's semantic tokens tell them (S042).
+        let names = semantic(text);
+        if !names.is_empty() {
+            out.retain(|h| !names.iter().any(|n| n.start < h.end && h.start < n.end));
+            out.extend(names);
+            out.sort_by_key(|h| h.start);
+        }
+        out
+    }
+
+    fn schema(&self, world: bool) -> Option<String> {
+        Some(if world {
+            wowlua_manifest::world::schema_json()
+        } else {
+            wowlua_manifest::schema_json()
+        })
+    }
+
+    fn folding(&self, text: &str) -> Vec<(usize, usize)> {
+        wowlua_lsp::editor::folding_ranges(text)
+            .iter()
+            .filter_map(|r| {
+                Some((
+                    r["startLine"].as_u64()? as usize,
+                    r["endLine"].as_u64()? as usize,
+                ))
+            })
+            .collect()
+    }
+
     fn open(&self, path: &Path) {
         let path = path.to_path_buf();
         self.spawn(move || Event::Opened(open_workspace(&path)));
@@ -122,9 +182,12 @@ impl System for NativeSystem {
             let paths: Vec<PathBuf> = event
                 .paths
                 .into_iter()
+                // Git's own files stay out, but `HEAD`: a checkout (S049).
                 .filter(|p| {
-                    !p.components()
-                        .any(|c| skipped(&c.as_os_str().to_string_lossy()))
+                    p.ends_with(".git/HEAD")
+                        || !p
+                            .components()
+                            .any(|c| skipped(&c.as_os_str().to_string_lossy()))
                 })
                 .collect();
             if !paths.is_empty() {
@@ -255,6 +318,89 @@ impl System for NativeSystem {
             .ok()?;
         let branch = String::from_utf8_lossy(&out.stdout).trim().to_owned();
         (out.status.success() && !branch.is_empty()).then_some(branch)
+    }
+
+    fn canonical(&self, path: &Path) -> PathBuf {
+        std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    }
+
+    fn lsp_send(&self, message: serde_json::Value) {
+        let mut lsp = self.lsp.borrow_mut();
+        let sender =
+            lsp.get_or_insert_with(|| crate::lsp::start(self.send.clone(), self.ctx.clone()));
+        if sender
+            .send(crate::lsp::Input::Message(message.clone()))
+            .is_err()
+        {
+            // The thread ended (`exit`): a new one.
+            let fresh = crate::lsp::start(self.send.clone(), self.ctx.clone());
+            let _ = fresh.send(crate::lsp::Input::Message(message));
+            *lsp = Some(fresh);
+        }
+    }
+
+    fn lsp_files(&self, changes: Vec<(PathBuf, FileChange)>) {
+        if let Some(sender) = self.lsp.borrow().as_ref() {
+            let _ = sender.send(crate::lsp::Input::Files(changes));
+        }
+    }
+
+    fn lsp_stop(&self) {
+        // Dropping the channel ends the thread.
+        self.lsp.borrow_mut().take();
+    }
+
+    fn terminal_open(&self, cwd: &Path, cols: u16, rows: u16) -> Result<u64, String> {
+        self.terminals.open(cwd, cols, rows, &self.ctx)
+    }
+
+    fn terminal_input(&self, id: u64, bytes: &[u8]) {
+        self.terminals.input(id, bytes);
+    }
+
+    fn terminal_resize(&self, id: u64, cols: u16, rows: u16) {
+        self.terminals.resize(id, cols, rows);
+    }
+
+    fn terminal_scroll(&self, id: u64, lines: i32) {
+        self.terminals.scroll(id, lines);
+    }
+
+    fn terminal_screen(&self, id: u64) -> Option<wowlua_studio_app::system::TermScreen> {
+        self.terminals.screen(id)
+    }
+
+    fn terminal_close(&self, id: u64) {
+        self.terminals.close(id);
+    }
+
+    fn terminal_select(&self, id: u64, select: wowlua_studio_app::system::TermSelect) {
+        self.terminals.select(id, select);
+    }
+
+    fn terminal_selection(&self, id: u64) -> Option<String> {
+        self.terminals.selection(id)
+    }
+
+    fn clipboard_text(&self) -> Option<String> {
+        arboard::Clipboard::new().ok()?.get_text().ok()
+    }
+
+    fn find_in(
+        &self,
+        text: &str,
+        search: &Search,
+        replace: Option<&str>,
+    ) -> Result<Vec<FoundIn>, String> {
+        find_in(text, search, replace)
+    }
+
+    fn search(&self, root: &Path, search: Search) {
+        let root = root.to_path_buf();
+        self.spawn(move || {
+            let found = search_files(&root, &search);
+            Event::Searched { search, found }
+        });
     }
 
     fn poll(&self) -> Vec<Event> {
@@ -652,6 +798,260 @@ fn count_sources(dir: &Path) -> usize {
     count
 }
 
+/// The colours of wowlua's lexer (S045): keywords, literals, comments and
+/// operators; a name after `function` is a function, after `@` a
+/// decorator. Types and contextual keywords come from the language
+/// server's semantic tokens.
+fn highlight(text: &str) -> Vec<Highlight> {
+    use wowlua_syntax::token::{TokenKind as K, TriviaKind};
+    let mut db = wowlua_span::SourceDb::new();
+    let file = db.add("highlight", String::new());
+    let lexed = wowlua_syntax::lexer::lex(text.as_bytes(), file);
+    let mut out = Vec::new();
+    for trivia in &lexed.trivia {
+        if trivia.kind != TriviaKind::Newline {
+            out.push(Highlight {
+                start: trivia.start as usize,
+                end: trivia.end as usize,
+                syntax: Syntax::Comment,
+            });
+        }
+    }
+    let mut previous = K::Eof;
+    for i in 0..lexed.tokens.len() {
+        let token = lexed.tokens.token(i);
+        let syntax = match token.kind {
+            K::Nil | K::True | K::False | K::Number => Some(Syntax::Number),
+            K::String | K::LongString | K::InterpStart | K::InterpText | K::InterpEnd => {
+                Some(Syntax::String)
+            }
+            K::Name if previous == K::Function => Some(Syntax::Function),
+            K::Name if previous == K::At => Some(Syntax::Decorator),
+            K::At => Some(Syntax::Decorator),
+            k if k.is_keyword() => Some(Syntax::Keyword),
+            K::Name
+            | K::Error
+            | K::Eof
+            | K::LParen
+            | K::RParen
+            | K::LBrace
+            | K::RBrace
+            | K::LBracket
+            | K::RBracket
+            | K::Comma
+            | K::Semi
+            | K::Dot
+            | K::Colon => None,
+            _ => Some(Syntax::Punct),
+        };
+        if let Some(syntax) = syntax {
+            out.push(Highlight {
+                start: token.start as usize,
+                end: token.end as usize,
+                syntax,
+            });
+        }
+        previous = token.kind;
+    }
+    out.sort_by_key(|h| h.start);
+    out
+}
+
+/// The server's semantic tokens as byte ranges with the design's colours:
+/// keywords, types (classes, enums, namespaces too), functions and
+/// methods, decorators. Parameters and fields keep the text's colour.
+fn semantic(text: &str) -> Vec<Highlight> {
+    let data = wowlua_lsp::editor::semantic_tokens(text);
+    let types = wowlua_lsp::editor::TOKEN_TYPES;
+    let mut starts = vec![0];
+    starts.extend(text.match_indices('\n').map(|(i, _)| i + 1));
+    let (mut line, mut col) = (0usize, 0usize);
+    let mut out = Vec::new();
+    for q in data.chunks(5) {
+        if q[0] > 0 {
+            col = 0;
+        }
+        line += q[0] as usize;
+        col += q[1] as usize;
+        let syntax = match types.get(q[3] as usize).copied() {
+            Some("keyword") => Syntax::Keyword,
+            Some("type" | "class" | "namespace") => Syntax::Type,
+            Some("function" | "method") => Syntax::Function,
+            Some("decorator") => Syntax::Decorator,
+            _ => continue,
+        };
+        let Some(&line_start) = starts.get(line) else {
+            break;
+        };
+        // UTF-16 columns to bytes.
+        let row = &text[line_start..];
+        let byte = |units: usize| {
+            let mut seen = 0;
+            for (b, c) in row.char_indices() {
+                if seen >= units {
+                    return b;
+                }
+                seen += c.len_utf16();
+            }
+            row.len()
+        };
+        let start = line_start + byte(col);
+        let end = line_start + byte(col + q[2] as usize);
+        out.push(Highlight { start, end, syntax });
+    }
+    out
+}
+
+/// How many matches a search keeps.
+const MOST_HITS: usize = 5000;
+
+/// The piece of `row` around the match `start..end` (bytes) that the
+/// search panel shows: a little before it, the line's rest up to a
+/// panel's width after; and the match in it, in characters.
+fn excerpt(row: &str, start: usize, end: usize) -> (String, usize, usize) {
+    const BEFORE: usize = 40;
+    const AFTER: usize = 200;
+    let from = row[..start]
+        .char_indices()
+        .rev()
+        .nth(BEFORE - 1)
+        .map_or(0, |(i, _)| i);
+    // A long match is cut too.
+    let end = row[start..]
+        .char_indices()
+        .nth(AFTER)
+        .map_or(end, |(i, _)| end.min(start + i));
+    let to = row[end..]
+        .char_indices()
+        .nth(AFTER)
+        .map_or(row.len(), |(i, _)| end + i);
+    let text = row[from..to].to_owned();
+    let first = row[from..start].chars().count();
+    let last = first + row[start..end].chars().count();
+    (text, first, last)
+}
+
+/// The text files under `root` that match, as Git sees the folder (its
+/// ignore files followed, hidden files left out).
+/// The search's regular expression: its text escaped when it is none, in
+/// word boundaries for a whole word.
+fn regex_of(search: &Search) -> Result<regex::Regex, String> {
+    let pattern = if search.regex {
+        search.query.clone()
+    } else {
+        regex::escape(&search.query)
+    };
+    let pattern = if search.word {
+        format!(r"\b(?:{pattern})\b")
+    } else {
+        pattern
+    };
+    regex::RegexBuilder::new(&pattern)
+        .case_insensitive(!search.case)
+        .build()
+        .map_err(|e| format!("not a regular expression: {e}"))
+}
+
+/// The find bar's matches in `text`, with their replacements.
+fn find_in(text: &str, search: &Search, replace: Option<&str>) -> Result<Vec<FoundIn>, String> {
+    let re = regex_of(search)?;
+    let mut out = Vec::new();
+    for caps in re.captures_iter(text).take(MOST_FOUND) {
+        let m = caps.get(0).expect("the whole match");
+        if m.start() == m.end() {
+            continue;
+        }
+        let replacement = replace.map(|r| {
+            if search.regex {
+                let mut expanded = String::new();
+                caps.expand(r, &mut expanded);
+                expanded
+            } else {
+                r.to_owned()
+            }
+        });
+        out.push(FoundIn {
+            start: m.start(),
+            end: m.end(),
+            replacement,
+        });
+    }
+    Ok(out)
+}
+
+fn search_files(root: &Path, search: &Search) -> Found {
+    let started = std::time::Instant::now();
+    let re = match regex_of(search) {
+        Ok(re) => re,
+        Err(error) => {
+            return Found {
+                error: Some(error),
+                ..Found::default()
+            };
+        }
+    };
+    let mut found = Found::default();
+    let mut hits_total = 0;
+    for entry in ignore::WalkBuilder::new(root).build().flatten() {
+        if !entry.file_type().is_some_and(|t| t.is_file()) {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(entry.path()) else {
+            continue;
+        };
+        // Binary files (a NUL early on) are passed over.
+        if bytes.iter().take(8000).any(|&b| b == 0) {
+            continue;
+        }
+        let Ok(text) = String::from_utf8(bytes) else {
+            continue;
+        };
+        found.searched += 1;
+        let mut hits = Vec::new();
+        for (line, row) in text.lines().enumerate() {
+            // UTF-16 units up to `byte`, counted on from the last match:
+            // once over the line however long it is.
+            let (mut byte, mut units) = (0, 0);
+            let mut units_to = |to: usize| {
+                units += row[byte..to].encode_utf16().count();
+                byte = to;
+                units
+            };
+            for m in re.find_iter(row) {
+                if m.start() == m.end() {
+                    continue;
+                }
+                let at = (units_to(m.start()), units_to(m.end()));
+                let (text, start, end) = excerpt(row, m.start(), m.end());
+                hits.push(Hit {
+                    line,
+                    at,
+                    text,
+                    start,
+                    end,
+                });
+                hits_total += 1;
+                if hits_total >= MOST_HITS {
+                    break;
+                }
+            }
+            if hits_total >= MOST_HITS {
+                found.cut = true;
+                break;
+            }
+        }
+        if !hits.is_empty() {
+            found.files.push((entry.path().to_path_buf(), hits));
+        }
+        if found.cut {
+            break;
+        }
+    }
+    found.files.sort_by(|a, b| a.0.cmp(&b.0));
+    found.millis = started.elapsed().as_millis() as u64;
+    found
+}
+
 /// The `### New` lines of a changelog section, as plain text.
 fn new_lines(section: &str) -> Vec<String> {
     let Some(start) = section.find("### New") else {
@@ -667,7 +1067,8 @@ fn new_lines(section: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::new_lines;
+    use super::{new_lines, search_files};
+    use wowlua_studio_app::system::Search;
 
     #[test]
     fn whats_new_is_the_new_section_as_text() {
@@ -676,5 +1077,126 @@ mod tests {
             new_lines(section),
             ["Test runner: wowlua test runs.", "Two."]
         );
+    }
+
+    #[test]
+    fn a_hover_s_type_is_coloured_as_the_editor_colours_it() {
+        use wowlua_studio_app::editor::{Hover, Pos};
+        let system = super::NativeSystem::new(&eframe::egui::Context::default());
+        let text = "```wowlua\nActionBar: ClassOf<ActionBar>\n```\n\nThe bar.";
+        let hover = Hover::new(Pos::new(0, 0), text.to_owned(), &system);
+        let types: Vec<&str> = hover
+            .code
+            .iter()
+            .filter(|h| h.syntax == wowlua_studio_app::system::Syntax::Type)
+            .map(|h| &text[h.start..h.end])
+            .collect();
+        assert_eq!(types, ["ClassOf", "ActionBar"]);
+        let text = "```wowlua\nstring?\n```";
+        let hover = Hover::new(Pos::new(0, 0), text.to_owned(), &system);
+        let coloured: Vec<&str> = hover.code.iter().map(|h| &text[h.start..h.end]).collect();
+        assert!(coloured.contains(&"string"), "{coloured:?}");
+    }
+
+    #[test]
+    fn wowlua_s_manifest_schema_completes_the_package_s_keys() {
+        use wowlua_studio_app::editor::json;
+        let schema: serde_json::Value =
+            serde_json::from_str(&wowlua_manifest::schema_json()).unwrap();
+        let text = "{\n  \"";
+        let place = json::place(text, text.len());
+        let keys: Vec<String> = json::suggestions(&schema, &place)
+            .into_iter()
+            .map(|s| s.label)
+            .collect();
+        assert!(keys.contains(&"package".to_owned()), "{keys:?}");
+        assert!(keys.contains(&"flavors".to_owned()), "{keys:?}");
+        let text = "{ \"package\": { \"";
+        let place = json::place(text, text.len());
+        let keys: Vec<String> = json::suggestions(&schema, &place)
+            .into_iter()
+            .map(|s| s.label)
+            .collect();
+        assert!(keys.contains(&"name".to_owned()), "{keys:?}");
+    }
+
+    #[test]
+    fn a_search_finds_words_and_leaves_ignored_files_out() {
+        let dir = std::env::temp_dir().join(format!("wowlua-studio-search-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(
+            dir.join("src/a.wowlua"),
+            "local stateOf = 1
+print(stateOfX, stateOf)
+",
+        )
+        .unwrap();
+        std::fs::write(dir.join(".ignore"), "dist/\n").unwrap();
+        std::fs::create_dir_all(dir.join("dist")).unwrap();
+        std::fs::write(
+            dir.join("dist/b.lua"),
+            "stateOf
+",
+        )
+        .unwrap();
+        let search = Search {
+            query: "stateof".into(),
+            word: true,
+            ..Search::default()
+        };
+        let found = search_files(&dir, &search);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(found.files.len(), 1, "{found:?}");
+        let hits = &found.files[0].1;
+        assert_eq!(hits.len(), 2);
+        assert_eq!((hits[1].line, hits[1].start, hits[1].end), (1, 16, 23));
+        assert_eq!(hits[1].at, (16, 23));
+    }
+
+    #[test]
+    fn the_find_bar_s_regular_expressions_replace_with_their_groups() {
+        let search = Search {
+            query: r"(\w+):Show\(\)".to_owned(),
+            regex: true,
+            case: true,
+            ..Search::default()
+        };
+        let found = super::find_in("frame:Show()\nbar:Show()", &search, Some("$1:Hide()")).unwrap();
+        let replaced: Vec<_> = found
+            .iter()
+            .map(|f| f.replacement.clone().unwrap())
+            .collect();
+        assert_eq!(replaced, ["frame:Hide()", "bar:Hide()"]);
+        assert_eq!((found[1].start, found[1].end), (13, 23));
+        let broken = Search {
+            query: "(".to_owned(),
+            regex: true,
+            ..Search::default()
+        };
+        assert!(super::find_in("x", &broken, None).is_err());
+    }
+
+    #[test]
+    fn a_match_on_a_long_line_keeps_a_piece_of_it() {
+        let dir = std::env::temp_dir().join(format!("wowlua-studio-long-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // A data file on one line: 2 MB, matches all along it.
+        let piece = "{\"name\":\"ä test\"},";
+        std::fs::write(dir.join("data.json"), piece.repeat(100_000)).unwrap();
+        let search = Search {
+            query: "test".to_owned(),
+            ..Search::default()
+        };
+        let found = search_files(&dir, &search);
+        std::fs::remove_dir_all(&dir).unwrap();
+        let hits = &found.files[0].1;
+        assert_eq!(hits.len(), super::MOST_HITS);
+        assert!(found.cut);
+        let units = piece.encode_utf16().count();
+        let h = &hits[1000];
+        assert_eq!(h.at, (1000 * units + 11, 1000 * units + 15));
+        assert!(h.text.chars().count() <= 40 + 4 + 200, "{}", h.text.len());
+        let shown: String = h.text.chars().skip(h.start).take(h.end - h.start).collect();
+        assert_eq!(shown, "test");
     }
 }

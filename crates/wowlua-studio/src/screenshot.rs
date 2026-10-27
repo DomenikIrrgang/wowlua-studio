@@ -2,8 +2,8 @@
 //! person at the screen: `WOWLUA_STUDIO_SCREENSHOT=out.png` draws a few
 //! frames, saves the window as a PNG and quits.
 //! `WOWLUA_STUDIO_SCREENSHOT_RUN` lists commands to run first, separated
-//! by `;`: `open:<folder>`, `page:debug`, `theme:light`, `palette`,
-//! `about`, `new`, `adopt`, `stats`.
+//! by `;`: `open:<folder>`, `file:<file>`, `find:<query>`, `page:debug`, `theme:light`, `palette`,
+//! `about`, `new`, `adopt`, `stats`, `terminal`.
 
 use std::{
     path::PathBuf,
@@ -17,6 +17,9 @@ use wowlua_studio_ui::Theme;
 pub struct Screenshot {
     path: PathBuf,
     frame: u32,
+    /// Seconds to wait first (`WOWLUA_STUDIO_SCREENSHOT_AFTER`): the
+    /// language server's check takes a moment.
+    after: f64,
     image: Option<mpsc::Receiver<Arc<egui::ColorImage>>>,
 }
 
@@ -27,6 +30,14 @@ impl Screenshot {
         for step in run.split(';').map(str::trim).filter(|s| !s.is_empty()) {
             if let Some(folder) = step.strip_prefix("open:") {
                 studio.open(std::path::Path::new(folder));
+                continue;
+            }
+            if let Some(file) = step.strip_prefix("file:") {
+                studio.edit(std::path::Path::new(file));
+                continue;
+            }
+            if let Some(query) = step.strip_prefix("find:") {
+                studio.find(query);
                 continue;
             }
             let command = match step.split_once(':') {
@@ -40,6 +51,10 @@ impl Screenshot {
                 None if step == "new" => Some(Command::NewAddon),
                 None if step == "adopt" => Some(Command::AdoptAddon),
                 None if step == "stats" => Some(Command::FrameStats(true)),
+                None if step == "terminal" => Some(Command::ShowPanel(
+                    wowlua_studio_app::panels::Panel::Terminal,
+                    wowlua_studio_app::dock::Dock::Bottom,
+                )),
                 _ => None,
             };
             match command {
@@ -50,6 +65,10 @@ impl Screenshot {
         Some(Screenshot {
             path,
             frame: 0,
+            after: std::env::var("WOWLUA_STUDIO_SCREENSHOT_AFTER")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.0),
             image: None,
         })
     }
@@ -58,7 +77,7 @@ impl Screenshot {
         self.frame += 1;
         ctx.request_repaint();
         // Opening a folder takes a moment: the shot waits for it.
-        if self.frame == 30 && self.image.is_none() {
+        if self.frame >= 30 && ctx.input(|i| i.time) >= self.after && self.image.is_none() {
             let (send, receive) = mpsc::channel();
             self.image = Some(receive);
             let callback = egui::ScreenshotCallback::new(move |image| {

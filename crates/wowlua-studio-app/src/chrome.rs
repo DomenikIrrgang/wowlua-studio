@@ -409,11 +409,15 @@ pub struct Session<'a> {
     pub warning: bool,
     /// At the right: the flavor, the client.
     pub right: &'a [String],
+    /// Room kept at the right end (the notifications' tray).
+    pub inset: f32,
 }
 
-/// The status bar: wowlua's version and the session. The theme is a
-/// setting, not here (S021).
-pub fn status_bar(ui: &mut Ui, rect: Rect, wowlua_version: &str, session: &Session<'_>) {
+/// The status bar: wowlua's version and the session, and at its right
+/// the flavor and the client. The theme is a setting, not here (S021).
+/// Returns where the session's text ends: the background jobs and the
+/// problems follow it.
+pub fn status_bar(ui: &mut Ui, rect: Rect, wowlua_version: &str, session: &Session<'_>) -> f32 {
     let p = palette(ui.ctx());
     let painter = ui.painter().clone();
     painter.rect_filled(rect, CornerRadius::ZERO, p.bg_200);
@@ -431,7 +435,7 @@ pub fn status_bar(ui: &mut Ui, rect: Rect, wowlua_version: &str, session: &Sessi
         p.success,
     );
     x = r.right() + 14.0;
-    painter.text(
+    let r = painter.text(
         Pos2::new(x, cy),
         Align2::LEFT_CENTER,
         session.text,
@@ -442,10 +446,11 @@ pub fn status_bar(ui: &mut Ui, rect: Rect, wowlua_version: &str, session: &Sessi
             p.ink_muted
         },
     );
+    let end = r.right();
     if rect.width() < NARROW {
-        return;
+        return end;
     }
-    let mut right = rect.right() - 10.0;
+    let mut right = rect.right() - 10.0 - session.inset;
     for item in session.right.iter().rev() {
         let r = painter.text(
             Pos2::new(right, cy),
@@ -456,6 +461,37 @@ pub fn status_bar(ui: &mut Ui, rect: Rect, wowlua_version: &str, session: &Sessi
         );
         right = r.left() - 14.0;
     }
+    end
+}
+
+/// The workspace's errors and warnings in the status bar, from `x`.
+pub fn problems(ui: &Ui, x: f32, cy: f32, errors: usize, warnings: usize) {
+    let p = palette(ui.ctx());
+    let painter = ui.painter();
+    let font = Face::Plex.at(11.5);
+    let plural =
+        |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
+    let e = painter.text(
+        Pos2::new(x, cy),
+        Align2::LEFT_CENTER,
+        plural(errors, "error", "errors"),
+        font.clone(),
+        if errors > 0 { p.error } else { p.ink_muted },
+    );
+    let dot = painter.text(
+        Pos2::new(e.right(), cy),
+        Align2::LEFT_CENTER,
+        " · ",
+        font.clone(),
+        p.ink_muted,
+    );
+    painter.text(
+        Pos2::new(dot.right(), cy),
+        Align2::LEFT_CENTER,
+        plural(warnings, "warning", "warnings"),
+        font,
+        if warnings > 0 { p.warning } else { p.ink_muted },
+    );
 }
 
 /// Resizing a window without the system's frame: 5 px edges, 10 px

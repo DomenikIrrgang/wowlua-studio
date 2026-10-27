@@ -27,6 +27,16 @@ pub enum Command {
     NewWindow,
     /// Closes the workspace: the window shows the start page.
     CloseFolder,
+    /// Writes the active file.
+    Save,
+    /// Closes the active file's tab.
+    CloseEditor,
+    /// Opens the find bar (S051); with its replace row.
+    Find,
+    Replace,
+    /// The find bar's next and previous match.
+    FindNext,
+    FindPrevious,
     /// The start page's new-addon form.
     NewAddon,
     /// The start page's adopt form.
@@ -145,12 +155,76 @@ pub fn entries(
     );
     if workspace {
         add(
+            Command::Save,
+            "file",
+            "save",
+            "the active file",
+            Some(Menu::File),
+            Some(KeyboardShortcut::new(Modifiers::COMMAND, Key::S)),
+        );
+        add(
+            Command::CloseEditor,
+            "file",
+            "close editor",
+            "the active file's tab",
+            Some(Menu::File),
+            Some(KeyboardShortcut::new(Modifiers::COMMAND, Key::W)),
+        );
+        add(
             Command::CloseFolder,
             "file",
             "close folder",
             "back to the start page",
             Some(Menu::File),
             None,
+        );
+    }
+    if workspace {
+        // The find bar (S051): cmd f, cmd alt f (ctrl h), cmd g (F3).
+        let mac = platform == Platform::MacOs;
+        add(
+            Command::Find,
+            "edit",
+            "find",
+            "in the active file",
+            Some(Menu::Edit),
+            Some(KeyboardShortcut::new(Modifiers::COMMAND, Key::F)),
+        );
+        add(
+            Command::Replace,
+            "edit",
+            "replace",
+            "in the active file",
+            Some(Menu::Edit),
+            Some(if mac {
+                KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::ALT, Key::F)
+            } else {
+                KeyboardShortcut::new(Modifiers::COMMAND, Key::H)
+            }),
+        );
+        add(
+            Command::FindNext,
+            "edit",
+            "find next",
+            "the next match",
+            Some(Menu::Edit),
+            Some(if mac {
+                KeyboardShortcut::new(Modifiers::COMMAND, Key::G)
+            } else {
+                KeyboardShortcut::new(Modifiers::NONE, Key::F3)
+            }),
+        );
+        add(
+            Command::FindPrevious,
+            "edit",
+            "find previous",
+            "the previous match",
+            Some(Menu::Edit),
+            Some(if mac {
+                KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, Key::G)
+            } else {
+                KeyboardShortcut::new(Modifiers::SHIFT, Key::F3)
+            }),
         );
     }
     add(

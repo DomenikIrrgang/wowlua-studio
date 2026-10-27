@@ -42,12 +42,36 @@ pub fn studio(ctx: &egui::Context) -> (Studio, Memory) {
     (studio, memory)
 }
 
+/// Studio as [`studio`] makes it, and what it sends the language server.
+#[allow(dead_code)]
+pub fn studio_recording(ctx: &egui::Context) -> (Studio, Sent) {
+    let sent = Sent::default();
+    let studio = Studio::new(
+        ctx,
+        Host {
+            platform: Platform::Linux,
+            wowlua_version: "0.13.0".to_owned(),
+            store: Box::new(Memory::default()),
+            system: Box::new(Fake {
+                sent: sent.clone(),
+                ..Fake::default()
+            }),
+        },
+    );
+    (studio, sent)
+}
+
+/// The messages sent to the language server, in order.
+#[derive(Clone, Default)]
+pub struct Sent(pub Rc<RefCell<Vec<serde_json::Value>>>);
+
 /// A system whose folders open at once as a workspace of three packages,
 /// each folder holding a few files; a folder named `plain` has no
 /// `wowlua.json`.
 #[derive(Default)]
 pub struct Fake {
     events: RefCell<Vec<system::Event>>,
+    sent: Sent,
 }
 
 impl System for Fake {
@@ -112,6 +136,83 @@ impl System for Fake {
                 cannot_check: None,
             })));
     }
+    fn read_file(&self, path: &Path) -> Result<String, String> {
+        if path.ends_with("big.wowlua") {
+            // A large file: 4000 lines of code.
+            let mut text = String::new();
+            for i in 0..1000 {
+                text.push_str(&format!(
+                    "local function f{i}(entry: ThreatEntry): string?\n    local s = entry.status -- a comment {i}\n    return s == 2 and \"warning\" or nil\nend\n"
+                ));
+            }
+            return Ok(text);
+        }
+        if path.ends_with("long.json") {
+            // A data file on one line: 2 MB.
+            return Ok(format!(
+                "[{}0]",
+                "{\"name\":\"test\",\"id\":12},".repeat(80_000)
+            ));
+        }
+        Ok(format!("-- {}\nlocal x = 1\n", path.display()))
+    }
+    fn write_file(&self, _: &Path, _: &str) -> Result<(), String> {
+        Ok(())
+    }
+    fn highlight(&self, _: &str) -> Vec<system::Highlight> {
+        Vec::new()
+    }
+    fn folding(&self, _: &str) -> Vec<(usize, usize)> {
+        Vec::new()
+    }
+    fn schema(&self, _: bool) -> Option<String> {
+        None
+    }
+    fn canonical(&self, path: &Path) -> PathBuf {
+        path.to_path_buf()
+    }
+    fn lsp_send(&self, message: serde_json::Value) {
+        // A hover answers at once: a long one, to scroll.
+        if message["method"] == "textDocument/hover" {
+            let value = format!(
+                "```wowlua\nx: number\n```\n\n{}",
+                "A line of the doc.\n\n".repeat(60)
+            );
+            self.events
+                .borrow_mut()
+                .push(system::Event::Lsp(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": message["id"],
+                    "result": { "contents": { "kind": "markdown", "value": value } },
+                })));
+        }
+        // Every name's definition is the file's first line.
+        if message["method"] == "textDocument/definition" {
+            let uri = message["params"]["textDocument"]["uri"].clone();
+            let at = serde_json::json!({ "line": 0, "character": 0 });
+            self.events
+                .borrow_mut()
+                .push(system::Event::Lsp(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": message["id"],
+                    "result": [{ "uri": uri, "range": { "start": at, "end": at } }],
+                })));
+        }
+        self.sent.0.borrow_mut().push(message);
+    }
+    fn lsp_files(&self, _: Vec<(PathBuf, system::FileChange)>) {}
+    fn lsp_stop(&self) {}
+    fn search(&self, _: &Path, _: system::Search) {}
+    fn terminal_open(&self, _: &Path, _: u16, _: u16) -> Result<u64, String> {
+        Err("none".into())
+    }
+    fn terminal_input(&self, _: u64, _: &[u8]) {}
+    fn terminal_resize(&self, _: u64, _: u16, _: u16) {}
+    fn terminal_scroll(&self, _: u64, _: i32) {}
+    fn terminal_screen(&self, _: u64) -> Option<system::TermScreen> {
+        None
+    }
+    fn terminal_close(&self, _: u64) {}
     fn poll(&self) -> Vec<system::Event> {
         std::mem::take(&mut *self.events.borrow_mut())
     }

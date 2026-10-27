@@ -135,6 +135,192 @@ pub enum Event {
     Adopted(Result<(PathBuf, Vec<String>), String>),
     /// Files changed under the watched workspace.
     FilesChanged(Vec<PathBuf>),
+    /// A message of the language server (JSON-RPC, as an editor reads it).
+    Lsp(serde_json::Value),
+    /// A text search finished.
+    Searched {
+        search: Search,
+        found: Found,
+    },
+}
+
+/// How a file changed on disk, for the language server.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileChange {
+    Created,
+    Changed,
+    Deleted,
+}
+
+/// A text search across the workspace (the search board's text tab).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Search {
+    pub query: String,
+    pub case: bool,
+    pub word: bool,
+    pub regex: bool,
+}
+
+/// How many matches the find bar counts and marks.
+pub const MOST_FOUND: usize = 10_000;
+
+/// A match of the find bar: its bytes, and what replaces it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FoundIn {
+    pub start: usize,
+    pub end: usize,
+    pub replacement: Option<String>,
+}
+
+/// The matches of a search that is no regular expression: its case or
+/// not (ASCII letters), a whole word or not.
+pub fn find_literal(text: &str, search: &Search) -> Vec<(usize, usize)> {
+    let query = search.query.as_str();
+    let mut out = Vec::new();
+    if query.is_empty() {
+        return out;
+    }
+    let word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+    let mut at = 0;
+    while at + query.len() <= text.len() {
+        let here = &text[at..];
+        let found = if search.case {
+            here.find(query)
+        } else {
+            here.char_indices().map(|(i, _)| i).find(|&i| {
+                here.get(i..i + query.len())
+                    .is_some_and(|s| s.eq_ignore_ascii_case(query))
+            })
+        };
+        let Some(i) = found else {
+            break;
+        };
+        let (start, end) = (at + i, at + i + query.len());
+        let whole = !word(text[..start].chars().next_back()) && !word(text[end..].chars().next());
+        if !search.word || whole {
+            out.push((start, end));
+            at = end;
+        } else {
+            at = start + text[start..].chars().next().map_or(1, char::len_utf8);
+        }
+    }
+    out
+}
+
+/// A match: its line (from 0), where it is in the line in UTF-16 units
+/// (as the language server counts), and the piece of the line around it
+/// that is shown, the match its characters `start..end`. A line can be
+/// megabytes long (a data file on one line): only the piece is kept.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Hit {
+    pub line: usize,
+    pub at: (usize, usize),
+    pub text: String,
+    pub start: usize,
+    pub end: usize,
+}
+
+/// What a search found.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Found {
+    pub files: Vec<(PathBuf, Vec<Hit>)>,
+    pub searched: usize,
+    pub millis: u64,
+    /// The query is no regular expression, or nothing could be read.
+    pub error: Option<String>,
+    /// More matches than are kept.
+    pub cut: bool,
+}
+
+/// A colour of a terminal's cell: the terminal's own, one of the sixteen
+/// ANSI colours, one of the 256, or a colour of its own.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TermColor {
+    #[default]
+    Default,
+    Ansi(u8),
+    Indexed(u8),
+    Rgb([u8; 3]),
+}
+
+/// A cell of a terminal's screen.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct TermCell {
+    pub c: char,
+    pub fg: TermColor,
+    pub bg: TermColor,
+    pub bold: bool,
+    pub italic: bool,
+    pub underline: bool,
+    pub inverse: bool,
+    pub dim: bool,
+    /// The second half of a wide character: nothing to draw.
+    pub spacer: bool,
+    /// In the selection.
+    pub selected: bool,
+}
+
+/// What a selection in a terminal takes: characters (a drag), words (a
+/// double click), lines (a triple click).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TermSelectKind {
+    Chars,
+    Words,
+    Lines,
+}
+
+/// A step of selecting in a terminal, at a row and column of its screen;
+/// `right` is the cell's right half.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TermSelect {
+    Start {
+        row: usize,
+        col: usize,
+        right: bool,
+        kind: TermSelectKind,
+    },
+    Extend {
+        row: usize,
+        col: usize,
+        right: bool,
+    },
+    Clear,
+}
+
+/// What a terminal shows now (S043).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TermScreen {
+    pub rows: Vec<Vec<TermCell>>,
+    /// Row and column; `None` when hidden or scrolled away.
+    pub cursor: Option<(usize, usize)>,
+    /// The arrows send application sequences (`ESC O A`).
+    pub app_cursor: bool,
+    pub bracketed_paste: bool,
+    /// Lines scrolled back from the bottom.
+    pub scrolled: usize,
+    /// The shell ended.
+    pub exited: bool,
+}
+
+/// A colour of the highlighting: the design system's syntax tokens.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Syntax {
+    Keyword,
+    Type,
+    String,
+    Number,
+    Decorator,
+    Function,
+    Comment,
+    Punct,
+}
+
+/// A highlighted stretch of a file's text, in bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Highlight {
+    pub start: usize,
+    pub end: usize,
+    pub syntax: Syntax,
 }
 
 /// A file or folder in the explorer.
@@ -158,6 +344,17 @@ pub trait System {
     /// The folder's files and folders, sorted; hidden ones and build output
     /// left out.
     fn list(&self, dir: &Path) -> Vec<Entry>;
+    fn read_file(&self, path: &Path) -> Result<String, String>;
+    fn write_file(&self, path: &Path, text: &str) -> Result<(), String>;
+    /// The highlighting of a wowlua or Lua file's text: wowlua's lexer,
+    /// and over its names the server's semantic tokens (S045).
+    fn highlight(&self, text: &str) -> Vec<Highlight>;
+    /// The lines a wowlua or Lua file's text folds: first and last, the
+    /// last staying in sight.
+    fn folding(&self, text: &str) -> Vec<(usize, usize)>;
+    /// The JSON schema wowlua makes of `wowlua.json` (`world`: of a world
+    /// profile), as text (S046).
+    fn schema(&self, world: bool) -> Option<String>;
     /// Opens the workspace around `path` (→ [`Event::Opened`]).
     fn open(&self, path: &Path);
     /// Watches the workspace's files (→ [`Event::FilesChanged`]); `None`
@@ -184,6 +381,61 @@ pub trait System {
     fn whats_new(&self) -> Vec<String>;
     /// The Git branch checked out in `dir`.
     fn branch(&self, dir: &Path) -> Option<String>;
+    /// `path` as the language server names it: absolute, links resolved.
+    fn canonical(&self, path: &Path) -> PathBuf;
+    /// A message for wowlua's language server, as an editor sends it; the
+    /// first starts the server. Its messages come back as [`Event::Lsp`].
+    fn lsp_send(&self, message: serde_json::Value);
+    /// Files changed on disk, for the server's checks.
+    fn lsp_files(&self, changes: Vec<(PathBuf, FileChange)>);
+    /// Stops the server (the workspace closed).
+    fn lsp_stop(&self);
+    /// Searches the files under `root` (→ [`Event::Searched`]): ignored
+    /// and hidden files left out, as Git leaves them.
+    fn search(&self, root: &Path, search: Search);
+    /// The matches of `search` in `text` (the find bar), as byte ranges,
+    /// the first [`MOST_FOUND`]; with `replace`, each one's replacement
+    /// (a regular expression's `$1` … its groups). Without regular
+    /// expressions here: the desktop's system has them.
+    fn find_in(
+        &self,
+        text: &str,
+        search: &Search,
+        replace: Option<&str>,
+    ) -> Result<Vec<FoundIn>, String> {
+        if search.regex {
+            return Err("regular expressions are found by the desktop app".to_owned());
+        }
+        Ok(find_literal(text, search)
+            .into_iter()
+            .take(MOST_FOUND)
+            .map(|(start, end)| FoundIn {
+                start,
+                end,
+                replacement: replace.map(str::to_owned),
+            })
+            .collect())
+    }
+    /// Starts the user's shell in a terminal of `cols` × `rows` in `cwd`
+    /// (S043); returns its id. The browser has none.
+    fn terminal_open(&self, cwd: &Path, cols: u16, rows: u16) -> Result<u64, String>;
+    /// Keys and text typed into the terminal, as bytes.
+    fn terminal_input(&self, id: u64, bytes: &[u8]);
+    fn terminal_resize(&self, id: u64, cols: u16, rows: u16);
+    /// Scrolls the terminal back (positive) or forward, in lines.
+    fn terminal_scroll(&self, id: u64, lines: i32);
+    fn terminal_screen(&self, id: u64) -> Option<TermScreen>;
+    fn terminal_close(&self, id: u64);
+    /// Selects in the terminal: starts, extends or clears its selection.
+    fn terminal_select(&self, _id: u64, _select: TermSelect) {}
+    /// The terminal's selected text.
+    fn terminal_selection(&self, _id: u64) -> Option<String> {
+        None
+    }
+    /// The system clipboard's text (`ctrl shift v` in the terminal).
+    fn clipboard_text(&self) -> Option<String> {
+        None
+    }
     /// Work finished since the last call.
     fn poll(&self) -> Vec<Event>;
 }
@@ -207,6 +459,21 @@ impl System for NoSystem {
     }
     fn list(&self, _: &Path) -> Vec<Entry> {
         Vec::new()
+    }
+    fn read_file(&self, path: &Path) -> Result<String, String> {
+        Err(format!("{} cannot be read here", path.display()))
+    }
+    fn write_file(&self, path: &Path, _: &str) -> Result<(), String> {
+        Err(format!("{} cannot be written here", path.display()))
+    }
+    fn highlight(&self, _: &str) -> Vec<Highlight> {
+        Vec::new()
+    }
+    fn folding(&self, _: &str) -> Vec<(usize, usize)> {
+        Vec::new()
+    }
+    fn schema(&self, _: bool) -> Option<String> {
+        None
     }
     fn open(&self, _: &Path) {}
     fn watch(&self, _: Option<&Path>) {}
@@ -235,6 +502,23 @@ impl System for NoSystem {
     fn branch(&self, _: &Path) -> Option<String> {
         None
     }
+    fn canonical(&self, path: &Path) -> PathBuf {
+        path.to_path_buf()
+    }
+    fn lsp_send(&self, _: serde_json::Value) {}
+    fn lsp_files(&self, _: Vec<(PathBuf, FileChange)>) {}
+    fn lsp_stop(&self) {}
+    fn search(&self, _: &Path, _: Search) {}
+    fn terminal_open(&self, _: &Path, _: u16, _: u16) -> Result<u64, String> {
+        Err("this system has no terminal".into())
+    }
+    fn terminal_input(&self, _: u64, _: &[u8]) {}
+    fn terminal_resize(&self, _: u64, _: u16, _: u16) {}
+    fn terminal_scroll(&self, _: u64, _: i32) {}
+    fn terminal_screen(&self, _: u64) -> Option<TermScreen> {
+        None
+    }
+    fn terminal_close(&self, _: u64) {}
     fn poll(&self) -> Vec<Event> {
         Vec::new()
     }
