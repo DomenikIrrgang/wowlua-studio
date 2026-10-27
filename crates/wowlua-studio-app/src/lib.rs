@@ -7,7 +7,9 @@
 pub mod chrome;
 pub mod commands;
 pub mod dock;
+pub mod editor;
 pub mod explorer;
+pub mod notify;
 pub mod pages;
 pub mod palette;
 pub mod panels;
@@ -20,13 +22,15 @@ use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
 use egui::{Context, Pos2, Rect, Ui, UiBuilder, Vec2, ViewportCommand};
-use wowlua_studio_ui::forms::{self, CalloutKind};
+use wowlua_studio_ui::forms;
 use wowlua_studio_ui::widgets::{self, ButtonKind};
 use wowlua_studio_ui::{Face, Theme, mark, palette as colors};
 
 use commands::{Command, Entry};
 use dock::{DockState, Layout, Target};
+use editor::{DiskChange, Editors};
 use explorer::Explorer;
+use notify::{Act, Kind, Notification, Notifications};
 use pages::Page;
 use palette::PaletteState;
 use panels::Panel;
@@ -82,10 +86,21 @@ pub struct Studio {
     about: bool,
     /// A folder to open while this window has a workspace (S025).
     ask: Option<Ask>,
-    /// A note over the window: what just happened.
-    notice: Option<(CalloutKind, String)>,
+    /// The open files.
+    editors: Editors,
+    /// Notifications: toasts and the tray (S047).
+    notes: Notifications,
+    /// Waits for an answer about unsaved edits.
+    pending: Option<Pending>,
+    /// Closing the window was answered: it closes.
+    quitting: bool,
+    /// When Git's `HEAD` changed: files changing with it changed by a
+    /// checkout (S049).
+    head_changed: Option<f64>,
     /// Commands from outside the frame (macOS's menu bar).
     queued: Vec<Command>,
+    /// Files to open in the editor at the next frame.
+    queued_files: Vec<PathBuf>,
     /// The commands changed: the menu bar is made again.
     menus_changed: bool,
     /// When the layouts or settings changed and are not saved yet.
@@ -98,6 +113,15 @@ pub struct Studio {
     /// The last frame's time, building and drawing it, as the host
     /// measured it.
     frame_cpu: Option<f32>,
+}
+
+/// What waits for unsaved edits to be saved or dropped.
+#[derive(Clone, Debug, PartialEq)]
+enum Pending {
+    CloseTab(usize),
+    CloseFolder,
+    OpenHere(PathBuf),
+    Quit,
 }
 
 /// Opening a folder in a window that has a workspace: here, or in a new
@@ -130,8 +154,13 @@ impl Studio {
             palette: PaletteState::default(),
             about: false,
             ask: None,
-            notice: None,
+            editors: Editors::default(),
+            notes: Notifications::default(),
+            pending: None,
+            quitting: false,
+            head_changed: None,
             queued: Vec::new(),
+            queued_files: Vec::new(),
             menus_changed: false,
             unsaved_since: None,
             focused: true,
@@ -171,6 +200,12 @@ impl Studio {
         self.queued.push(command);
     }
 
+    /// Opens a file in the editor at the next frame, once a workspace is
+    /// open.
+    pub fn edit(&mut self, path: &Path) {
+        self.queued_files.push(path.to_path_buf());
+    }
+
     /// Opens the workspace around `path` in this window.
     pub fn open(&mut self, path: &Path) {
         self.start.opening = Some(path.to_path_buf());
@@ -192,9 +227,24 @@ impl Studio {
         }
         self.focused = focused;
 
+        // Closing the window with unsaved edits asks first.
+        if ctx.input(|i| i.viewport().close_requested())
+            && !self.quitting
+            && self.editors.any_dirty()
+        {
+            ctx.send_viewport_cmd(ViewportCommand::CancelClose);
+            self.pending = Some(Pending::Quit);
+        }
+
+        if self.workspace.is_some() {
+            for path in std::mem::take(&mut self.queued_files) {
+                self.open_file(&path, &ctx);
+            }
+        }
+
         let entries = self.entries();
         let mut commands = std::mem::take(&mut self.queued);
-        if !self.palette.open && self.ask.is_none() {
+        if !self.palette.open && self.ask.is_none() && self.pending.is_none() {
             ctx.input_mut(|i| {
                 for e in &entries {
                     if let Some(key) = &e.key
@@ -241,8 +291,10 @@ impl Studio {
             },
             warning: checks_off.is_some(),
             right: &right,
+            inset: self.notes.tray_width(),
         };
         chrome::status_bar(ui, status, &self.host.wowlua_version, &session);
+        self.notes.tray_button(ui, status);
 
         let area_top = title.bottom();
         if self.workspace.is_some() {
@@ -263,10 +315,9 @@ impl Studio {
             );
             self.start_page(ui, area, &ctx);
         }
-        self.notice(
-            ui,
-            Rect::from_min_max(egui::pos2(full.left(), area_top), full.max),
-        );
+        if let Some(act) = self.notes.show(ui, status) {
+            self.act(act, &ctx);
+        }
 
         if let Some(c) = palette::show(ui, &mut self.palette, &entries, self.host.platform) {
             commands.push(c);
@@ -276,6 +327,9 @@ impl Studio {
         }
         if self.ask.is_some() {
             self.ask_dialog(&ctx);
+        }
+        if self.pending.is_some() {
+            self.unsaved_dialog(&ctx);
         }
         if self.host.platform != Platform::MacOs && self.host.platform != Platform::Web {
             chrome::resize_edges(ui, full);
@@ -296,14 +350,93 @@ impl Studio {
         let key = workspace.root.to_string_lossy().into_owned();
         let layout = layout_for(&mut self.layouts, &key, self.layout_page);
         let explorer = &mut self.explorer;
+        let editors = &mut self.editors;
         let system = &*self.host.system;
+        let mac = self.host.platform == Platform::MacOs;
+        let mut opened = None;
+        let mut actions = Vec::new();
         let mut content = |ui: &mut Ui, panel: Panel| match panel {
-            Panel::Explorer => explorer.show(ui, workspace, system),
+            Panel::Explorer => {
+                if let Some(path) = explorer.show(ui, workspace, system) {
+                    opened = Some(path);
+                }
+            }
+            Panel::Editor => {
+                let cx = editor::view::Cx {
+                    system,
+                    workspace,
+                    mac,
+                };
+                actions.extend(editor::view::show(ui, editors, &cx));
+            }
             _ => dock::placeholder(ui, panel),
         };
         let changed = dock::show(ui, area, layout, &mut self.dock, &mut content);
         if changed {
             self.touch(ctx);
+        }
+        if let Some(path) = opened {
+            self.open_file(&path, ctx);
+        }
+        for action in actions {
+            match action {
+                editor::view::Action::Save(i) => self.save_tab(i, ctx),
+                editor::view::Action::Close(i) => self.close_tab(i),
+            }
+        }
+    }
+
+    /// Opens a file in the editor, showing the editor's panel.
+    fn open_file(&mut self, path: &Path, ctx: &Context) {
+        match self.editors.open(path, &*self.host.system) {
+            Ok(()) => {
+                let key = self.layout_key();
+                let layout = layout_for(&mut self.layouts, &key, self.layout_page);
+                if !layout.contains(Panel::Editor) {
+                    layout.reveal(Panel::Editor, dock::Dock::Main);
+                    self.touch(ctx);
+                }
+            }
+            Err(error) => self.notify(
+                Notification::new(Kind::Error, "The file did not open", error),
+                ctx,
+            ),
+        }
+    }
+
+    fn save_tab(&mut self, i: usize, ctx: &Context) {
+        if let Err(error) = self.editors.save(i, &*self.host.system) {
+            self.notify(
+                Notification::new(Kind::Error, "The file was not saved", error),
+                ctx,
+            );
+        }
+    }
+
+    fn close_tab(&mut self, i: usize) {
+        if self.editors.tabs.get(i).is_some_and(|t| t.doc.is_dirty()) {
+            self.pending = Some(Pending::CloseTab(i));
+        } else {
+            self.editors.close(i);
+        }
+    }
+
+    fn notify(&mut self, n: Notification, ctx: &Context) {
+        let now = ctx.input(|i| i.time);
+        self.notes.push(n, now);
+    }
+
+    /// A notification's button.
+    fn act(&mut self, act: Act, ctx: &Context) {
+        match act {
+            Act::Restore { path, text } => match self.host.system.write_file(&path, &text) {
+                Ok(()) => self.open_file(&path, ctx),
+                Err(error) => self.notify(
+                    Notification::new(Kind::Error, "The file was not restored", error),
+                    ctx,
+                ),
+            },
+            Act::Open(path) => self.open_file(&path, ctx),
         }
     }
 
@@ -361,10 +494,14 @@ impl Studio {
                     self.start.opening = None;
                     if self.workspace.is_some() {
                         let folder = recents::tilde(&path, self.home.as_deref());
-                        self.notice = Some((
-                            CalloutKind::Error,
-                            format!("{folder} did not open. {message}"),
-                        ));
+                        self.notify(
+                            Notification::new(
+                                Kind::Error,
+                                format!("{folder} did not open"),
+                                message,
+                            ),
+                            ctx,
+                        );
                     } else {
                         self.start.panel = start::Panel::Open;
                         self.start.failed = Some((path, message));
@@ -380,7 +517,14 @@ impl Studio {
                 }
                 Event::Adopted(Ok((dir, lines))) => {
                     self.start.adopt = start::AdoptForm::default();
-                    self.notice = Some((CalloutKind::Ok, lines.join("\n")));
+                    let name = dir
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    self.notify(
+                        Notification::new(Kind::Ok, format!("{name} adopted"), lines.join("\n")),
+                        ctx,
+                    );
                     self.open(&dir);
                 }
                 Event::Adopted(Err(error)) => {
@@ -389,6 +533,7 @@ impl Studio {
                 }
                 Event::FilesChanged(paths) => {
                     self.explorer.changed(&paths);
+                    self.files_changed(&paths, ctx);
                     // A changed manifest can change the members: the
                     // workspace is read again.
                     let manifest = paths
@@ -404,6 +549,39 @@ impl Studio {
         }
     }
 
+    /// Files changed outside Studio: open ones reload, clash or close
+    /// (S048, S049).
+    fn files_changed(&mut self, paths: &[PathBuf], ctx: &Context) {
+        let now = ctx.input(|i| i.time);
+        if paths.iter().any(|p| p.ends_with(".git/HEAD")) {
+            self.head_changed = Some(now);
+            if let Some(w) = &self.workspace {
+                self.branch = self.host.system.branch(&w.root);
+            }
+        }
+        let checkout = self.head_changed.is_some_and(|t| now - t < 3.0);
+        for change in self
+            .editors
+            .disk_changed(paths, checkout, &*self.host.system)
+        {
+            if let DiskChange::Deleted { path, text } = change {
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                self.notify(
+                    Notification::new(
+                        Kind::Warning,
+                        format!("{name} was deleted"),
+                        "Deleted outside wowlua studio, so its tab was closed. Restore writes your last version back and opens it.",
+                    )
+                    .act("restore", Act::Restore { path, text }),
+                    ctx,
+                );
+            }
+        }
+    }
+
     /// A workspace opened in this window, or read again.
     fn opened(&mut self, workspace: Workspace) {
         self.start.opening = None;
@@ -414,6 +592,7 @@ impl Studio {
             .is_some_and(|w| w.root == workspace.root);
         if !again {
             self.explorer = Explorer::new(&workspace);
+            self.editors = Editors::default();
             self.host.system.watch(Some(&workspace.root));
             self.page = Page::Files;
             self.layout_page = Page::Files;
@@ -431,6 +610,7 @@ impl Studio {
         if self.workspace.take().is_some() {
             self.host.system.watch(None);
             self.explorer = Explorer::default();
+            self.editors = Editors::default();
             self.branch = None;
             self.menus_changed = true;
             self.reload_recents();
@@ -585,7 +765,21 @@ impl Studio {
             }
             Command::OpenFolder => self.pick_and_open(),
             Command::NewWindow => self.host.system.open_window(None),
-            Command::CloseFolder => self.close_workspace(),
+            Command::CloseFolder => {
+                if self.editors.any_dirty() {
+                    self.pending = Some(Pending::CloseFolder);
+                } else {
+                    self.close_workspace();
+                }
+            }
+            Command::Save => {
+                let i = self.editors.active;
+                self.save_tab(i, ctx);
+            }
+            Command::CloseEditor => {
+                let i = self.editors.active;
+                self.close_tab(i);
+            }
             Command::NewAddon => {
                 if self.workspace.is_none() {
                     self.start.panel = start::Panel::New;
@@ -608,36 +802,6 @@ impl Studio {
             .as_ref()
             .map(|w| w.root.to_string_lossy().into_owned())
             .unwrap_or_default()
-    }
-
-    /// The note over the window's top, until it is dismissed.
-    fn notice(&mut self, ui: &mut Ui, area: Rect) {
-        let Some((kind, text)) = &self.notice else {
-            return;
-        };
-        let width = 560.0f32.min(area.width() - 32.0);
-        let rect = Rect::from_min_size(
-            Pos2::new(area.center().x - width / 2.0, area.top() + 16.0),
-            Vec2::new(width, 0.0),
-        );
-        let mut dismissed = false;
-        egui::Area::new(egui::Id::unique("wowlua-studio-notice"))
-            .order(egui::Order::Foreground)
-            .fixed_pos(rect.min)
-            .show(ui.ctx(), |ui| {
-                ui.set_width(width);
-                let p = colors(ui.ctx());
-                forms::callout(ui, *kind, |ui| {
-                    ui.spacing_mut().item_spacing.y = 4.0;
-                    for line in text.lines() {
-                        forms::paragraph(ui, line, 12.0, 18.0, p.ink);
-                    }
-                    dismissed = forms::text_button(ui, "dismiss").clicked();
-                });
-            });
-        if dismissed {
-            self.notice = None;
-        }
     }
 
     /// Opening another folder (the design's open-another-folder board).
@@ -703,14 +867,125 @@ impl Studio {
                         .path
                         .file_name()
                         .map_or_else(|| folder.clone(), |n| n.to_string_lossy().into_owned());
-                    self.notice =
-                        Some((CalloutKind::Ok, format!("{opened} opens in a new window.")));
+                    self.notify(
+                        Notification::new(
+                            Kind::Note,
+                            format!("{opened} opened in a new window"),
+                            "",
+                        ),
+                        ctx,
+                    );
+                } else if self.editors.any_dirty() {
+                    self.pending = Some(Pending::OpenHere(ask.path));
                 } else {
                     self.open(&ask.path);
                 }
             }
             Some(false) => self.ask = None,
             None => {}
+        }
+    }
+
+    /// Unsaved edits before closing a tab, the folder or the window, or
+    /// opening another folder here: save, don't save, cancel.
+    fn unsaved_dialog(&mut self, ctx: &Context) {
+        let Some(pending) = self.pending.clone() else {
+            return;
+        };
+        let tabs: Vec<usize> = match pending {
+            Pending::CloseTab(i) => vec![i],
+            _ => (0..self.editors.tabs.len())
+                .filter(|&i| self.editors.tabs[i].doc.is_dirty())
+                .collect(),
+        };
+        let names: Vec<String> = tabs
+            .iter()
+            .filter_map(|&i| self.editors.tabs.get(i))
+            .map(|t| {
+                t.doc
+                    .path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            })
+            .collect();
+        let p = colors(ctx);
+        let mut decided = None;
+        let modal = egui::Modal::new(egui::Id::unique("wowlua-studio-unsaved")).show(ctx, |ui| {
+            ui.set_width(480.0);
+            ui.spacing_mut().item_spacing.y = 14.0;
+            let (font, spacing) = widgets::label_font(12.0);
+            let title = widgets::galley(ui, "unsaved edits", font, p.ink, spacing);
+            let (r, _) = ui.allocate_exact_size(title.size(), egui::Sense::hover());
+            ui.painter().galley(r.min, title, p.ink);
+            let what = match pending {
+                Pending::CloseTab(_) => "Closing it",
+                Pending::CloseFolder => "Closing the folder",
+                Pending::OpenHere(_) => "Opening another folder here",
+                Pending::Quit => "Closing the window",
+            };
+            let text = if names.len() == 1 {
+                format!(
+                    "{} has unsaved edits. {what} drops them unless you save.",
+                    names[0]
+                )
+            } else {
+                format!(
+                    "{} files have unsaved edits: {}. {what} drops them unless you save.",
+                    names.len(),
+                    names.join(", ")
+                )
+            };
+            forms::paragraph(ui, &text, 13.0, 21.0, p.ink);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                if widgets::button(ui, ButtonKind::Primary, "save", true, None).clicked() {
+                    decided = Some(true);
+                }
+                if widgets::button(ui, ButtonKind::Ghost, "don't save", true, None).clicked() {
+                    decided = Some(false);
+                }
+                if widgets::button(ui, ButtonKind::Ghost, "cancel", true, None).clicked() {
+                    self.pending = None;
+                }
+            });
+        });
+        if modal.should_close() {
+            self.pending = None;
+        }
+        let Some(save) = decided else {
+            return;
+        };
+        self.pending = None;
+        if save {
+            for &i in &tabs {
+                match self.editors.save(i, &*self.host.system) {
+                    // The disk changed: its banner asks first (S049).
+                    Ok(false) => {
+                        self.editors.active = i;
+                        return;
+                    }
+                    Ok(true) => {}
+                    Err(error) => {
+                        self.notify(
+                            Notification::new(Kind::Error, "The file was not saved", error),
+                            ctx,
+                        );
+                        return;
+                    }
+                }
+            }
+        }
+        match pending {
+            Pending::CloseTab(i) => self.editors.close(i),
+            Pending::CloseFolder => self.close_workspace(),
+            Pending::OpenHere(path) => {
+                self.editors = Editors::default();
+                self.open(&path);
+            }
+            Pending::Quit => {
+                self.quitting = true;
+                ctx.send_viewport_cmd(ViewportCommand::Close);
+            }
         }
     }
 

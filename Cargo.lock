@@ -5462,8 +5462,10 @@ dependencies = [
  "wowlua-driver",
  "wowlua-flavors",
  "wowlua-manifest",
+ "wowlua-span",
  "wowlua-studio-app",
  "wowlua-studio-ui",
+ "wowlua-syntax",
  "wowlua-test",
 ]
 

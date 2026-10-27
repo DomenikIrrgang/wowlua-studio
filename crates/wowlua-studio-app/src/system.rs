@@ -137,6 +137,27 @@ pub enum Event {
     FilesChanged(Vec<PathBuf>),
 }
 
+/// A colour of the highlighting: the design system's syntax tokens.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Syntax {
+    Keyword,
+    Type,
+    String,
+    Number,
+    Decorator,
+    Function,
+    Comment,
+    Punct,
+}
+
+/// A highlighted stretch of a file's text, in bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Highlight {
+    pub start: usize,
+    pub end: usize,
+    pub syntax: Syntax,
+}
+
 /// A file or folder in the explorer.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Entry {
@@ -158,6 +179,11 @@ pub trait System {
     /// The folder's files and folders, sorted; hidden ones and build output
     /// left out.
     fn list(&self, dir: &Path) -> Vec<Entry>;
+    fn read_file(&self, path: &Path) -> Result<String, String>;
+    fn write_file(&self, path: &Path, text: &str) -> Result<(), String>;
+    /// The highlighting of a wowlua or Lua file's text, from wowlua's
+    /// lexer (S045).
+    fn highlight(&self, text: &str) -> Vec<Highlight>;
     /// Opens the workspace around `path` (→ [`Event::Opened`]).
     fn open(&self, path: &Path);
     /// Watches the workspace's files (→ [`Event::FilesChanged`]); `None`
@@ -206,6 +232,15 @@ impl System for NoSystem {
         None
     }
     fn list(&self, _: &Path) -> Vec<Entry> {
+        Vec::new()
+    }
+    fn read_file(&self, path: &Path) -> Result<String, String> {
+        Err(format!("{} cannot be read here", path.display()))
+    }
+    fn write_file(&self, path: &Path, _: &str) -> Result<(), String> {
+        Err(format!("{} cannot be written here", path.display()))
+    }
+    fn highlight(&self, _: &str) -> Vec<Highlight> {
         Vec::new()
     }
     fn open(&self, _: &Path) {}

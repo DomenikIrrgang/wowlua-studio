@@ -409,6 +409,8 @@ pub struct Session<'a> {
     pub warning: bool,
     /// At the right: the flavor, the client.
     pub right: &'a [String],
+    /// Room kept at the right end (the notifications' tray).
+    pub inset: f32,
 }
 
 /// The status bar: wowlua's version and the session. The theme is a
@@ -445,7 +447,7 @@ pub fn status_bar(ui: &mut Ui, rect: Rect, wowlua_version: &str, session: &Sessi
     if rect.width() < NARROW {
         return;
     }
-    let mut right = rect.right() - 10.0;
+    let mut right = rect.right() - 10.0 - session.inset;
     for item in session.right.iter().rev() {
         let r = painter.text(
             Pos2::new(right, cy),

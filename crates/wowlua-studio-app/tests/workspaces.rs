@@ -53,6 +53,13 @@ fn an_opened_folder_is_the_windows_workspace_and_a_recent_one() {
     assert!(recents.contains("/p/suuui"), "{recents}");
     assert!(recents.contains("foreverlfg"), "{recents}");
 
+    // A file opens in the editor and can be closed.
+    studio.edit(Path::new("/p/suuui/src/main.wowlua"));
+    frame(&ctx, &mut studio);
+    frame(&ctx, &mut studio);
+    studio.queue(Command::CloseEditor);
+    frame(&ctx, &mut studio);
+
     studio.queue(Command::CloseFolder);
     frame(&ctx, &mut studio);
     frame(&ctx, &mut studio);

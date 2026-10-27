@@ -27,6 +27,10 @@ pub enum Command {
     NewWindow,
     /// Closes the workspace: the window shows the start page.
     CloseFolder,
+    /// Writes the active file.
+    Save,
+    /// Closes the active file's tab.
+    CloseEditor,
     /// The start page's new-addon form.
     NewAddon,
     /// The start page's adopt form.
@@ -144,6 +148,22 @@ pub fn entries(
         )),
     );
     if workspace {
+        add(
+            Command::Save,
+            "file",
+            "save",
+            "the active file",
+            Some(Menu::File),
+            Some(KeyboardShortcut::new(Modifiers::COMMAND, Key::S)),
+        );
+        add(
+            Command::CloseEditor,
+            "file",
+            "close editor",
+            "the active file's tab",
+            Some(Menu::File),
+            Some(KeyboardShortcut::new(Modifiers::COMMAND, Key::W)),
+        );
         add(
             Command::CloseFolder,
             "file",

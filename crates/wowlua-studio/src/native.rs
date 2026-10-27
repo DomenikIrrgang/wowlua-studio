@@ -14,8 +14,8 @@ use wowlua_driver::project::{LoadOptions, find_manifest, load_projects};
 use wowlua_driver::scaffold::{InitRequest, NewRequest};
 use wowlua_manifest::model::{CheckMode, PackageKind};
 use wowlua_studio_app::system::{
-    Adopt, AdoptPreview, ClientFolder, Entry, Event, Installation, Member, NewAddon, Opened,
-    PackageNames, System, UiState, Workspace,
+    Adopt, AdoptPreview, ClientFolder, Entry, Event, Highlight, Installation, Member, NewAddon,
+    Opened, PackageNames, Syntax, System, UiState, Workspace,
 };
 
 /// Folders the explorer and the watcher leave out: build output and the
@@ -105,6 +105,32 @@ impl System for NativeSystem {
         entries
     }
 
+    fn read_file(&self, path: &Path) -> Result<String, String> {
+        let bytes =
+            std::fs::read(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+        String::from_utf8(bytes).map_err(|_| format!("{} is not UTF-8 text", path.display()))
+    }
+
+    fn write_file(&self, path: &Path, text: &str) -> Result<(), String> {
+        // Written beside the file, then moved over it: a crash never leaves
+        // half a file.
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let temp = path.with_file_name(format!(".{name}.wowlua-studio"));
+        std::fs::write(&temp, text)
+            .and_then(|()| std::fs::rename(&temp, path))
+            .map_err(|e| {
+                let _ = std::fs::remove_file(&temp);
+                format!("cannot write {}: {e}", path.display())
+            })
+    }
+
+    fn highlight(&self, text: &str) -> Vec<Highlight> {
+        highlight(text)
+    }
+
     fn open(&self, path: &Path) {
         let path = path.to_path_buf();
         self.spawn(move || Event::Opened(open_workspace(&path)));
@@ -122,9 +148,12 @@ impl System for NativeSystem {
             let paths: Vec<PathBuf> = event
                 .paths
                 .into_iter()
+                // Git's own files stay out, but `HEAD`: a checkout (S049).
                 .filter(|p| {
-                    !p.components()
-                        .any(|c| skipped(&c.as_os_str().to_string_lossy()))
+                    p.ends_with(".git/HEAD")
+                        || !p
+                            .components()
+                            .any(|c| skipped(&c.as_os_str().to_string_lossy()))
                 })
                 .collect();
             if !paths.is_empty() {
@@ -650,6 +679,65 @@ fn count_sources(dir: &Path) -> usize {
         }
     }
     count
+}
+
+/// The colours of wowlua's lexer (S045): keywords, literals, comments and
+/// operators; a name after `function` is a function, after `@` a
+/// decorator. Types and contextual keywords come from the language
+/// server's semantic tokens.
+fn highlight(text: &str) -> Vec<Highlight> {
+    use wowlua_syntax::token::{TokenKind as K, TriviaKind};
+    let mut db = wowlua_span::SourceDb::new();
+    let file = db.add("highlight", String::new());
+    let lexed = wowlua_syntax::lexer::lex(text.as_bytes(), file);
+    let mut out = Vec::new();
+    for trivia in &lexed.trivia {
+        if trivia.kind != TriviaKind::Newline {
+            out.push(Highlight {
+                start: trivia.start as usize,
+                end: trivia.end as usize,
+                syntax: Syntax::Comment,
+            });
+        }
+    }
+    let mut previous = K::Eof;
+    for i in 0..lexed.tokens.len() {
+        let token = lexed.tokens.token(i);
+        let syntax = match token.kind {
+            K::Nil | K::True | K::False | K::Number => Some(Syntax::Number),
+            K::String | K::LongString | K::InterpStart | K::InterpText | K::InterpEnd => {
+                Some(Syntax::String)
+            }
+            K::Name if previous == K::Function => Some(Syntax::Function),
+            K::Name if previous == K::At => Some(Syntax::Decorator),
+            K::At => Some(Syntax::Decorator),
+            k if k.is_keyword() => Some(Syntax::Keyword),
+            K::Name
+            | K::Error
+            | K::Eof
+            | K::LParen
+            | K::RParen
+            | K::LBrace
+            | K::RBrace
+            | K::LBracket
+            | K::RBracket
+            | K::Comma
+            | K::Semi
+            | K::Dot
+            | K::Colon => None,
+            _ => Some(Syntax::Punct),
+        };
+        if let Some(syntax) = syntax {
+            out.push(Highlight {
+                start: token.start as usize,
+                end: token.end as usize,
+                syntax,
+            });
+        }
+        previous = token.kind;
+    }
+    out.sort_by_key(|h| h.start);
+    out
 }
 
 /// The `### New` lines of a changelog section, as plain text.

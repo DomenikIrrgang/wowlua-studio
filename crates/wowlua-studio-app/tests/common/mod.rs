@@ -112,6 +112,15 @@ impl System for Fake {
                 cannot_check: None,
             })));
     }
+    fn read_file(&self, path: &Path) -> Result<String, String> {
+        Ok(format!("-- {}\nlocal x = 1\n", path.display()))
+    }
+    fn write_file(&self, _: &Path, _: &str) -> Result<(), String> {
+        Ok(())
+    }
+    fn highlight(&self, _: &str) -> Vec<system::Highlight> {
+        Vec::new()
+    }
     fn poll(&self) -> Vec<system::Event> {
         std::mem::take(&mut *self.events.borrow_mut())
     }

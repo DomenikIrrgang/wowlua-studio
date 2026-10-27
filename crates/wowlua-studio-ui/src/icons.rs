@@ -89,6 +89,7 @@ icons! {
     Input = "input", "M3.25 2.25v9l2.5-2.5 2 4 1.5-.75-2-4h3.5z";
     ProfileDoc = "profile-doc", "M3.75 1.75h5.5l3 3v9.5h-8.5z M9.25 1.75v3h3 M5.75 11.5v-2l1-1h2.5l1 1v2 M7 6.25h2v1.5H7z";
     Pin = "pin", "M5.75 1.75h4.5 M6.75 1.75v4.5l-2 2.5h6.5l-2-2.5v-4.5 M8 8.75v5.5";
+    Notification = "notification", "M3.75 11.25V6.75l1.5-3.5h5.5l1.5 3.5v4.5 M2.25 11.25h11.5 M6.5 13.75h3";
     // File types (the explorer); the manifest is `config`, the lockfile
     // `token`, a world profile `profile-doc`.
     WowluaFile = "wowlua", "M3.75 1.75h5.5l3 3v9.5h-8.5z M9.25 1.75v3h3 M9.75 7l-1.5 1.5v2l1.5 1.5h-3l-1.5-1.5v-2l1.5-1.5z";
