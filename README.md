@@ -24,7 +24,7 @@
 
 ---
 
-**wowlua Studio** is the IDE for [wowlua](https://github.com/DomenikIrrgang/wowlua):
+**wowlua studio** is the IDE for [wowlua](https://github.com/DomenikIrrgang/wowlua):
 edit, check, test, run, debug and profile World of Warcraft AddOns in
 wowlua's emulated client, with the game's screen beside your code.
 

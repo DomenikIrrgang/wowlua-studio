@@ -1,6 +1,6 @@
 [package]
 name = "wowlua-studio"
-description = "wowlua Studio: the IDE for wowlua"
+description = "wowlua studio: the IDE for wowlua"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

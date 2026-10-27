@@ -1,4 +1,4 @@
-//! wowlua Studio: the IDE for wowlua (spec/roadmap.md). A native window
+//! wowlua studio: the IDE for wowlua (spec/roadmap.md). A native window
 //! drawn with egui on wgpu, over wowlua's libraries in the same process.
 
 mod frame_stats;

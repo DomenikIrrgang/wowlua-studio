@@ -1,4 +1,4 @@
-# wowlua Studio
+# wowlua studio
 
 The IDE for wowlua. The spec (`spec/`) is the source of truth: a change that
 differs from it updates it too (the roadmap, and a row in

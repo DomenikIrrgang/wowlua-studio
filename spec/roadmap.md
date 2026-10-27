@@ -1,6 +1,6 @@
 # Roadmap
 
-wowlua Studio is wowlua's IDE: a native application drawn with egui on
+wowlua studio is wowlua's IDE: a native application drawn with egui on
 `wgpu`, for Windows, macOS and Linux, over wowlua's libraries in its own
 process (decisions S001 to S005). It closes wowlua's milestone M15.
 
