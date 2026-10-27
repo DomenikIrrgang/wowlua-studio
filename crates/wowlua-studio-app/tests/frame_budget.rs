@@ -1,7 +1,8 @@
 //! The frame budget (decision S014): building a frame's UI and turning it
 //! into triangles takes at most 4 ms at the 99th percentile. Checked in
-//! optimized builds (`cargo test --release -p wowlua-studio-app --test
-//! frame_budget`); unoptimized ones only report the numbers.
+//! optimized builds, one test at a time (`cargo test --release -p
+//! wowlua-studio-app --test frame_budget -- --test-threads=1`: tests side
+//! by side time each other); unoptimized ones only report the numbers.
 
 mod common;
 

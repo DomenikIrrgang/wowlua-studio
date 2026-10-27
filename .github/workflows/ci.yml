@@ -57,8 +57,9 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo test --workspace
       - run: cargo build --release
-      # The frame budget (decision S014), in an optimized build.
-      - run: cargo test --release -p wowlua-studio-app --test frame_budget -- --nocapture
+      # The frame budget (decision S014), in an optimized build, one test at
+      # a time: tests side by side on the runner's few cores time each other.
+      - run: cargo test --release -p wowlua-studio-app --test frame_budget -- --nocapture --test-threads=1
       - uses: actions/upload-artifact@v4
         with:
           name: wowlua-studio-${{ matrix.os }}
