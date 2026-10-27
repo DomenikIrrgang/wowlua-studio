@@ -82,6 +82,9 @@ Artboards: editor, search.
   definition, references, rename, outline, folding, format on save.
 - Problems, output and a terminal; text search across the workspace;
   JSON with schemas (`wowlua.json`, world profiles).
+- Background jobs in the status bar (the jobs board): the check is the
+  first; the later milestones' builds, test runs, installs, publishes
+  and recordings run as jobs too.
 
 ## M4: Tests and coverage
 
@@ -188,16 +191,10 @@ Asked when their milestone starts; nothing here is decided yet.
 Where Studio was decided to differ from the canvas, or the canvas is
 missing a part; the canvas is updated to match.
 
-- The panels board's presets: the tests preset puts the results in the
-  main area (the tests artboard's), Claude is a page of its own (the
-  Claude artboard's), not a right-dock panel (S017); the seven pages the
-  board has no preset for get theirs from their artboards.
-- The command palette: the amber prompt holds the mode, the field only
-  the text after it (S018).
-- The menus: the title bar names them, nothing says what is in them
-  (S019).
-- The status bar without the theme switch; the theme is a setting (S021).
-- The app icon: the mark tile, in Apple's shape on macOS (S020).
-- The title bar's mark: the [wl] mark at 20 px, not the 16 px pixel mark (S023).
-- A dependencies view for the registry (S010, M10) and the in-game
-  recordings as a profiler source (S011, M7).
+None open. Brought up to date on 2026-10-27: the panels board's presets
+for every page (S017), the palette's prompt (S018), the menus (S019), the
+app icon and the title bar's mark (S020, S023), the status bar without the
+theme (S021), the start page without GitHub and Claude (S024), the
+question when opening another folder (S025, a new board), the registry's
+dependencies (S010, a new board) and the profiler's recordings from the
+game (S011).
