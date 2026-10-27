@@ -101,15 +101,25 @@ forms, Windows and Linux.
 
 ## M3: Editor
 
-Artboards: editor, search.
+Artboards: editor, search, notifications.
 
 - A text buffer and editor view that draw only the visible lines; the
-  wowlua grammar's highlighting and the language server's semantic tokens.
+  highlighting of wowlua's lexer and the language server's semantic
+  tokens (S045).
 - The language server in Studio's process (`wowlua_lsp::embedded`):
   diagnostics, hover, completion, signature help, quick fixes, go to
   definition, references, rename, outline, folding, format on save.
-- Problems, output and a terminal; text search across the workspace;
-  JSON with schemas (`wowlua.json`, world profiles).
+  Semantic tokens, quick fixes and folding are new in wowlua's server
+  (S042).
+- Problems, output and a terminal emulator (S043); text search across the
+  workspace; JSON with schemas (`wowlua.json`, world profiles, S046).
+- Opening another folder in a window with unsaved edits asks to save them
+  first (the open-another-folder board).
+- Files changed outside Studio: open files reload, or the changed-on-disk
+  banner with compare, keep mine, take theirs (S049); a file deleted
+  outside closes with a notification to restore it (S048).
+- Notifications: toasts and the status bar's tray (the notifications
+  board, S047).
 - Background jobs in the status bar (the jobs board): the check is the
   first; the later milestones' builds, test runs, installs, publishes
   and recordings run as jobs too.
@@ -208,7 +218,6 @@ change approved.
 Asked when their milestone starts; nothing here is decided yet.
 
 - Where launch configurations are kept (M6).
-- The terminal: a full terminal emulator or a command runner (M3).
 - Installers and code signing per system (first release).
 - The GitHub app Studio signs in with, and who registers it (M12).
 - Whether "sign in with Claude" is possible for a third-party app (M14).
@@ -224,6 +233,7 @@ missing a part; the canvas is updated to match.
   folders with their flavors; what's new is titled with the exact
   version (S037).
 - The adopt form's folder has a `choose…` button (S039).
+- The frame stats in the status bar (S041).
 - The new-addon form's preview: `wowlua new`'s real output line
   (`Created addon package in pull-timer`), `--check strict`, and the CI
   workflow at `.github/workflows/ci.yml` (S036).
