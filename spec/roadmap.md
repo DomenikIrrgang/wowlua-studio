@@ -181,7 +181,26 @@ Artboard: game (its UI; the 3D world is M13).
 
 - `wowlua-render` drawing a session's screen into Studio's window, on
   Studio's `wgpu` device; the frame tree, the inspector, input, events,
-  screenshots; the installation's art read and cached.
+  screenshots; the installation's art read and kept in memory.
+- The addon's session in Studio's process, the game's settings as in game,
+  the units (S055).
+
+Built 2026-10-28: the game page runs the workspace's addon on wowlua's
+debugger in Studio's process (wowlua 0.13.4, pinned:
+`session::run_hosted`'s frame hook, the inspector, pick, units, target,
+the event log, the game's settings at runtime and a world profile's
+`screen`). Each changed scene is drawn on eframe's device; the screen
+fits or zooms; input in six modes and slash commands; the frame tree with
+a filter and hidden frames; the inspector (strata, level, rectangle,
+alpha and scale as drawn, anchors, scripts and where they are, events,
+regions, children, where the frame was made; go to code, screenshot it);
+the units, a click targeting one; the events told with their arguments,
+frames and time; the input given; screenshots; the window size and UI
+scale on the toolbar. SuuUI runs on it: 0.33 ms median frames with its UI
+live. The frame budget holds with 5,000 frames and 1,000 events: 0.07 ms
+median. Not yet: some frames take 20 to 60 ms while SuuUI runs (the cause
+not found yet); the frame tree's "Blizzard's" switch; checked by hand on
+macOS only.
 
 ## M6: Debugger
 
@@ -290,4 +309,7 @@ theme (S021), the start page without GitHub and Claude (S024), the
 question when opening another folder (S025, a new board), the registry's
 dependencies (S010, a new board) and the profiler's recordings from the
 game (S011). On 2026-10-28: the tests board's explorer pinned by a
-function's lens, "the tests that call stateOf" with `show all` (S053).
+function's lens, "the tests that call stateOf" with `show all` (S053). The game board's
+toolbar with the game's settings (window size, UI scale), the loading
+note reading the art once a Studio start, the frame tree's refresh
+(S055).

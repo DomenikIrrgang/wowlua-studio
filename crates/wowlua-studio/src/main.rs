@@ -5,6 +5,7 @@
 //! is Studio started again with it).
 
 mod frame_stats;
+mod game;
 mod lsp;
 #[cfg(target_os = "macos")]
 mod menu_bar;
@@ -54,7 +55,12 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "wowlua studio",
         options,
-        Box::new(|cc| Ok(Box::new(App::new(&cc.egui_ctx)))),
+        Box::new(|cc| {
+            Ok(Box::new(App::new(
+                &cc.egui_ctx,
+                cc.wgpu_render_state.clone(),
+            )))
+        }),
     )
 }
 
@@ -88,12 +94,17 @@ struct App {
 }
 
 impl App {
-    fn new(ctx: &egui::Context) -> Self {
+    fn new(ctx: &egui::Context, gpu: Option<eframe::egui_wgpu::RenderState>) -> Self {
+        let mut system = native::NativeSystem::new(ctx);
+        // The game's screen is drawn on eframe's device (S055).
+        if let Some(gpu) = gpu {
+            system.set_gpu(gpu);
+        }
         let host = Host {
             platform: PLATFORM,
             wowlua_version: wowlua_driver::COMPILER_VERSION.to_owned(),
             store: Box::new(store::FileStore::new()),
-            system: Box::new(native::NativeSystem::new(ctx)),
+            system: Box::new(system),
         };
         let mut studio = Studio::new(ctx, host);
         if let Some(folder) = std::env::args_os().nth(1) {

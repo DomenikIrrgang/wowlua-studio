@@ -4,7 +4,8 @@
 //! `WOWLUA_STUDIO_SCREENSHOT_RUN` lists commands to run first, separated
 //! by `;`: `open:<folder>`, `file:<file>`, `find:<query>`, `page:debug`, `theme:light`, `palette`,
 //! `about`, `new`, `adopt`, `stats`, `terminal`, `runtests`, `runcoverage`,
-//! `testtab:<tab>`, `coverage`, `gutter`.
+//! `testtab:<tab>`, `coverage`, `gutter`, `rungame`, `gamepick:x,y`,
+//! `gamesize:WxH[@scale]`, `units`.
 
 use std::{
     path::PathBuf,
@@ -41,6 +42,31 @@ impl Screenshot {
                 studio.tests_tab(tab);
                 continue;
             }
+            if step == "rungame" {
+                studio.run_game();
+                continue;
+            }
+            if let Some(rest) = step.strip_prefix("gamesize:") {
+                let (size, scale) = match rest.split_once('@') {
+                    Some((s, k)) => (s, k.parse().ok()),
+                    None => (rest, None),
+                };
+                if let Some((w, h)) = size
+                    .split_once('x')
+                    .and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)))
+                {
+                    studio.game_size((w, h), scale);
+                }
+                continue;
+            }
+            if let Some((x, y)) = step
+                .strip_prefix("gamepick:")
+                .and_then(|p| p.split_once(','))
+                .and_then(|(x, y)| Some((x.parse().ok()?, y.parse().ok()?)))
+            {
+                studio.game_pick(x, y);
+                continue;
+            }
             if step == "runtests" || step == "runcoverage" {
                 studio.run_tests(step == "runcoverage");
                 continue;
@@ -64,6 +90,10 @@ impl Screenshot {
                 None if step == "new" => Some(Command::NewAddon),
                 None if step == "adopt" => Some(Command::AdoptAddon),
                 None if step == "stats" => Some(Command::FrameStats(true)),
+                None if step == "units" => Some(Command::ShowPanel(
+                    wowlua_studio_app::panels::Panel::Units,
+                    wowlua_studio_app::dock::Dock::Left,
+                )),
                 None if step == "coverage" => Some(Command::ShowPanel(
                     wowlua_studio_app::panels::Panel::Coverage,
                     wowlua_studio_app::dock::Dock::Main,

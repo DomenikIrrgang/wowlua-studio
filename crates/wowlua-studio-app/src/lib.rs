@@ -10,6 +10,7 @@ pub mod coverage;
 pub mod dock;
 pub mod editor;
 pub mod explorer;
+pub mod game;
 pub mod jobs;
 pub mod lsp;
 pub mod notify;
@@ -108,6 +109,8 @@ pub struct Studio {
     problems_this_file: bool,
     /// The tests page (S052).
     tests: tests::TestsState,
+    /// The game page (S055).
+    game: game::GameState,
     /// The workspace's world profiles (`tests/profiles/*.json`), by name.
     profiles: Vec<String>,
     /// Background jobs (S044); the checks running, by package.
@@ -135,6 +138,13 @@ pub struct Studio {
     /// Run every test once the workspace and its test files are there,
     /// with coverage or not (the screenshot's `runtests`, `runcoverage`).
     queued_run: Option<bool>,
+    /// Run the addon on the game page once the workspace is open (the
+    /// screenshot's `rungame` step).
+    queued_game: bool,
+    /// Pick what draws at a point once the addon runs (`gamepick:x,y`).
+    queued_pick: Option<(f64, f64)>,
+    /// The game's settings once the addon runs (`gamesize:WxH[@scale]`).
+    queued_size: Option<((u32, u32), Option<f32>)>,
     /// A tab of the tests page's results to show once it is open.
     queued_tab: Option<tests::Tab>,
     /// Show the coverage in the gutter once the tests page is there.
@@ -199,6 +209,7 @@ impl Studio {
             terminal: terminal::TerminalState::default(),
             problems_this_file: false,
             tests: tests::TestsState::default(),
+            game: game::GameState::default(),
             profiles: Vec::new(),
             jobs: jobs::Jobs::default(),
             checks: std::collections::HashMap::new(),
@@ -212,6 +223,9 @@ impl Studio {
             queued_files: Vec::new(),
             queued_find: None,
             queued_run: None,
+            queued_game: false,
+            queued_pick: None,
+            queued_size: None,
             queued_tab: None,
             queued_gutter: false,
             menus_changed: false,
@@ -274,6 +288,24 @@ impl Studio {
             "output" => tests::Tab::Output,
             _ => tests::Tab::Failure,
         });
+    }
+
+    /// Runs the addon on the game page once the workspace is open (the
+    /// screenshot's `rungame` step).
+    pub fn run_game(&mut self) {
+        self.queued_game = true;
+    }
+
+    /// Picks what draws at a point of the game's screen once the addon
+    /// runs (the screenshot's `gamepick:x,y` step).
+    pub fn game_pick(&mut self, x: f64, y: f64) {
+        self.queued_pick = Some((x, y));
+    }
+
+    /// Sets the game's settings once the addon runs (the screenshot's
+    /// `gamesize:1280x720@0.8` step).
+    pub fn game_size(&mut self, size: (u32, u32), ui_scale: Option<f32>) {
+        self.queued_size = Some((size, ui_scale));
     }
 
     /// Runs every test once the workspace is open (the screenshot's
@@ -347,6 +379,20 @@ impl Studio {
             if self.queued_gutter && self.tests.files.is_some() {
                 self.queued_gutter = false;
                 self.tests.cov.in_gutter = true;
+            }
+            if self.tests.files.is_some() && self.queued_game {
+                self.queued_game = false;
+                self.queue(Command::RunAddon);
+            }
+            if self.game.running()
+                && let Some((x, y)) = self.queued_pick.take()
+            {
+                self.game.pick(&*self.host.system, x, y);
+            }
+            if self.game.running()
+                && let Some((size, ui_scale)) = self.queued_size.take()
+            {
+                self.game.set_screen(&*self.host.system, size, ui_scale);
             }
             if self.tests.files.is_some()
                 && let Some(coverage) = self.queued_run.take()
@@ -505,6 +551,8 @@ impl Studio {
         let term_state = &mut self.terminal;
         let problems_this_file = &mut self.problems_this_file;
         let tests_state = &mut self.tests;
+        let game_state = &mut self.game;
+        let mut game_action = None;
         let profiles = &self.profiles;
         let mut tests_action = None;
         let mut search_action = None;
@@ -601,6 +649,21 @@ impl Studio {
                     tests_action = Some(a);
                 }
             }
+            Panel::Game => {
+                if let Some(a) = game::screen(ui, game_state, workspace, system) {
+                    game_action = Some(a);
+                }
+            }
+            Panel::Frames => game::frames(ui, game_state, system),
+            Panel::Units => game::units(ui, game_state, system),
+            Panel::Inspector => {
+                if let Some(a) = game::inspector(ui, game_state, workspace, system) {
+                    game_action = Some(a);
+                }
+            }
+            Panel::Events => game::events(ui, game_state, system),
+            Panel::Input => game::input(ui, game_state),
+            Panel::Screenshots => game::screenshots(ui, game_state, system),
             _ => dock::placeholder(ui, panel),
         };
         let changed = dock::show(ui, area, layout, &mut self.dock, &mut content);
@@ -609,6 +672,27 @@ impl Studio {
         }
         if let Some(path) = opened {
             self.open_file(&path, ctx);
+        }
+        match game_action {
+            Some(game::Action::Start) => self.queue(Command::RunAddon),
+            Some(game::Action::Stop) => self.queue(Command::StopSession),
+            Some(game::Action::Open(path, line)) => {
+                let at = lsp::Wire {
+                    line: line.saturating_sub(1),
+                    character: 0,
+                };
+                let place = lsp::Location {
+                    path,
+                    start: at,
+                    end: at,
+                };
+                self.show_place(&place, ctx);
+                self.queue(Command::ShowPage(Page::Files));
+            }
+            Some(game::Action::ShowInspector) => {
+                self.queue(Command::ShowPanel(Panel::Inspector, dock::Dock::Right));
+            }
+            None => {}
         }
         match tests_action {
             Some(tests::Action::Run(request)) => self.start_tests(request, ctx),
@@ -1369,6 +1453,11 @@ impl Studio {
                     }
                 }
                 Event::Tests { run, event } => self.test_event(run, event, ctx),
+                Event::Game { session, event } => {
+                    let now = ctx.input(|i| i.time);
+                    self.game.event(session, event, now);
+                    ctx.request_repaint();
+                }
                 Event::Searched { search, found } => {
                     if self.search.running.as_ref() == Some(&search) {
                         self.search.running = None;
@@ -1862,6 +1951,17 @@ impl Studio {
             Command::CloseEditor => {
                 let i = self.editors.active;
                 self.close_tab(i);
+            }
+            Command::RunAddon => {
+                if let Some(w) = &self.workspace {
+                    let root = w.root.clone();
+                    let session = self.game.begin();
+                    self.host.system.game_start(&root, session, None);
+                    self.queue(Command::ShowPage(Page::Game));
+                }
+            }
+            Command::StopSession => {
+                self.host.system.game_stop();
             }
             Command::RunAllTests | Command::RunFailedTests => {
                 let filters = if command == Command::RunFailedTests {

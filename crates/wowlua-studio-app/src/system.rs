@@ -151,6 +151,105 @@ pub enum Event {
         run: u64,
         event: TestEvent,
     },
+    /// A game session's news (the game page, S055).
+    Game {
+        session: u64,
+        event: GameEvent,
+    },
+}
+
+/// What the game page asks a running session (S055): the debugger's UI
+/// requests (wowlua decision T484).
+#[derive(Clone, Debug, PartialEq)]
+pub enum GameRequest {
+    /// The frame tree (hidden frames too or not).
+    FrameTree {
+        hidden: bool,
+    },
+    /// One frame's or region's details by its id in the tree.
+    Inspect(usize),
+    /// What draws at a point of the screen (pixels from the top left).
+    Pick {
+        x: f64,
+        y: f64,
+    },
+    Units,
+    /// The player targets a unit by its index in the units' list.
+    Target(Option<usize>),
+    /// The events told since the last read.
+    Events,
+    /// The game's settings: the window's size and the UI scale (none:
+    /// "Use UI Scale" off).
+    SetScreen {
+        width: f64,
+        height: f64,
+        ui_scale: Option<f64>,
+    },
+    Input(GameInput),
+    /// A PNG of the screen, or of a frame (by its id), written to `to`.
+    Screenshot {
+        frame: Option<usize>,
+        to: PathBuf,
+    },
+}
+
+/// Input as the user gives it, in screen pixels from the top left.
+#[derive(Clone, Debug, PartialEq)]
+pub enum GameInput {
+    Click {
+        x: f64,
+        y: f64,
+        right: bool,
+    },
+    Hover {
+        x: f64,
+        y: f64,
+    },
+    Drag {
+        x: f64,
+        y: f64,
+        dx: f64,
+        dy: f64,
+    },
+    /// Text typed into the focused edit box.
+    Type(String),
+    /// A key or binding by WoW's name (`ESCAPE`, `SHIFT-1`).
+    Key(String),
+    /// A slash command (`/wl`).
+    Slash(String),
+}
+
+/// What a game session tells.
+#[derive(Clone, Debug, PartialEq)]
+pub enum GameEvent {
+    /// What it does before the addon runs: building, fetching Blizzard's
+    /// UI, reading the installation's art.
+    Status(String),
+    /// The addon runs: its name and flavor, and the installation whose art
+    /// it draws with (none: the stand-ins).
+    Started {
+        addon: String,
+        flavor: String,
+        installation: Option<String>,
+    },
+    /// A request's answer: its data (JSON) or the error.
+    Reply {
+        id: u64,
+        result: Result<serde_json::Value, String>,
+    },
+    /// Printed text and errors (`stdout`, `stderr`, `console`).
+    Output { category: String, text: String },
+    /// The session ended (an error that ended it).
+    Ended { error: Option<String> },
+}
+
+/// The game's screen as last drawn: its texture and size in pixels, and
+/// how many scenes were drawn (a new one: changed).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GameScreen {
+    pub texture: egui::TextureId,
+    pub size: [u32; 2],
+    pub drawn: u64,
 }
 
 /// A test run (the tests page, S052): which tests (`path::name` filters,
@@ -598,6 +697,18 @@ pub trait System {
     /// Copies a file over another (accepting a screenshot).
     fn copy_file(&self, from: &Path, _to: &Path) -> Result<(), String> {
         Err(format!("{} cannot be copied here", from.display()))
+    }
+    /// Runs the workspace's addon as a game session (→ [`Event::Game`]):
+    /// session `session`, in the world profile `profile` over
+    /// `test.profile`; one at a time, a new one ends the last.
+    fn game_start(&self, _root: &Path, _session: u64, _profile: Option<String>) {}
+    /// Asks the running session (→ [`GameEvent::Reply`] with `id`).
+    fn game_request(&self, _id: u64, _request: GameRequest) {}
+    /// Ends the running session.
+    fn game_stop(&self) {}
+    /// The running session's screen, drawn on the UI's GPU device.
+    fn game_screen(&self) -> Option<GameScreen> {
+        None
     }
     /// Work finished since the last call.
     fn poll(&self) -> Vec<Event>;

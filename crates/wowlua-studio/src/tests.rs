@@ -68,7 +68,7 @@ fn user_initiated(work: impl FnOnce() + 'static) {
 }
 
 /// The first error of a session, as wowlua writes it.
-fn first_error(session: &Session) -> Option<String> {
+pub(crate) fn first_error(session: &Session) -> Option<String> {
     session
         .diagnostics
         .iter()
