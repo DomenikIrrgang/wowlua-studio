@@ -805,19 +805,30 @@ fn code(
     tab.highlights(cx.system);
     tab.long_lines();
     let foldable: Vec<(usize, usize)> = tab.foldable(cx.system).to_vec();
-    let version = tab.doc.version;
-    // Hints and lenses are shown for the text they were made for.
+    // Hints and lenses made for an older text stay until the new ones come,
+    // moved on with the edits since: they do not blink while the check
+    // runs. Those where the text was replaced go.
+    let doc = &tab.doc;
     let hints: Vec<(Pos, String)> = tab
         .hints
         .as_ref()
-        .filter(|(v, _)| *v == version)
-        .map(|(_, h)| h.clone())
+        .map(|(v, h)| {
+            h.iter()
+                .filter_map(|(pos, label)| Some((doc.moved(*v, *pos)?, label.clone())))
+                .collect()
+        })
         .unwrap_or_default();
     let lenses: Vec<(usize, String, Pos)> = tab
         .lenses
         .as_ref()
-        .filter(|(v, _)| *v == version)
-        .map(|(_, l)| l.clone())
+        .map(|(v, l)| {
+            l.iter()
+                .filter_map(|(line, title, at)| {
+                    let line = doc.moved(*v, Pos::new(*line, 0))?.line;
+                    Some((line, title.clone(), doc.moved(*v, *at)?))
+                })
+                .collect()
+        })
         .unwrap_or_default();
     let mut lens_lines: Vec<usize> = lenses.iter().map(|l| l.0).collect();
     lens_lines.sort_unstable();

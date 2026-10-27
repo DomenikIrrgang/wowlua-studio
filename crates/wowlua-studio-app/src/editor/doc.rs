@@ -47,6 +47,20 @@ impl Selection {
     }
 }
 
+/// A change of the text: the version it made, where it was, where the
+/// text it replaced ended and where the new text ends.
+#[derive(Clone, Copy, Debug)]
+struct Change {
+    version: u64,
+    start: Pos,
+    old_end: Pos,
+    new_end: Pos,
+}
+
+/// How many of the last changes are kept, to move places made for an
+/// older text (the inlay hints, the lenses) to where they are now.
+const KEPT_CHANGES: usize = 512;
+
 /// One replacement: `removed` at `at` became `inserted`.
 #[derive(Clone, Debug, PartialEq)]
 struct Edit {
@@ -90,6 +104,8 @@ pub struct Document {
     /// The text on disk as last read or written: a change on disk is
     /// told apart from Studio's own save by it.
     pub disk: String,
+    /// The last changes, oldest first.
+    changes: std::collections::VecDeque<Change>,
 }
 
 impl Document {
@@ -106,7 +122,36 @@ impl Document {
             redo: Vec::new(),
             saved: Some(0),
             disk: text.to_owned(),
+            changes: std::collections::VecDeque::new(),
         }
+    }
+
+    /// `pos` in the text of `version`, moved to where it is now: on with
+    /// the text before it. `None` when the text at it was replaced, or the
+    /// changes since are no longer kept.
+    pub fn moved(&self, version: u64, pos: Pos) -> Option<Pos> {
+        if version == self.version {
+            return Some(pos);
+        }
+        let first = self.changes.iter().position(|c| c.version > version)?;
+        if self.changes[first].version != version + 1 {
+            return None;
+        }
+        let mut pos = pos;
+        for c in self.changes.iter().skip(first) {
+            if pos < c.start {
+                continue;
+            }
+            if pos < c.old_end {
+                return None;
+            }
+            pos = if pos.line == c.old_end.line {
+                Pos::new(c.new_end.line, c.new_end.col + pos.col - c.old_end.col)
+            } else {
+                Pos::new(pos.line + c.new_end.line - c.old_end.line, pos.col)
+            };
+        }
+        Some(pos)
     }
 
     pub fn line_count(&self) -> usize {
@@ -336,6 +381,15 @@ impl Document {
         new[0].insert_str(0, &head);
         new.last_mut().expect("one line at least").push_str(&tail);
         self.lines.splice(start.line..=end.line, new);
+        if self.changes.len() == KEPT_CHANGES {
+            self.changes.pop_front();
+        }
+        self.changes.push_back(Change {
+            version: self.version,
+            start,
+            old_end: end,
+            new_end: end_pos,
+        });
         end_pos
     }
 }
@@ -371,6 +425,38 @@ mod tests {
 
     fn doc(text: &str) -> Document {
         Document::new(PathBuf::from("a.wowlua"), text)
+    }
+
+    #[test]
+    fn a_place_moves_on_with_the_edits_since() {
+        let mut d = doc("local s = r.status\nlocal t = 1\n");
+        // A hint after `s` and one after `t`, made for version 0.
+        let (s, t) = (Pos::new(0, 7), Pos::new(1, 7));
+        // Typing after the hint on its line leaves it.
+        d.edit(Pos::new(0, 18), Pos::new(0, 18), " or 0", EditKind::Typing);
+        assert_eq!(d.moved(0, s), Some(s));
+        // Typing before it on its line moves it right.
+        d.edit(Pos::new(0, 0), Pos::new(0, 0), "  ", EditKind::Typing);
+        assert_eq!(d.moved(0, s), Some(Pos::new(0, 9)));
+        // A line above moves the next line's down.
+        d.edit(Pos::new(0, 0), Pos::new(0, 0), "-- x\n", EditKind::Other);
+        assert_eq!(d.moved(0, t), Some(Pos::new(2, 7)));
+        assert_eq!(d.moved(0, s), Some(Pos::new(1, 9)));
+        // Replacing the text at it drops it.
+        d.edit(Pos::new(1, 2), Pos::new(1, 12), "local u", EditKind::Other);
+        assert_eq!(d.moved(0, s), None);
+        // Made for this version: as it is.
+        assert_eq!(d.moved(d.version, t), Some(t));
+    }
+
+    #[test]
+    fn a_place_older_than_the_changes_kept_is_dropped() {
+        let mut d = doc("a");
+        for _ in 0..KEPT_CHANGES + 1 {
+            d.edit(Pos::new(0, 0), Pos::new(0, 0), "b", EditKind::Other);
+        }
+        assert_eq!(d.moved(0, Pos::new(0, 1)), None);
+        assert!(d.moved(d.version - 1, Pos::new(0, 1)).is_some());
     }
 
     #[test]

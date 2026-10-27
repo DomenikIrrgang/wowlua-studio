@@ -947,7 +947,9 @@ impl Studio {
             } => {
                 if let Some(i) = find(&self.editors, &path) {
                     let tab = &mut self.editors.tabs[i];
-                    if tab.doc.version == version {
+                    // Newer than those shown: an older text's are moved
+                    // on with the edits since (the editor does).
+                    if tab.hints.as_ref().is_none_or(|(v, _)| *v < version) {
                         let list = hints
                             .into_iter()
                             .map(|(w, label)| (lsp::from_wire(&tab.doc, w), label))
@@ -963,7 +965,7 @@ impl Studio {
             } => {
                 if let Some(i) = find(&self.editors, &path) {
                     let tab = &mut self.editors.tabs[i];
-                    if tab.doc.version == version {
+                    if tab.lenses.as_ref().is_none_or(|(v, _)| *v < version) {
                         let list = lenses
                             .into_iter()
                             .map(|(line, title, w)| (line, title, lsp::from_wire(&tab.doc, w)))
