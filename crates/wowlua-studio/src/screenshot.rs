@@ -3,7 +3,7 @@
 //! frames, saves the window as a PNG and quits.
 //! `WOWLUA_STUDIO_SCREENSHOT_RUN` lists commands to run first, separated
 //! by `;`: `open:<folder>`, `page:debug`, `theme:light`, `palette`,
-//! `about`, `new`, `adopt`.
+//! `about`, `new`, `adopt`, `stats`.
 
 use std::{
     path::PathBuf,
@@ -39,6 +39,7 @@ impl Screenshot {
                 None if step == "about" => Some(Command::About),
                 None if step == "new" => Some(Command::NewAddon),
                 None if step == "adopt" => Some(Command::AdoptAddon),
+                None if step == "stats" => Some(Command::FrameStats(true)),
                 _ => None,
             };
             match command {

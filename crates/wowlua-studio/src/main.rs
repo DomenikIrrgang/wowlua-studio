@@ -122,7 +122,10 @@ impl eframe::App for App {
         }
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        if let Some(cpu) = frame.info().cpu_usage {
+            self.studio.set_frame_time(cpu);
+        }
         let started = std::time::Instant::now();
         self.studio.ui(ui);
         if let Some(stats) = &mut self.stats {

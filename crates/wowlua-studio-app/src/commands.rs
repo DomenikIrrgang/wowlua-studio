@@ -18,6 +18,8 @@ pub enum Command {
     ShowPanel(Panel, Dock),
     /// Whether opening a page switches to its layout.
     FollowPresets(bool),
+    /// Whether the status bar shows the frame stats (S041).
+    FrameStats(bool),
     /// Opens a folder from the system's picker (S025: in this window or a
     /// new one, when this one has a workspace).
     OpenFolder,
@@ -87,7 +89,12 @@ pub struct Entry {
 
 /// Every command Studio has now; later milestones add theirs. Without a
 /// workspace the window is the start page: files, the view and help.
-pub fn entries(platform: Platform, follow_presets: bool, workspace: bool) -> Vec<Entry> {
+pub fn entries(
+    platform: Platform,
+    follow_presets: bool,
+    frame_stats: bool,
+    workspace: bool,
+) -> Vec<Entry> {
     let mut out = Vec::new();
     let mut add = |command, kind, title: &str, detail: &str, menu, key| {
         out.push(Entry {
@@ -177,6 +184,18 @@ pub fn entries(platform: Platform, follow_presets: bool, workspace: bool) -> Vec
         "view",
         "theme: light",
         "",
+        Some(Menu::View),
+        None,
+    );
+    add(
+        Command::FrameStats(!frame_stats),
+        "view",
+        if frame_stats {
+            "frame stats: hide"
+        } else {
+            "frame stats: show"
+        },
+        "redraws a second and the frame's time, in the status bar",
         Some(Menu::View),
         None,
     );
@@ -324,7 +343,7 @@ mod tests {
     #[test]
     fn no_two_commands_share_keys() {
         for workspace in [false, true] {
-            let all = entries(Platform::Linux, true, workspace);
+            let all = entries(Platform::Linux, true, false, workspace);
             let keys: Vec<_> = all.iter().filter_map(|e| e.key).collect();
             for (i, a) in keys.iter().enumerate() {
                 assert!(!keys[i + 1..].contains(a), "{a:?} is bound twice");
@@ -334,7 +353,7 @@ mod tests {
 
     #[test]
     fn the_start_page_has_files_the_view_and_help() {
-        let menus: Vec<_> = entries(Platform::Linux, true, false)
+        let menus: Vec<_> = entries(Platform::Linux, true, false, false)
             .iter()
             .filter_map(|e| e.menu)
             .collect();

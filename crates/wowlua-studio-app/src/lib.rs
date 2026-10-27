@@ -16,6 +16,7 @@ pub mod start;
 pub mod state;
 pub mod system;
 
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
 use egui::{Context, Pos2, Rect, Ui, UiBuilder, Vec2, ViewportCommand};
@@ -92,6 +93,11 @@ pub struct Studio {
     focused: bool,
     /// The window's title as last set.
     title: String,
+    /// When the frames of the last second were drawn (S041).
+    frame_times: VecDeque<f64>,
+    /// The last frame's time, building and drawing it, as the host
+    /// measured it.
+    frame_cpu: Option<f32>,
 }
 
 /// Opening a folder in a window that has a workspace: here, or in a new
@@ -130,7 +136,14 @@ impl Studio {
             unsaved_since: None,
             focused: true,
             title: String::new(),
+            frame_times: VecDeque::new(),
+            frame_cpu: None,
         }
+    }
+
+    /// The last frame's time, building and drawing it, for the frame stats.
+    pub fn set_frame_time(&mut self, seconds: f32) {
+        self.frame_cpu = Some(seconds);
     }
 
     pub fn platform(&self) -> Platform {
@@ -142,6 +155,7 @@ impl Studio {
         commands::entries(
             self.host.platform,
             self.settings.follow_presets,
+            self.settings.frame_stats,
             self.workspace.is_some(),
         )
     }
@@ -210,7 +224,10 @@ impl Studio {
             folder: recents::tilde(&w.root, self.home.as_deref()),
         });
         chrome::title_bar(ui, title, self.host.platform, &entries, chip, &mut commands);
-        let right = self.status_items();
+        let mut right = self.status_items();
+        if let Some(stats) = self.frame_stats(&ctx) {
+            right.push(stats);
+        }
         let checks_off = self
             .workspace
             .as_ref()
@@ -472,6 +489,27 @@ impl Studio {
         items
     }
 
+    /// `118 fps · 0.21 ms`: the frames drawn in the last second and the
+    /// last one's time. Studio draws only when something changes, so it
+    /// is 1 fps while idle: the counter wakes the window once a second.
+    fn frame_stats(&mut self, ctx: &Context) -> Option<String> {
+        if !self.settings.frame_stats {
+            self.frame_times.clear();
+            return None;
+        }
+        let now = ctx.input(|i| i.time);
+        self.frame_times.push_back(now);
+        while self.frame_times.front().is_some_and(|t| now - t > 1.0) {
+            self.frame_times.pop_front();
+        }
+        ctx.request_repaint_after(std::time::Duration::from_secs(1));
+        let fps = self.frame_times.len();
+        Some(match self.frame_cpu {
+            Some(cpu) => format!("{fps} fps · {:.2} ms", cpu * 1000.0),
+            None => format!("{fps} fps"),
+        })
+    }
+
     fn set_title(&mut self, ctx: &Context) {
         let title = match &self.workspace {
             Some(w) => format!("{} · wowlua studio", w.name),
@@ -537,6 +575,11 @@ impl Studio {
                 if on {
                     self.layout_page = self.page;
                 }
+                self.menus_changed = true;
+                self.touch(ctx);
+            }
+            Command::FrameStats(on) => {
+                self.settings.frame_stats = on;
                 self.menus_changed = true;
                 self.touch(ctx);
             }

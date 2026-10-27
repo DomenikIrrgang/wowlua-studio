@@ -14,4 +14,5 @@ All notable changes to wowlua studio. Each minor version closes a milestone of t
 - The rail's pages, each with its own layout of panels. Drag a panel by its tab or grip to another dock or a split, float it in a window of its own, maximize it with a double click, or move it from its `…` menu or with `ctrl shift m` (`cmd shift m` on macOS). Studio remembers each page's layout.
 - The command palette: `ctrl k` (`cmd k` on macOS), then `>` for commands.
 - Dark and light themes, from the command palette or the view menu.
+- Frame stats in the status bar (`frame stats: show` in the view menu): frames drawn a second and each frame's time.
 - The [wl] mark as the app's icon, in the macOS Dock's shape on macOS.
