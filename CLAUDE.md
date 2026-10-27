@@ -7,6 +7,8 @@ differs from it updates it too (the roadmap, and a row in
 ## Ground rules
 
 - Pure native Rust: no HTML, no JavaScript, no webview (S001).
+- No `unsafe`, except in `crates/wowlua-studio/src/traffic_lights.rs`
+  (macOS's window buttons, S022).
 - Windows, macOS and Linux; a browser build must stay possible, so every
   dependency builds for `wasm32-unknown-unknown` and everything is drawn on
   `wgpu` (S002).

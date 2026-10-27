@@ -7,6 +7,8 @@ mod frame_stats;
 mod menu_bar;
 mod screenshot;
 mod store;
+#[cfg(target_os = "macos")]
+mod traffic_lights;
 
 use eframe::egui;
 use frame_stats::FrameStats;
@@ -101,8 +103,11 @@ impl App {
 impl eframe::App for App {
     fn logic(&mut self, _ctx: &egui::Context, _frame: &mut eframe::Frame) {
         #[cfg(target_os = "macos")]
-        for command in self.menu_bar.poll() {
-            self.studio.queue(command);
+        {
+            for command in self.menu_bar.poll() {
+                self.studio.queue(command);
+            }
+            traffic_lights::place(_frame);
         }
     }
 

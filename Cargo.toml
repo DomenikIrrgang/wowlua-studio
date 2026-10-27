@@ -27,7 +27,8 @@ wowlua-studio-app = { path = "crates/wowlua-studio-app" }
 wowlua-driver = { git = "https://github.com/DomenikIrrgang/wowlua", tag = "v0.13.0" }
 
 [workspace.lints.rust]
-unsafe_code = "forbid"
+# Denied, not forbidden: one macOS module may allow it (decision S022).
+unsafe_code = "deny"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
