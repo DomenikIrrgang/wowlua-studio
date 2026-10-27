@@ -282,8 +282,6 @@ missing a part; the canvas is updated to match.
   workflow at `.github/workflows/ci.yml` (S036).
 - A recent workspace that can't be checked opens with `open` until the
   editor (M3) can open its `wowlua.json`.
-- The tests board's explorer pinned by a function's lens: "the tests that
-  call double" with `show all` over the tree (S053).
 
 Brought up to date on 2026-10-27: the panels board's presets
 for every page (S017), the palette's prompt (S018), the menus (S019), the
@@ -291,4 +289,5 @@ app icon and the title bar's mark (S020, S023), the status bar without the
 theme (S021), the start page without GitHub and Claude (S024), the
 question when opening another folder (S025, a new board), the registry's
 dependencies (S010, a new board) and the profiler's recordings from the
-game (S011).
+game (S011). On 2026-10-28: the tests board's explorer pinned by a
+function's lens, "the tests that call stateOf" with `show all` (S053).

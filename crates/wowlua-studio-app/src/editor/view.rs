@@ -75,6 +75,9 @@ pub struct Cx<'a> {
     pub diagnostics: &'a [Diag],
     /// Studio's lenses over the active file's lines (its tests', S053).
     pub lenses: &'a [Lens],
+    /// A test file's test functions: no references lens over them (the
+    /// runner calls them, not code).
+    pub tests_at: &'a [usize],
     /// The active file's coverage, shown in the gutter.
     pub coverage: Option<&'a crate::system::CoverageFile>,
 }
@@ -910,6 +913,7 @@ fn code(
     // The server's lenses, then Studio's.
     let lenses: Vec<Lens> = lenses
         .into_iter()
+        .filter(|(line, _, _)| !cx.tests_at.contains(line))
         .map(|(line, title, at)| Lens {
             line,
             title,

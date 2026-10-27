@@ -534,6 +534,11 @@ impl Studio {
                     .as_deref()
                     .map(|path| tests::lenses(tests_state, workspace, path))
                     .unwrap_or_default();
+                let tests_at: Vec<usize> = active
+                    .as_deref()
+                    .and_then(|path| tests_state.discovered.get(path))
+                    .map(|tests| tests.iter().map(|t| t.line).collect())
+                    .unwrap_or_default();
                 let coverage = active.as_deref().and_then(|path| {
                     tests_state
                         .coverage
@@ -547,6 +552,7 @@ impl Studio {
                     mac,
                     diagnostics,
                     lenses: &lenses,
+                    tests_at: &tests_at,
                     coverage,
                 };
                 actions.extend(editor::view::show(ui, editors, &cx));
