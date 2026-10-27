@@ -635,7 +635,12 @@ impl Studio {
             A::Hover(at) => {
                 let offset = offset_of(&tab.doc, at);
                 if let Some(text) = editor::json::explain(schema, &text, offset) {
-                    tab.hover = Some((at, text));
+                    // The key's path, in a text block: nothing to colour.
+                    tab.hover = Some(editor::Hover {
+                        at,
+                        text,
+                        code: Vec::new(),
+                    });
                 }
             }
             _ => {}
@@ -767,7 +772,8 @@ impl Studio {
         match reply {
             R::Hover { path, at, text } => {
                 if let Some(i) = find(&self.editors, &path) {
-                    self.editors.tabs[i].hover = Some((at, text));
+                    let hover = editor::Hover::new(at, text, &*self.host.system);
+                    self.editors.tabs[i].hover = Some(hover);
                 }
             }
             R::Completion { path, at, items } => {

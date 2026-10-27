@@ -396,7 +396,7 @@ pub fn explain(schema: &Json, text: &str, offset: usize) -> Option<String> {
         .into_iter()
         .find(|n| n.get("description").is_some())?;
     let text = node.get("description")?.as_str()?;
-    Some(format!("```wowlua\n{}\n```\n\n{text}", path.join(".")))
+    Some(format!("```text\n{}\n```\n\n{text}", path.join(".")))
 }
 
 #[cfg(test)]

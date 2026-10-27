@@ -986,6 +986,25 @@ mod tests {
     }
 
     #[test]
+    fn a_hover_s_type_is_coloured_as_the_editor_colours_it() {
+        use wowlua_studio_app::editor::{Hover, Pos};
+        let system = super::NativeSystem::new(&eframe::egui::Context::default());
+        let text = "```wowlua\nActionBar: ClassOf<ActionBar>\n```\n\nThe bar.";
+        let hover = Hover::new(Pos::new(0, 0), text.to_owned(), &system);
+        let types: Vec<&str> = hover
+            .code
+            .iter()
+            .filter(|h| h.syntax == wowlua_studio_app::system::Syntax::Type)
+            .map(|h| &text[h.start..h.end])
+            .collect();
+        assert_eq!(types, ["ClassOf", "ActionBar"]);
+        let text = "```wowlua\nstring?\n```";
+        let hover = Hover::new(Pos::new(0, 0), text.to_owned(), &system);
+        let coloured: Vec<&str> = hover.code.iter().map(|h| &text[h.start..h.end]).collect();
+        assert!(coloured.contains(&"string"), "{coloured:?}");
+    }
+
+    #[test]
     fn wowlua_s_manifest_schema_completes_the_package_s_keys() {
         use wowlua_studio_app::editor::json;
         let schema: serde_json::Value =

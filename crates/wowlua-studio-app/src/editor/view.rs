@@ -22,7 +22,7 @@ use super::diff;
 use super::doc::{Document, EditKind, Pos, Selection};
 use super::{Completion, Editors, Tab};
 use crate::lsp::{self, Diag, Fix};
-use crate::system::{Syntax, System, Workspace};
+use crate::system::{Highlight, Syntax, System, Workspace};
 
 pub const LINE_H: f32 = 21.0;
 /// A lens row over a function (`st-ln--lens`).
@@ -910,7 +910,7 @@ fn code(
                 _ => {
                     ctx.data_mut(|d| d.insert_temp(id.with("rest"), (at, now)));
                     ctx.request_repaint_after(std::time::Duration::from_secs_f64(HOVER_AFTER));
-                    if !popup_hovered && tab.hover.as_ref().is_some_and(|(p, _)| *p != at) {
+                    if !popup_hovered && tab.hover.as_ref().is_some_and(|h| h.at != at) {
                         tab.hover = None;
                     }
                 }
@@ -1059,7 +1059,7 @@ fn popup<R>(
 
 /// The hover: the problems at the place, then the server's text.
 fn hover_popup(ctx: &egui::Context, id: Id, tab: &Tab, diagnostics: &[Diag], p: &Palette) {
-    let Some((at, text)) = &tab.hover else {
+    let Some(super::Hover { at, text, code }) = &tab.hover else {
         ctx.data_mut(|d| d.insert_temp(id.with("hover-pop"), false));
         return;
     };
@@ -1126,7 +1126,7 @@ fn hover_popup(ctx: &egui::Context, id: Id, tab: &Tab, diagnostics: &[Diag], p: 
                 separator(ui, p);
             }
             if !text.trim().is_empty() {
-                forms::padded(ui, 12, 8, |ui| markdown(ui, text, p));
+                forms::padded(ui, 12, 8, |ui| markdown(ui, text, code, p));
             }
         },
     );
@@ -1141,45 +1141,65 @@ fn separator(ui: &mut Ui, p: &Palette) {
 }
 
 /// The server's markdown, simply: code blocks in the code font on
-/// `bg-000`, the rest as text without its marks.
-fn markdown(ui: &mut Ui, text: &str, p: &Palette) {
+/// `bg-000`, coloured as the editor colours them (`colours`: byte ranges
+/// in `text`), the rest as text without its marks.
+fn markdown(ui: &mut Ui, text: &str, colours: &[Highlight], p: &Palette) {
     ui.spacing_mut().item_spacing.y = 4.0;
-    let mut in_code = false;
-    let mut code = String::new();
-    let flush_code = |ui: &mut Ui, code: &mut String| {
-        if code.is_empty() {
+    let font = Face::Plex.at(12.5);
+    // The code block being read: where it starts in `text`, and its end.
+    let mut code: Option<(usize, usize)> = None;
+    let flush_code = |ui: &mut Ui, (start, end): (usize, usize)| {
+        let block = text[start..end].trim_end();
+        if block.is_empty() {
             return;
         }
+        let mut job = LayoutJob::default();
+        let mut at = start;
+        for h in colours {
+            let (s, e) = (h.start.max(at), h.end.min(start + block.len()));
+            if s >= e {
+                continue;
+            }
+            job.append(&text[at..s], 0.0, TextFormat::simple(font.clone(), p.ink));
+            job.append(&text[s..e], 0.0, style(h.syntax, &font, p));
+            at = e;
+        }
+        job.append(
+            &text[at..start + block.len()],
+            0.0,
+            TextFormat::simple(font.clone(), p.ink),
+        );
         egui::Frame::NONE
             .fill(p.bg_000)
             .inner_margin(egui::Margin::symmetric(8, 4))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                ui.label(
-                    egui::RichText::new(code.trim_end())
-                        .font(Face::Plex.at(12.5))
-                        .color(p.ink),
-                );
+                ui.label(job);
             });
-        code.clear();
     };
-    for line in text.lines() {
+    let mut at = 0;
+    for line in text.split_inclusive('\n') {
+        at += line.len();
         if line.trim_start().starts_with("```") {
-            if in_code {
-                flush_code(ui, &mut code);
-            }
-            in_code = !in_code;
+            code = match code {
+                Some(block) => {
+                    flush_code(ui, block);
+                    None
+                }
+                None => Some((at, at)),
+            };
             continue;
         }
-        if in_code {
-            code.push_str(line);
-            code.push('\n');
+        if let Some((_, end)) = &mut code {
+            *end = at;
         } else if !line.trim().is_empty() && line.trim() != "---" {
-            let plain = line.replace("**", "").replace('`', "");
+            let plain = line.trim_end().replace("**", "").replace('`', "");
             forms::paragraph(ui, plain.trim_start_matches("# "), 12.0, 18.0, p.ink);
         }
     }
-    flush_code(ui, &mut code);
+    if let Some(block) = code {
+        flush_code(ui, block);
+    }
 }
 
 /// The call's signature over the caret, the active parameter in amber.

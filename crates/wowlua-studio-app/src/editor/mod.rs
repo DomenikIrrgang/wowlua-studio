@@ -20,6 +20,21 @@ type LineHighlights = Vec<Vec<(usize, usize, Syntax)>>;
 /// asked for.
 pub type Lenses = Vec<(usize, String, Pos)>;
 
+/// The language server's hover where the pointer rests: its markdown and
+/// the colours of its wowlua code (byte ranges in the markdown).
+pub struct Hover {
+    pub at: Pos,
+    pub text: String,
+    pub code: Vec<Highlight>,
+}
+
+impl Hover {
+    pub fn new(at: Pos, text: String, system: &dyn System) -> Self {
+        let code = code_highlights(&text, system);
+        Hover { at, text, code }
+    }
+}
+
 /// An open file.
 pub struct Tab {
     pub doc: Document,
@@ -38,7 +53,7 @@ pub struct Tab {
     /// The path as the language server names it (links resolved).
     pub canonical: PathBuf,
     /// The language server's hover where the pointer rests.
-    pub hover: Option<(Pos, String)>,
+    pub hover: Option<Hover>,
     /// Completion suggestions at the caret.
     pub completion: Option<Completion>,
     /// The call's signature, its active parameter in characters.
@@ -331,6 +346,64 @@ impl Tab {
 
 /// Files the lexer highlights: wowlua and Lua. Large data files stay
 /// plain, so typing in them stays fast.
+/// The colours of the wowlua code blocks in a hover's markdown, as the
+/// editor's. The server's first block is a type (`name: T` or `T`): it is
+/// highlighted as the local `local name: T` declares, for the server to
+/// tell its types; the others (a doc comment's examples) as code.
+fn code_highlights(text: &str, system: &dyn System) -> Vec<Highlight> {
+    let mut out = Vec::new();
+    let mut at = 0;
+    let mut block: Option<(usize, bool)> = None;
+    for line in text.split_inclusive('\n') {
+        let start = at;
+        at += line.len();
+        let fence = line.trim();
+        if let Some(lang) = fence.strip_prefix("```") {
+            block = match block {
+                Some(_) => None,
+                None if matches!(lang, "wowlua" | "lua") => Some((at, start == 0)),
+                None => Some((usize::MAX, false)),
+            };
+            continue;
+        }
+        let Some((first, typed)) = block else {
+            continue;
+        };
+        if first == usize::MAX {
+            continue;
+        }
+        let code = line.trim_end();
+        let prefix = if !typed {
+            ""
+        } else if is_named(code) {
+            "local "
+        } else {
+            "local _: "
+        };
+        let source = format!("{prefix}{code}");
+        for h in system.highlight(&source) {
+            if h.end <= prefix.len() {
+                continue;
+            }
+            out.push(Highlight {
+                start: start + h.start.max(prefix.len()) - prefix.len(),
+                end: start + h.end - prefix.len(),
+                syntax: h.syntax,
+            });
+        }
+    }
+    out
+}
+
+/// `name: T`: a hover's type with the name it is of.
+fn is_named(code: &str) -> bool {
+    code.split_once(": ").is_some_and(|(name, _)| {
+        !name.is_empty()
+            && !name.starts_with(|c: char| c.is_ascii_digit())
+            && name.chars().all(|c| c.is_alphanumeric() || c == '_')
+    })
+}
+
 fn highlighted(path: &Path) -> bool {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     matches!(ext, "wowlua" | "lua")
