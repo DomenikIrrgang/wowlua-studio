@@ -40,8 +40,8 @@ const HOVER_AFTER: f64 = 0.45;
 /// How long the hover stays once the pointer left its place: time to move
 /// onto it, to scroll or select in it.
 const HOVER_LEAVE: f64 = 0.4;
-/// The hover's height at most: half the window's, at most this.
-const HOVER_MAX_H: f32 = 420.0;
+/// The hover's height at most: this, or the window's less a margin.
+const HOVER_MAX_H: f32 = 1260.0;
 
 /// What the editor asks Studio to do.
 #[derive(Clone, Debug, PartialEq)]
@@ -1407,7 +1407,7 @@ fn hover_popup(ctx: &egui::Context, id: Id, tab: &Tab, diagnostics: &[Diag], p: 
         560.0,
         |ui| {
             // A long hover (a function's many overloads) scrolls in it.
-            let max_h = (ctx.content_rect().height() * 0.5).min(HOVER_MAX_H);
+            let max_h = (ctx.content_rect().height() - 48.0).min(HOVER_MAX_H);
             egui::ScrollArea::vertical()
                 .id_salt(("wowlua-studio-hover-scroll", at.line, at.col))
                 .max_height(max_h)
