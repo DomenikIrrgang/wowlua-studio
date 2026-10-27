@@ -17,6 +17,9 @@ use wowlua_studio_ui::Theme;
 pub struct Screenshot {
     path: PathBuf,
     frame: u32,
+    /// Seconds to wait first (`WOWLUA_STUDIO_SCREENSHOT_AFTER`): the
+    /// language server's check takes a moment.
+    after: f64,
     image: Option<mpsc::Receiver<Arc<egui::ColorImage>>>,
 }
 
@@ -54,6 +57,10 @@ impl Screenshot {
         Some(Screenshot {
             path,
             frame: 0,
+            after: std::env::var("WOWLUA_STUDIO_SCREENSHOT_AFTER")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.0),
             image: None,
         })
     }
@@ -62,7 +69,7 @@ impl Screenshot {
         self.frame += 1;
         ctx.request_repaint();
         // Opening a folder takes a moment: the shot waits for it.
-        if self.frame == 30 && self.image.is_none() {
+        if self.frame >= 30 && ctx.input(|i| i.time) >= self.after && self.image.is_none() {
             let (send, receive) = mpsc::channel();
             self.image = Some(receive);
             let callback = egui::ScreenshotCallback::new(move |image| {

@@ -14,8 +14,8 @@ use wowlua_driver::project::{LoadOptions, find_manifest, load_projects};
 use wowlua_driver::scaffold::{InitRequest, NewRequest};
 use wowlua_manifest::model::{CheckMode, PackageKind};
 use wowlua_studio_app::system::{
-    Adopt, AdoptPreview, ClientFolder, Entry, Event, Highlight, Installation, Member, NewAddon,
-    Opened, PackageNames, Syntax, System, UiState, Workspace,
+    Adopt, AdoptPreview, ClientFolder, Entry, Event, FileChange, Highlight, Installation, Member,
+    NewAddon, Opened, PackageNames, Syntax, System, UiState, Workspace,
 };
 
 /// Folders the explorer and the watcher leave out: build output and the
@@ -30,6 +30,8 @@ pub struct NativeSystem {
     events: Receiver<Event>,
     ctx: egui::Context,
     watcher: RefCell<Option<notify::RecommendedWatcher>>,
+    /// The language server's thread, once started.
+    lsp: RefCell<Option<Sender<crate::lsp::Input>>>,
 }
 
 impl NativeSystem {
@@ -40,6 +42,7 @@ impl NativeSystem {
             events,
             ctx: ctx.clone(),
             watcher: RefCell::new(None),
+            lsp: RefCell::new(None),
         }
     }
 
@@ -284,6 +287,36 @@ impl System for NativeSystem {
             .ok()?;
         let branch = String::from_utf8_lossy(&out.stdout).trim().to_owned();
         (out.status.success() && !branch.is_empty()).then_some(branch)
+    }
+
+    fn canonical(&self, path: &Path) -> PathBuf {
+        std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    }
+
+    fn lsp_send(&self, message: serde_json::Value) {
+        let mut lsp = self.lsp.borrow_mut();
+        let sender =
+            lsp.get_or_insert_with(|| crate::lsp::start(self.send.clone(), self.ctx.clone()));
+        if sender
+            .send(crate::lsp::Input::Message(message.clone()))
+            .is_err()
+        {
+            // The thread ended (`exit`): a new one.
+            let fresh = crate::lsp::start(self.send.clone(), self.ctx.clone());
+            let _ = fresh.send(crate::lsp::Input::Message(message));
+            *lsp = Some(fresh);
+        }
+    }
+
+    fn lsp_files(&self, changes: Vec<(PathBuf, FileChange)>) {
+        if let Some(sender) = self.lsp.borrow().as_ref() {
+            let _ = sender.send(crate::lsp::Input::Files(changes));
+        }
+    }
+
+    fn lsp_stop(&self) {
+        // Dropping the channel ends the thread.
+        self.lsp.borrow_mut().take();
     }
 
     fn poll(&self) -> Vec<Event> {

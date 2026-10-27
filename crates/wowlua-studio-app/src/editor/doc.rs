@@ -220,6 +220,49 @@ impl Document {
         }
     }
 
+    /// Several replacements (a formatting, a rename) as one step: each
+    /// range is where it was before any of them. The selection stays, as
+    /// far as the text goes.
+    pub fn edits(&mut self, mut list: Vec<(Pos, Pos, String)>) {
+        if list.is_empty() {
+            return;
+        }
+        let before = self.selection;
+        // From the end, so the earlier ranges stay where they were.
+        list.sort_by_key(|a| std::cmp::Reverse(a.0));
+        let mut edits = Vec::new();
+        for (start, end, text) in list {
+            let (start, end) = (self.clamp(start), self.clamp(end));
+            let removed = self.slice(start, end);
+            if removed == text {
+                continue;
+            }
+            self.replace(start, end, &text);
+            edits.push(Edit {
+                at: start,
+                removed,
+                inserted: text,
+            });
+        }
+        if edits.is_empty() {
+            return;
+        }
+        self.redo.clear();
+        if self.saved.is_some_and(|s| s > self.undo.len()) {
+            self.saved = None;
+        }
+        self.selection = Selection {
+            anchor: self.clamp(before.anchor),
+            head: self.clamp(before.head),
+        };
+        self.undo.push(Step {
+            edits,
+            before,
+            after: self.selection,
+            kind: EditKind::Other,
+        });
+    }
+
     /// Replaces the selection with `text`.
     pub fn insert(&mut self, text: &str, kind: EditKind) {
         let (start, end) = self.selection.range();

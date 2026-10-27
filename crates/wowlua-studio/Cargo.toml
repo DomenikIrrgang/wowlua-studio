@@ -21,6 +21,7 @@ wowlua-flavors.workspace = true
 wowlua-manifest.workspace = true
 wowlua-studio-app.workspace = true
 wowlua-studio-ui.workspace = true
+wowlua-lsp.workspace = true
 wowlua-span.workspace = true
 wowlua-syntax.workspace = true
 wowlua-test.workspace = true

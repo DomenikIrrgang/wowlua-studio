@@ -1,13 +1,15 @@
 //! Drawing the editor and taking its input (the design's editor board):
 //! the tabs, the path, the changed-on-disk banner, and the code with its
-//! gutter. Only the lines on screen are laid out; positions come from each
-//! line's laid-out text, so wide characters and tabs place the caret right.
+//! gutter, the server's problems underlined, and its popups: hover,
+//! completion, signature help, rename. Only the lines on screen are laid
+//! out; positions come from each line's laid-out text, so wide characters
+//! and tabs place the caret right.
 
 use std::sync::Arc;
 
 use egui::{
     Align2, Color32, CornerRadius, CursorIcon, Event, EventFilter, FontId, Galley, Id, Key,
-    Modifiers, Pos2, Rect, Sense, Stroke, Ui, UiBuilder, Vec2,
+    Modifiers, Order, Pos2, Rect, Sense, Shape, Stroke, Ui, UiBuilder, Vec2,
     epaint::text::cursor::CCursor,
     text::{LayoutJob, TextFormat},
 };
@@ -17,7 +19,8 @@ use wowlua_studio_ui::{Face, Icon, Palette, icons, palette};
 
 use super::diff;
 use super::doc::{Document, EditKind, Pos, Selection};
-use super::{Editors, Tab};
+use super::{Completion, Editors, Tab};
+use crate::lsp::{self, Diag};
 use crate::system::{Syntax, System, Workspace};
 
 pub const LINE_H: f32 = 21.0;
@@ -28,6 +31,8 @@ const TABS_H: f32 = 34.0;
 const CRUMBS_H: f32 = 26.0;
 const TAB_STOP: usize = 4;
 const FONT_SIZE: f32 = 13.0;
+/// How long the pointer rests before the hover is asked for.
+const HOVER_AFTER: f64 = 0.45;
 
 /// What the editor asks Studio to do.
 #[derive(Clone, Debug, PartialEq)]
@@ -35,6 +40,12 @@ pub enum Action {
     Save(usize),
     /// Close the tab; Studio asks first when it has unsaved edits.
     Close(usize),
+    Hover(Pos),
+    Complete(Pos),
+    Signature(Pos),
+    Definition(Pos),
+    References(Pos),
+    Rename(Pos, String),
 }
 
 /// What the editor needs from Studio.
@@ -42,6 +53,8 @@ pub struct Cx<'a> {
     pub system: &'a dyn System,
     pub workspace: &'a Workspace,
     pub mac: bool,
+    /// The active file's problems.
+    pub diagnostics: &'a [Diag],
 }
 
 /// A line as it is drawn: tabs to the next stop of four. With it each
@@ -72,11 +85,10 @@ pub fn show(ui: &mut Ui, editors: &mut Editors, cx: &Cx<'_>) -> Vec<Action> {
     ui.painter().rect_filled(rect, CornerRadius::ZERO, p.bg_000);
     let mut actions = Vec::new();
     if editors.tabs.is_empty() {
-        let text = "Open a file from the explorer.";
         ui.painter().text(
             rect.center(),
             Align2::CENTER_CENTER,
-            text,
+            "Open a file from the explorer.",
             Face::Plex.at(12.5),
             p.ink_muted,
         );
@@ -97,10 +109,7 @@ pub fn show(ui: &mut Ui, editors: &mut Editors, cx: &Cx<'_>) -> Vec<Action> {
 
     let mut top = crumbs_rect.bottom();
     if tab.clash.is_some() {
-        let banner = Rect::from_min_max(
-            Pos2::new(rect.left(), top),
-            Pos2::new(rect.right(), rect.bottom()),
-        );
+        let banner = Rect::from_min_max(Pos2::new(rect.left(), top), rect.max);
         let mut child = ui.new_child(UiBuilder::new().max_rect(banner));
         clash_banner(&mut child, tab);
         top = child.min_rect().bottom();
@@ -151,7 +160,7 @@ fn tab_bar(ui: &mut Ui, rect: Rect, editors: &mut Editors, actions: &mut Vec<Act
         clip.rect_filled(r, CornerRadius::ZERO, bg);
         clip.vline(r.right() - 0.5, r.y_range(), Stroke::new(1.0, p.line));
         let cy = r.center().y;
-        let (icon, color) = super::super::explorer::file_icon(&tab.doc.path, &name, p);
+        let (icon, color) = crate::explorer::file_icon(&tab.doc.path, &name, p);
         icons::paint(
             &clip,
             Rect::from_min_size(Pos2::new(r.left() + 14.0, cy - 7.0), Vec2::splat(14.0)),
@@ -228,8 +237,7 @@ fn crumbs(ui: &Ui, rect: Rect, doc: &Document, workspace: &Workspace) {
         if i > 0 {
             job.append(" › ", 0.0, TextFormat::simple(font.clone(), p.ink_muted));
         }
-        let last = i + 1 == parts.len();
-        let (f, c) = if last {
+        let (f, c) = if i + 1 == parts.len() {
             (Face::PlexMedium.at(11.5), p.ink)
         } else {
             (font.clone(), p.ink_muted)
@@ -265,7 +273,14 @@ fn clash_banner(ui: &mut Ui, tab: &mut Tab) {
             ui.spacing_mut().item_spacing.x = 8.0;
             let width = (ui.available_width() - 330.0).max(200.0);
             ui.allocate_ui(Vec2::new(width, 28.0), |ui| {
-                let g = rich_note(ui, &text, width, p);
+                let g = rich(
+                    ui,
+                    &[
+                        ("note: ", Face::PlexSemiBold.at(12.0), p.note),
+                        (&text, Face::Plex.at(12.0), p.ink),
+                    ],
+                    width,
+                );
                 let (r, _) = ui.allocate_exact_size(g.size(), Sense::hover());
                 ui.painter().galley(r.min, g, p.ink);
             });
@@ -297,14 +312,12 @@ fn clash_banner(ui: &mut Ui, tab: &mut Tab) {
     }
 }
 
-fn rich_note(ui: &Ui, text: &str, width: f32, p: &Palette) -> Arc<Galley> {
+/// Text in sections of their own fonts and colours, wrapped at `width`.
+fn rich(ui: &Ui, parts: &[(&str, FontId, Color32)], width: f32) -> Arc<Galley> {
     let mut job = LayoutJob::default();
-    job.append(
-        "note: ",
-        0.0,
-        TextFormat::simple(Face::PlexSemiBold.at(12.0), p.note),
-    );
-    job.append(text, 0.0, TextFormat::simple(Face::Plex.at(12.0), p.ink));
+    for (text, font, color) in parts {
+        job.append(text, 0.0, TextFormat::simple(font.clone(), *color));
+    }
     job.wrap.max_width = width;
     ui.fonts_mut(|f| f.layout_job(job))
 }
@@ -358,7 +371,8 @@ fn compare(ui: &mut Ui, rect: Rect, mine: &str, theirs: &str, path: &std::path::
         });
 }
 
-/// The code: the gutter and the visible lines; the keyboard and pointer.
+/// The code: the gutter and the visible lines; the keyboard, the pointer
+/// and the popups.
 fn code(
     ui: &mut Ui,
     rect: Rect,
@@ -374,6 +388,7 @@ fn code(
     let font = Face::Plex.at(FONT_SIZE);
     let char_w = ui.fonts_mut(|f| f.glyph_width(&font, 'M'));
     let text_rect = Rect::from_min_max(Pos2::new(rect.left() + GUTTER, rect.top()), rect.max);
+    let now = ctx.input(|i| i.time);
 
     if focus {
         ctx.memory_mut(|m| m.request_focus(id));
@@ -387,17 +402,17 @@ fn code(
                     tab: true,
                     horizontal_arrows: true,
                     vertical_arrows: true,
-                    escape: false,
+                    escape: true,
                 },
             );
         });
-        let changed = keyboard(ui, &mut tab.doc, cx.mac, (rect.height() / LINE_H) as usize);
+        let changed = keyboard(ui, tab, cx.mac, (rect.height() / LINE_H) as usize, actions);
         if changed.save {
             actions.push(Action::Save(index));
         }
         if changed.moved {
             tab.reveal = true;
-            let now = ctx.input(|i| i.time);
+            tab.hover = None;
             ctx.data_mut(|d| d.insert_temp(id.with("typed"), now));
         }
     }
@@ -414,9 +429,10 @@ fn code(
     );
     let mut child = ui.new_child(UiBuilder::new().max_rect(text_rect));
     child.set_clip_rect(text_rect);
-    let reveal_now = std::mem::take(&mut tab.reveal);
-    let mut reveal = reveal_now;
+    let mut reveal = std::mem::take(&mut tab.reveal);
     let mut caret_screen = None;
+    let mut hover_at: Option<(Pos, Pos2)> = None;
+    let mut clear_hover = false;
     let output = egui::ScrollArea::both()
         .id_salt(("wowlua-studio-code", &doc.path))
         .auto_shrink(false)
@@ -440,27 +456,27 @@ fn code(
                     p,
                 )
             };
-
-            // The pointer: place the caret, select by dragging, words and
-            // lines by double and triple clicks.
-            if let Some(pointer) = response.interact_pointer_pos() {
-                let line = (((pointer.y - origin.y - PAD_TOP) / LINE_H).floor().max(0.0) as usize)
+            let pos_at = |ui: &Ui, doc: &Document, point: Pos2| {
+                let line = (((point.y - origin.y - PAD_TOP) / LINE_H).floor().max(0.0) as usize)
                     .min(lines - 1);
                 let g = galley_of(ui, doc.line(line), line);
-                let at = Pos::new(
-                    line,
-                    char_col(
-                        doc.line(line),
-                        g.cursor_from_pos(Vec2::new(pointer.x - origin.x, 0.0))
-                            .index
-                            .0,
-                    ),
-                );
+                let dcol = g
+                    .cursor_from_pos(Vec2::new(point.x - origin.x, 0.0))
+                    .index
+                    .0;
+                Pos::new(line, char_col(doc.line(line), dcol))
+            };
+
+            // The pointer: place the caret, select by dragging, words and
+            // lines by double and triple clicks; go to a definition with
+            // cmd (ctrl) and a click.
+            if let Some(pointer) = response.interact_pointer_pos() {
+                let at = pos_at(ui, doc, pointer);
                 let pressed = ui.input(|i| i.pointer.primary_pressed());
-                let shift = ui.input(|i| i.modifiers.shift);
+                let modifiers = ui.input(|i| i.modifiers);
                 if pressed && response.is_pointer_button_down_on() {
                     ctx.memory_mut(|m| m.request_focus(id));
-                    doc.selection = if shift {
+                    doc.selection = if modifiers.shift {
                         Selection {
                             anchor: doc.selection.anchor,
                             head: at,
@@ -469,41 +485,60 @@ fn code(
                         Selection::caret(at)
                     };
                     doc.goal_col = None;
+                    if modifiers.command {
+                        actions.push(Action::Definition(at));
+                    }
                 } else if response.dragged() {
                     doc.selection.head = at;
                     reveal = true;
                 }
                 if response.triple_clicked() {
-                    let end = if line + 1 < lines {
-                        Pos::new(line + 1, 0)
+                    let end = if at.line + 1 < lines {
+                        Pos::new(at.line + 1, 0)
                     } else {
-                        Pos::new(line, doc.line_len(line))
+                        Pos::new(at.line, doc.line_len(at.line))
                     };
                     doc.selection = Selection {
-                        anchor: Pos::new(line, 0),
+                        anchor: Pos::new(at.line, 0),
                         head: end,
                     };
                 } else if response.double_clicked() {
-                    let (start, end) = word_at(doc.line(line), at.col);
+                    let (start, end) = word_at(doc.line(at.line), at.col);
                     doc.selection = Selection {
-                        anchor: Pos::new(line, start),
-                        head: Pos::new(line, end),
+                        anchor: Pos::new(at.line, start),
+                        head: Pos::new(at.line, end),
                     };
                 }
-                let now = ctx.input(|i| i.time);
                 ctx.data_mut(|d| d.insert_temp(id.with("typed"), now));
+                clear_hover = true;
+            } else if let Some(point) = response.hover_pos() {
+                hover_at = Some((pos_at(ui, doc, point), point));
+            } else {
+                clear_hover = true;
             }
 
             let (sel_start, sel_end) = doc.selection.range();
             let head = doc.selection.head;
             for line in first..last {
                 let y = line_y(line);
-                let g = galley_of(ui, doc.line(line), line);
+                let text = doc.line(line);
+                let g = galley_of(ui, text, line);
                 let row = Rect::from_min_size(
                     Pos2::new(viewport.min.x + origin.x, y),
                     Vec2::new(viewport.width().max(full.width()), LINE_H),
                 );
-                if line == head.line && doc.selection.is_empty() {
+                let line_diags: Vec<&Diag> = cx
+                    .diagnostics
+                    .iter()
+                    .filter(|d| d.start.line <= line && line <= d.end.line)
+                    .collect();
+                if line_diags
+                    .iter()
+                    .any(|d| d.is_error() && d.start.line == line)
+                {
+                    ui.painter()
+                        .rect_filled(row, CornerRadius::ZERO, p.error_soft);
+                } else if line == head.line && doc.selection.is_empty() {
                     ui.painter().rect_filled(row, CornerRadius::ZERO, p.bg_100);
                 }
                 // The selection on this line.
@@ -519,8 +554,8 @@ fn code(
                     } else {
                         sel_end.col
                     };
-                    let x0 = x_of(&g, doc.line(line), from);
-                    let mut x1 = x_of(&g, doc.line(line), to);
+                    let x0 = x_of(&g, text, from);
+                    let mut x1 = x_of(&g, text, to);
                     if to_end {
                         x1 += char_w * 0.6;
                     }
@@ -538,8 +573,25 @@ fn code(
                 let text_y = y + (LINE_H - g.size().y) / 2.0;
                 ui.painter()
                     .galley(Pos2::new(origin.x, text_y), g.clone(), p.ink);
+                // The problems, underlined in waves (`st-sq-err`, `st-sq-warn`).
+                for d in line_diags {
+                    let from = if d.start.line == line {
+                        lsp::from_wire(doc, d.start).col
+                    } else {
+                        0
+                    };
+                    let to = if d.end.line == line {
+                        lsp::from_wire(doc, d.end).col
+                    } else {
+                        doc.line_len(line)
+                    };
+                    let x0 = origin.x + x_of(&g, text, from);
+                    let x1 = (origin.x + x_of(&g, text, to)).max(x0 + char_w);
+                    let color = if d.is_error() { p.error } else { p.warning };
+                    wave(ui, x0, x1, y + LINE_H - 3.0, color);
+                }
                 if line == head.line {
-                    let x = origin.x + x_of(&g, doc.line(line), head.col);
+                    let x = origin.x + x_of(&g, text, head.col);
                     caret_screen = Some(Rect::from_min_size(
                         Pos2::new(x, y + 2.0),
                         Vec2::new(2.0, LINE_H - 4.0),
@@ -560,9 +612,44 @@ fn code(
             }
         });
 
+    // The hover: asked for once the pointer rests on a place.
+    let popup_hovered: bool = ctx
+        .data(|d| d.get_temp(id.with("hover-pop")))
+        .unwrap_or(false);
+    match hover_at {
+        Some((at, point)) => {
+            let rest: Option<(Pos, f64)> = ctx.data(|d| d.get_temp(id.with("rest")));
+            match rest {
+                Some((pos, since)) if pos == at => {
+                    let asked: Option<Pos> = ctx.data(|d| d.get_temp(id.with("asked")));
+                    if now - since >= HOVER_AFTER && asked != Some(at) {
+                        actions.push(Action::Hover(at));
+                        ctx.data_mut(|d| d.insert_temp(id.with("asked"), at));
+                    } else if now - since < HOVER_AFTER {
+                        ctx.request_repaint_after(std::time::Duration::from_secs_f64(
+                            HOVER_AFTER - (now - since),
+                        ));
+                    }
+                }
+                _ => {
+                    ctx.data_mut(|d| d.insert_temp(id.with("rest"), (at, now)));
+                    ctx.request_repaint_after(std::time::Duration::from_secs_f64(HOVER_AFTER));
+                    if !popup_hovered && tab.hover.as_ref().is_some_and(|(p, _)| *p != at) {
+                        tab.hover = None;
+                    }
+                }
+            }
+            ctx.data_mut(|d| d.insert_temp(id.with("point"), point));
+        }
+        None if clear_hover && !popup_hovered => {
+            tab.hover = None;
+            ctx.data_mut(|d| d.remove::<Pos>(id.with("asked")));
+        }
+        None => {}
+    }
+
     // The caret: 2 px of amber, blinking while nothing is typed.
     if has_focus && let Some(caret) = caret_screen {
-        let now = ctx.input(|i| i.time);
         let typed: f64 = ctx.data(|d| d.get_temp(id.with("typed"))).unwrap_or(now);
         let phase = (now - typed) % 1.0;
         if phase < 0.6 && text_rect.intersects(caret) {
@@ -593,10 +680,10 @@ fn code(
     painter.rect_filled(gutter, CornerRadius::ZERO, p.bg_000);
     let first = ((offset - PAD_TOP) / LINE_H).floor().max(0.0) as usize;
     let last = ((offset + rect.height()) / LINE_H).ceil() as usize + 1;
-    let number_font = Face::Plex.at(FONT_SIZE);
+    let head_line = tab.doc.selection.head.line;
     for line in first..last.min(lines) {
         let y = rect.top() + PAD_TOP + line as f32 * LINE_H - offset + LINE_H / 2.0;
-        let color = if line == doc_head_line(tab) {
+        let color = if line == head_line {
             p.ink
         } else {
             p.ink_muted
@@ -605,14 +692,424 @@ fn code(
             Pos2::new(gutter.right() - 16.0, y),
             Align2::RIGHT_CENTER,
             (line + 1).to_string(),
-            number_font.clone(),
+            Face::Plex.at(FONT_SIZE),
             color,
         );
     }
+
+    // The popups, over everything.
+    let caret = caret_screen.filter(|c| text_rect.expand(4.0).intersects(*c));
+    hover_popup(&ctx, id, tab, cx.diagnostics, p);
+    if let Some(caret) = caret {
+        signature_popup(&ctx, tab, caret, p);
+        completion_popup(&ctx, tab, caret, p);
+        rename_popup(&ctx, id, tab, caret, p, actions);
+    }
 }
 
-fn doc_head_line(tab: &Tab) -> usize {
-    tab.doc.selection.head.line
+/// A wavy line from `x0` to `x1` at `y`.
+fn wave(ui: &Ui, x0: f32, x1: f32, y: f32, color: Color32) {
+    let mut points = Vec::new();
+    let mut x = x0;
+    let mut up = true;
+    while x <= x1 {
+        points.push(Pos2::new(x, if up { y - 1.25 } else { y + 1.25 }));
+        x += 2.0;
+        up = !up;
+    }
+    if points.len() >= 2 {
+        ui.painter()
+            .add(Shape::line(points, Stroke::new(1.0, color)));
+    }
+}
+
+/// A popup's frame: `bg-200`, `line-strong`, the pop shadow.
+fn popup<R>(
+    ctx: &egui::Context,
+    id: Id,
+    pos: Pos2,
+    pivot: Align2,
+    width: f32,
+    add: impl FnOnce(&mut Ui) -> R,
+) -> egui::InnerResponse<R> {
+    let p = palette(ctx);
+    egui::Area::new(id)
+        .order(Order::Foreground)
+        .pivot(pivot)
+        .fixed_pos(pos)
+        .show(ctx, |ui| {
+            egui::Frame::NONE
+                .fill(p.bg_200)
+                .stroke(Stroke::new(1.0, p.line_strong))
+                .shadow(ui.visuals().popup_shadow)
+                .show(ui, |ui| {
+                    ui.set_max_width(width);
+                    add(ui)
+                })
+                .inner
+        })
+}
+
+/// The hover: the problems at the place, then the server's text.
+fn hover_popup(ctx: &egui::Context, id: Id, tab: &Tab, diagnostics: &[Diag], p: &Palette) {
+    let Some((at, text)) = &tab.hover else {
+        ctx.data_mut(|d| d.insert_temp(id.with("hover-pop"), false));
+        return;
+    };
+    let wire = lsp::to_wire(&tab.doc, *at);
+    let here: Vec<&Diag> = diagnostics
+        .iter()
+        .filter(|d| d.start <= wire && wire <= d.end)
+        .collect();
+    if text.trim().is_empty() && here.is_empty() {
+        return;
+    }
+    let point: Pos2 = ctx
+        .data(|d| d.get_temp(id.with("point")))
+        .unwrap_or_default();
+    let shown = popup(
+        ctx,
+        id.with("hover"),
+        point + Vec2::new(0.0, -10.0),
+        Align2::LEFT_BOTTOM,
+        560.0,
+        |ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            for d in &here {
+                forms::padded(ui, 12, 8, |ui| {
+                    let (word, color) = if d.is_error() {
+                        ("error", p.error)
+                    } else {
+                        ("warning", p.warning)
+                    };
+                    let head = match &d.code {
+                        Some(code) => format!("{word}[{code}]"),
+                        None => word.to_owned(),
+                    };
+                    let mut lines = d.message.lines();
+                    let first = lines.next().unwrap_or("");
+                    let width = ui.available_width();
+                    let g = rich(
+                        ui,
+                        &[
+                            (&head, Face::PlexSemiBold.at(12.0), color),
+                            (&format!(": {first}"), Face::Plex.at(12.0), p.ink),
+                        ],
+                        width,
+                    );
+                    let (r, _) = ui.allocate_exact_size(g.size(), Sense::hover());
+                    ui.painter().galley(r.min, g, p.ink);
+                    for rest in lines {
+                        let (prefix, body) = match rest.strip_prefix("help: ") {
+                            Some(h) => ("= help: ", h),
+                            None => ("", rest),
+                        };
+                        let g = rich(
+                            ui,
+                            &[
+                                (prefix, Face::PlexSemiBold.at(12.0), p.note),
+                                (body, Face::Plex.at(12.0), p.ink_muted),
+                            ],
+                            width,
+                        );
+                        let (r, _) = ui.allocate_exact_size(g.size(), Sense::hover());
+                        ui.painter().galley(r.min, g, p.ink);
+                    }
+                });
+                separator(ui, p);
+            }
+            if !text.trim().is_empty() {
+                forms::padded(ui, 12, 8, |ui| markdown(ui, text, p));
+            }
+        },
+    );
+    let over = shown.response.contains_pointer();
+    ctx.data_mut(|d| d.insert_temp(id.with("hover-pop"), over));
+}
+
+fn separator(ui: &mut Ui, p: &Palette) {
+    let (r, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), Sense::hover());
+    ui.painter()
+        .hline(r.x_range(), r.center().y, Stroke::new(1.0, p.line));
+}
+
+/// The server's markdown, simply: code blocks in the code font on
+/// `bg-000`, the rest as text without its marks.
+fn markdown(ui: &mut Ui, text: &str, p: &Palette) {
+    ui.spacing_mut().item_spacing.y = 4.0;
+    let mut in_code = false;
+    let mut code = String::new();
+    let flush_code = |ui: &mut Ui, code: &mut String| {
+        if code.is_empty() {
+            return;
+        }
+        egui::Frame::NONE
+            .fill(p.bg_000)
+            .inner_margin(egui::Margin::symmetric(8, 4))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(
+                    egui::RichText::new(code.trim_end())
+                        .font(Face::Plex.at(12.5))
+                        .color(p.ink),
+                );
+            });
+        code.clear();
+    };
+    for line in text.lines() {
+        if line.trim_start().starts_with("```") {
+            if in_code {
+                flush_code(ui, &mut code);
+            }
+            in_code = !in_code;
+            continue;
+        }
+        if in_code {
+            code.push_str(line);
+            code.push('\n');
+        } else if !line.trim().is_empty() && line.trim() != "---" {
+            let plain = line.replace("**", "").replace('`', "");
+            forms::paragraph(ui, plain.trim_start_matches("# "), 12.0, 18.0, p.ink);
+        }
+    }
+    flush_code(ui, &mut code);
+}
+
+/// The call's signature over the caret, the active parameter in amber.
+fn signature_popup(ctx: &egui::Context, tab: &Tab, caret: Rect, p: &Palette) {
+    let Some((label, active)) = &tab.signature else {
+        return;
+    };
+    popup(
+        ctx,
+        Id::unique("wowlua-studio-signature"),
+        Pos2::new(caret.left(), caret.top() - 4.0),
+        Align2::LEFT_BOTTOM,
+        640.0,
+        |ui| {
+            forms::padded(ui, 10, 6, |ui| {
+                let mut job = LayoutJob::default();
+                let chars: Vec<char> = label.chars().collect();
+                let (a, b) = active.unwrap_or((chars.len(), chars.len()));
+                let part = |from: usize, to: usize| {
+                    chars[from.min(chars.len())..to.min(chars.len())]
+                        .iter()
+                        .collect::<String>()
+                };
+                job.append(
+                    &part(0, a),
+                    0.0,
+                    TextFormat::simple(Face::Plex.at(12.5), p.ink_muted),
+                );
+                job.append(
+                    &part(a, b),
+                    0.0,
+                    TextFormat::simple(Face::PlexSemiBold.at(12.5), p.amber_ink),
+                );
+                job.append(
+                    &part(b, chars.len()),
+                    0.0,
+                    TextFormat::simple(Face::Plex.at(12.5), p.ink_muted),
+                );
+                job.wrap.max_width = 620.0;
+                let g = ui.fonts_mut(|f| f.layout_job(job));
+                let (r, _) = ui.allocate_exact_size(g.size(), Sense::hover());
+                ui.painter().galley(r.min, g, p.ink);
+            });
+        },
+    );
+}
+
+/// The suggestions under the caret, filtered by the word typed.
+fn completion_popup(ctx: &egui::Context, tab: &mut Tab, caret: Rect, p: &Palette) {
+    let prefix = word_before(&tab.doc).1;
+    let Some(c) = &mut tab.completion else {
+        return;
+    };
+    let shown = filtered(c, &prefix);
+    if shown.is_empty() {
+        return;
+    }
+    c.selected = c.selected.min(shown.len() - 1);
+    let rows = 10usize;
+    let first = c.selected.saturating_sub(rows - 1);
+    let mut picked = None;
+    popup(
+        ctx,
+        Id::unique("wowlua-studio-completion"),
+        Pos2::new(caret.left() - 8.0, caret.bottom() + 4.0),
+        Align2::LEFT_TOP,
+        460.0,
+        |ui| {
+            ui.set_width(460.0);
+            ui.spacing_mut().item_spacing.y = 0.0;
+            for (i, &item_i) in shown.iter().enumerate().skip(first).take(rows) {
+                let item = &c.items[item_i];
+                let (r, resp) = ui.allocate_exact_size(Vec2::new(460.0, 24.0), Sense::click());
+                if i == c.selected {
+                    ui.painter().rect_filled(r, CornerRadius::ZERO, p.bg_400);
+                } else if resp.hovered() {
+                    ui.painter().rect_filled(r, CornerRadius::ZERO, p.bg_300);
+                }
+                let painter = ui.painter().with_clip_rect(r);
+                painter.text(
+                    Pos2::new(r.left() + 10.0, r.center().y),
+                    Align2::LEFT_CENTER,
+                    kind_word(item.kind),
+                    Face::Plex.at(11.0),
+                    p.ink_muted,
+                );
+                painter.text(
+                    Pos2::new(r.left() + 62.0, r.center().y),
+                    Align2::LEFT_CENTER,
+                    &item.label,
+                    Face::Plex.at(12.5),
+                    p.ink,
+                );
+                painter.text(
+                    Pos2::new(r.right() - 10.0, r.center().y),
+                    Align2::RIGHT_CENTER,
+                    &item.detail,
+                    Face::Plex.at(11.5),
+                    p.ink_muted,
+                );
+                if resp.clicked() {
+                    picked = Some(i);
+                }
+            }
+        },
+    );
+    if let Some(i) = picked {
+        c.selected = i;
+        accept(tab);
+    }
+}
+
+/// The new name for a rename, at the caret.
+fn rename_popup(
+    ctx: &egui::Context,
+    id: Id,
+    tab: &mut Tab,
+    caret: Rect,
+    p: &Palette,
+    actions: &mut Vec<Action>,
+) {
+    let Some((at, name)) = &mut tab.rename else {
+        return;
+    };
+    let at = *at;
+    let edit_id = id.with("rename");
+    let mut done = None;
+    popup(
+        ctx,
+        Id::unique("wowlua-studio-rename"),
+        Pos2::new(caret.left() - 8.0, caret.bottom() + 4.0),
+        Align2::LEFT_TOP,
+        320.0,
+        |ui| {
+            forms::padded(ui, 8, 8, |ui| {
+                ui.spacing_mut().item_spacing.y = 4.0;
+                ui.label(
+                    egui::RichText::new("rename to")
+                        .font(Face::PlexMedium.at(11.5))
+                        .color(p.ink_muted),
+                );
+                let resp = ui.add(
+                    egui::TextEdit::singleline(name)
+                        .id(edit_id)
+                        .font(Face::Plex.at(13.0))
+                        .desired_width(300.0),
+                );
+                if !resp.has_focus() && !resp.lost_focus() {
+                    resp.request_focus();
+                }
+                if ui.input(|i| i.key_pressed(Key::Enter)) {
+                    done = Some(true);
+                } else if ui.input(|i| i.key_pressed(Key::Escape)) || resp.lost_focus() {
+                    done = Some(false);
+                }
+            });
+        },
+    );
+    match done {
+        Some(true) => {
+            let name = name.trim().to_owned();
+            tab.rename = None;
+            if !name.is_empty() {
+                actions.push(Action::Rename(at, name));
+            }
+            ctx.memory_mut(|m| m.request_focus(id));
+        }
+        Some(false) => {
+            tab.rename = None;
+            ctx.memory_mut(|m| m.request_focus(id));
+        }
+        None => {}
+    }
+}
+
+/// The word for an LSP completion kind.
+fn kind_word(kind: u8) -> &'static str {
+    match kind {
+        2 | 3 => "fn",
+        4 => "new",
+        5 | 10 => "field",
+        6 => "local",
+        7 | 22 => "class",
+        8 => "type",
+        9 => "module",
+        12 => "value",
+        14 => "keyword",
+        21 => "const",
+        _ => "",
+    }
+}
+
+/// The items that match `prefix`: those it starts first.
+fn filtered(c: &Completion, prefix: &str) -> Vec<usize> {
+    let lower = prefix.to_lowercase();
+    let mut starts: Vec<usize> = Vec::new();
+    let mut contains: Vec<usize> = Vec::new();
+    for (i, item) in c.items.iter().enumerate() {
+        let label = item.label.to_lowercase();
+        if label.starts_with(&lower) {
+            starts.push(i);
+        } else if !lower.is_empty() && label.contains(&lower) {
+            contains.push(i);
+        }
+    }
+    starts.extend(contains);
+    starts
+}
+
+/// The identifier the caret ends: where it starts, and its text.
+fn word_before(doc: &Document) -> (usize, String) {
+    let head = doc.selection.head;
+    let chars: Vec<char> = doc.line(head.line).chars().take(head.col).collect();
+    let mut start = chars.len();
+    while start > 0 && (chars[start - 1].is_alphanumeric() || chars[start - 1] == '_') {
+        start -= 1;
+    }
+    (start, chars[start..].iter().collect())
+}
+
+/// Puts the chosen suggestion in.
+fn accept(tab: &mut Tab) {
+    let Some(c) = tab.completion.take() else {
+        return;
+    };
+    let (word_start, prefix) = word_before(&tab.doc);
+    let shown = filtered(&c, &prefix);
+    let Some(&i) = shown.get(c.selected) else {
+        return;
+    };
+    let item = &c.items[i];
+    let head = tab.doc.selection.head;
+    let start = match item.range {
+        Some((start, _)) if start.line == head.line => lsp::from_wire(&tab.doc, start),
+        _ => Pos::new(head.line, word_start),
+    };
+    tab.doc.edit(start, head, &item.insert, EditKind::Other);
 }
 
 /// A line laid out in its colours.
@@ -642,7 +1139,7 @@ fn layout(
         if to > from {
             job.append(&shown[from..to], 0.0, style(syntax, font, p));
         }
-        at = shown[..to].chars().count();
+        at = shown[..to.max(at_b)].chars().count();
     }
     let at_b = byte(at);
     if at_b < shown.len() {
@@ -727,22 +1224,60 @@ struct Changed {
     save: bool,
 }
 
-/// The editor's keys and text input.
-fn keyboard(ui: &Ui, doc: &mut Document, mac: bool, page: usize) -> Changed {
+/// The editor's keys and text input; the popups' keys first.
+fn keyboard(ui: &Ui, tab: &mut Tab, mac: bool, page: usize, actions: &mut Vec<Action>) -> Changed {
     let mut changed = Changed::default();
+    if tab.rename.is_some() {
+        return changed;
+    }
     let events = ui.input(|i| i.events.clone());
     for event in events {
+        // The suggestions take the keys that choose one.
+        if tab.completion.is_some()
+            && let Event::Key {
+                key, pressed: true, ..
+            } = &event
+        {
+            let prefix = word_before(&tab.doc).1;
+            let count = tab
+                .completion
+                .as_ref()
+                .map_or(0, |c| filtered(c, &prefix).len());
+            let c = tab.completion.as_mut().expect("open");
+            match key {
+                Key::ArrowDown => {
+                    c.selected = (c.selected + 1) % count.max(1);
+                    continue;
+                }
+                Key::ArrowUp => {
+                    c.selected = (c.selected + count.max(1) - 1) % count.max(1);
+                    continue;
+                }
+                Key::Enter | Key::Tab if count > 0 => {
+                    accept(tab);
+                    changed.moved = true;
+                    continue;
+                }
+                Key::Escape => {
+                    tab.completion = None;
+                    continue;
+                }
+                _ => {}
+            }
+        }
         match event {
             Event::Text(text) => {
-                doc.insert(&text, EditKind::Typing);
+                tab.doc.insert(&text, EditKind::Typing);
                 changed.moved = true;
+                typed(tab, &text, actions);
             }
             Event::Ime(egui::ImeEvent::Commit(text)) if !text.is_empty() => {
-                doc.insert(&text, EditKind::Typing);
+                tab.doc.insert(&text, EditKind::Typing);
                 changed.moved = true;
             }
             Event::Copy | Event::Cut => {
                 let cut = event == Event::Cut;
+                let doc = &mut tab.doc;
                 let text = if doc.selection.is_empty() {
                     // Without a selection, the whole line.
                     let line = doc.selection.head.line;
@@ -767,21 +1302,83 @@ fn keyboard(ui: &Ui, doc: &mut Document, mac: bool, page: usize) -> Changed {
                 }
             }
             Event::Paste(text) => {
-                doc.insert(&text.replace("\r\n", "\n"), EditKind::Other);
+                tab.doc.insert(&text.replace("\r\n", "\n"), EditKind::Other);
                 changed.moved = true;
+            }
+            Event::Key {
+                key: Key::Escape,
+                pressed: true,
+                ..
+            } => {
+                tab.completion = None;
+                tab.signature = None;
+                tab.hover = None;
             }
             Event::Key {
                 key,
                 pressed: true,
                 modifiers,
                 ..
-            } if key_press(doc, key, modifiers, mac, page) => {
-                changed.moved = true;
+            } => {
+                let head = tab.doc.selection.head;
+                match key {
+                    Key::F12 if modifiers.shift => actions.push(Action::References(head)),
+                    Key::F12 => actions.push(Action::Definition(head)),
+                    Key::F2 => {
+                        let (start, end) = word_at(tab.doc.line(head.line), head.col);
+                        let word: String = tab
+                            .doc
+                            .line(head.line)
+                            .chars()
+                            .skip(start)
+                            .take(end - start)
+                            .collect();
+                        tab.rename = Some((head, word));
+                    }
+                    Key::Space if modifiers.ctrl => actions.push(Action::Complete(head)),
+                    _ => {
+                        if key_press(&mut tab.doc, key, modifiers, mac, page) {
+                            changed.moved = true;
+                            if matches!(key, Key::Backspace | Key::Delete) {
+                                if tab.completion.is_some() && word_before(&tab.doc).1.is_empty() {
+                                    tab.completion = None;
+                                }
+                            } else {
+                                tab.completion = None;
+                                if matches!(key, Key::Enter) {
+                                    tab.signature = None;
+                                }
+                            }
+                        }
+                    }
+                }
             }
             _ => {}
         }
     }
     changed
+}
+
+/// Typing asks for suggestions and signatures.
+fn typed(tab: &mut Tab, text: &str, actions: &mut Vec<Action>) {
+    let Some(c) = text.chars().last() else {
+        return;
+    };
+    let head = tab.doc.selection.head;
+    match c {
+        '.' | ':' => {
+            tab.completion = None;
+            actions.push(Action::Complete(head));
+        }
+        '(' | ',' => actions.push(Action::Signature(head)),
+        ')' => tab.signature = None,
+        c if c.is_alphanumeric() || c == '_' => {
+            if tab.completion.is_none() && word_before(&tab.doc).1.chars().count() == 1 {
+                actions.push(Action::Complete(head));
+            }
+        }
+        _ => tab.completion = None,
+    }
 }
 
 /// One key; returns whether it did something.
@@ -900,20 +1497,8 @@ fn moved(
     page: usize,
 ) -> Pos {
     match key {
-        Key::ArrowUp | Key::ArrowDown if doc_edge => {
-            if key == Key::ArrowUp {
-                Pos::default()
-            } else {
-                doc.end()
-            }
-        }
-        Key::Home | Key::End if doc_edge => {
-            if key == Key::Home {
-                Pos::default()
-            } else {
-                doc.end()
-            }
-        }
+        Key::ArrowUp | Key::Home if doc_edge => Pos::default(),
+        Key::ArrowDown | Key::End if doc_edge => doc.end(),
         Key::ArrowLeft if line_edge => smart_home(doc, head),
         Key::ArrowRight if line_edge => Pos::new(head.line, doc.line_len(head.line)),
         Key::Home => smart_home(doc, head),
@@ -973,7 +1558,7 @@ fn word_left(doc: &Document, at: Pos) -> Pos {
         return left(doc, at);
     }
     let chars: Vec<char> = doc.line(at.line).chars().collect();
-    let mut col = at.col;
+    let mut col = at.col.min(chars.len());
     while col > 0 && class(chars[col - 1]) == Class::Space {
         col -= 1;
     }
@@ -1060,6 +1645,7 @@ fn indent_lines(doc: &mut Document, unit: &str, out: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lsp::Item;
     use std::path::PathBuf;
 
     fn doc(text: &str) -> Document {
@@ -1108,5 +1694,27 @@ mod tests {
         assert_eq!(d.selection.head, Pos::new(1, 2));
         key_press(&mut d, Key::ArrowDown, Modifiers::NONE, false, 10);
         assert_eq!(d.selection.head, Pos::new(2, 5));
+    }
+
+    #[test]
+    fn a_suggestion_replaces_the_word_typed() {
+        let mut tab = Tab::new(doc("self.fr"));
+        tab.doc.selection = Selection::caret(Pos::new(0, 7));
+        let item = |label: &str| Item {
+            label: label.into(),
+            detail: String::new(),
+            kind: 5,
+            insert: label.into(),
+            range: None,
+        };
+        tab.completion = Some(Completion {
+            at: Pos::new(0, 5),
+            items: vec![item("name"), item("frame"), item("free")],
+            selected: 1,
+        });
+        // `fr` keeps frame and free; the second is free.
+        assert_eq!(filtered(tab.completion.as_ref().unwrap(), "fr"), [1, 2]);
+        accept(&mut tab);
+        assert_eq!(tab.doc.text(), "self.free");
     }
 }

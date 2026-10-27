@@ -9,10 +9,12 @@ pub mod commands;
 pub mod dock;
 pub mod editor;
 pub mod explorer;
+pub mod lsp;
 pub mod notify;
 pub mod pages;
 pub mod palette;
 pub mod panels;
+pub mod problems;
 pub mod recents;
 pub mod start;
 pub mod state;
@@ -88,6 +90,15 @@ pub struct Studio {
     ask: Option<Ask>,
     /// The open files.
     editors: Editors,
+    /// wowlua's language server, while a workspace that can be checked is
+    /// open.
+    lsp: lsp::Lsp,
+    /// The references found last, for the search panel.
+    references: Option<(String, Vec<lsp::Location>)>,
+    /// The active file's outline: its path, the version it is for.
+    outline: Option<(PathBuf, u64, Vec<lsp::Symbol>)>,
+    /// When the outline was asked for, and for which version.
+    outline_asked: Option<(PathBuf, u64)>,
     /// Notifications: toasts and the tray (S047).
     notes: Notifications,
     /// Waits for an answer about unsaved edits.
@@ -155,6 +166,10 @@ impl Studio {
             about: false,
             ask: None,
             editors: Editors::default(),
+            lsp: lsp::Lsp::default(),
+            references: None,
+            outline: None,
+            outline_asked: None,
             notes: Notifications::default(),
             pending: None,
             quitting: false,
@@ -241,6 +256,8 @@ impl Studio {
                 self.open_file(&path, &ctx);
             }
         }
+        self.lsp
+            .sync(self.editors.tabs.iter().map(|t| &t.doc), &*self.host.system);
 
         let entries = self.entries();
         let mut commands = std::mem::take(&mut self.queued);
@@ -283,13 +300,30 @@ impl Studio {
             .as_ref()
             .and_then(|w| w.cannot_check.as_ref())
             .map(|why| format!("checks off: {why}"));
+        let (errors, warnings) =
+            self.lsp
+                .diagnostics
+                .values()
+                .flatten()
+                .fold((0, 0), |(e, w), d| {
+                    if d.is_error() {
+                        (e + 1, w)
+                    } else if d.severity == 2 {
+                        (e, w + 1)
+                    } else {
+                        (e, w)
+                    }
+                });
         let session = chrome::Session {
             text: match (&self.workspace, &checks_off) {
                 (None, _) => "no folder open",
                 (Some(_), Some(text)) => text,
+                (Some(_), None) if self.lsp.ready => "language server ready",
+                (Some(_), None) if self.lsp.running() => "starting the language server…",
                 (Some(_), None) => "",
             },
             warning: checks_off.is_some(),
+            problems: self.lsp.running().then_some((errors, warnings)),
             right: &right,
             inset: self.notes.tray_width(),
         };
@@ -351,9 +385,14 @@ impl Studio {
         let layout = layout_for(&mut self.layouts, &key, self.layout_page);
         let explorer = &mut self.explorer;
         let editors = &mut self.editors;
+        let lsp_state = &self.lsp;
+        let references = &self.references;
+        let outline = &self.outline;
         let system = &*self.host.system;
         let mac = self.host.platform == Platform::MacOs;
         let mut opened = None;
+        let mut go_to: Option<lsp::Location> = None;
+        let mut go_to_symbol: Option<lsp::Wire> = None;
         let mut actions = Vec::new();
         let mut content = |ui: &mut Ui, panel: Panel| match panel {
             Panel::Explorer => {
@@ -362,12 +401,39 @@ impl Studio {
                 }
             }
             Panel::Editor => {
+                let active = editors.active().map(|t| t.doc.path.clone());
+                let diagnostics = active
+                    .as_deref()
+                    .map_or(&[][..], |p| lsp_state.diagnostics_of(p));
                 let cx = editor::view::Cx {
                     system,
                     workspace,
                     mac,
+                    diagnostics,
                 };
                 actions.extend(editor::view::show(ui, editors, &cx));
+            }
+            Panel::Problems => {
+                if let Some(l) =
+                    problems::problems(ui, lsp_state.diagnostics.iter(), &workspace.root)
+                {
+                    go_to = Some(l);
+                }
+            }
+            Panel::Outline => {
+                let active = editors.active().map(|t| t.doc.path.clone());
+                let symbols = outline
+                    .as_ref()
+                    .filter(|(p, _, _)| Some(p) == active.as_ref())
+                    .map(|(_, _, s)| s.as_slice());
+                if let Some(w) = problems::outline(ui, symbols) {
+                    go_to_symbol = Some(w);
+                }
+            }
+            Panel::Search => {
+                if let Some(l) = problems::references(ui, references.as_ref(), &workspace.root) {
+                    go_to = Some(l);
+                }
             }
             _ => dock::placeholder(ui, panel),
         };
@@ -378,10 +444,221 @@ impl Studio {
         if let Some(path) = opened {
             self.open_file(&path, ctx);
         }
+        if let Some(l) = go_to {
+            self.go_to(&l, ctx);
+        }
+        if let (Some(w), Some(path)) = (
+            go_to_symbol,
+            self.editors.active().map(|t| t.doc.path.clone()),
+        ) {
+            self.go_to(
+                &lsp::Location {
+                    path,
+                    start: w,
+                    end: w,
+                },
+                ctx,
+            );
+        }
         for action in actions {
-            match action {
-                editor::view::Action::Save(i) => self.save_tab(i, ctx),
-                editor::view::Action::Close(i) => self.close_tab(i),
+            self.editor_action(action, ctx);
+        }
+        self.ask_outline(ctx);
+    }
+
+    /// What the editor asked for.
+    fn editor_action(&mut self, action: editor::view::Action, ctx: &Context) {
+        use editor::view::Action as A;
+        let system = &*self.host.system;
+        let Some(tab) = self.editors.active() else {
+            return;
+        };
+        let doc = &tab.doc;
+        match action {
+            A::Save(i) => self.save_tab(i, ctx),
+            A::Close(i) => self.close_tab(i),
+            A::Hover(at) => self.lsp.hover(doc, at, system),
+            A::Complete(at) => self.lsp.complete(doc, at, system),
+            A::Signature(at) => self.lsp.signature(doc, at, system),
+            A::Definition(at) => self.lsp.definition(doc, at, system),
+            A::References(at) => {
+                let line = doc.line(at.line);
+                let (start, end) = word_bounds(line, at.col);
+                let name: String = line.chars().skip(start).take(end - start).collect();
+                self.lsp.references(doc, at, name, system);
+            }
+            A::Rename(at, name) => self.lsp.rename(doc, at, &name, system),
+        }
+    }
+
+    /// Asks for the active file's outline when its text has rested.
+    fn ask_outline(&mut self, ctx: &Context) {
+        let Some(tab) = self.editors.active() else {
+            return;
+        };
+        let key = (tab.doc.path.clone(), tab.doc.version);
+        if !self.lsp.ready || self.outline_asked.as_ref() == Some(&key) || !lsp::served(&key.0) {
+            return;
+        }
+        let typed: f64 = ctx
+            .data(|d| d.get_temp(egui::Id::unique("wowlua-studio-outline-typed")))
+            .unwrap_or(0.0);
+        let now = ctx.input(|i| i.time);
+        if self
+            .outline_asked
+            .as_ref()
+            .is_some_and(|(p, _)| *p == key.0)
+            && now - typed < 0.4
+        {
+            ctx.request_repaint_after(std::time::Duration::from_millis(400));
+            return;
+        }
+        ctx.data_mut(|d| d.insert_temp(egui::Id::unique("wowlua-studio-outline-typed"), now));
+        self.lsp.symbols(&tab.doc, &*self.host.system);
+        self.outline_asked = Some(key);
+    }
+
+    /// Opens a file at a place the server named.
+    fn go_to(&mut self, l: &lsp::Location, ctx: &Context) {
+        // The server names files by their canonical paths: an open one is
+        // found by its own.
+        let path = self
+            .editors
+            .tabs
+            .iter()
+            .map(|t| t.doc.path.clone())
+            .find(|p| self.lsp.canonical_of(p) == Some(l.path.as_path()))
+            .unwrap_or_else(|| l.path.clone());
+        self.open_file(&path, ctx);
+        if let Some(tab) = self.editors.active_mut() {
+            let at = lsp::from_wire(&tab.doc, l.start);
+            tab.doc.selection = editor::Selection::caret(at);
+            tab.reveal = true;
+        }
+    }
+
+    /// An answer of the language server.
+    fn lsp_reply(&mut self, reply: lsp::Reply, ctx: &Context) {
+        use lsp::Reply as R;
+        let find = |editors: &Editors, path: &Path| editors.find(path);
+        match reply {
+            R::Hover { path, at, text } => {
+                if let Some(i) = find(&self.editors, &path) {
+                    self.editors.tabs[i].hover = Some((at, text));
+                }
+            }
+            R::Completion { path, at, items } => {
+                if let Some(i) = find(&self.editors, &path)
+                    && !items.is_empty()
+                    && self.editors.tabs[i].doc.selection.head.line == at.line
+                {
+                    self.editors.tabs[i].completion = Some(editor::Completion {
+                        at,
+                        items,
+                        selected: 0,
+                    });
+                }
+            }
+            R::Signature { path, text, active } => {
+                if let Some(i) = find(&self.editors, &path) {
+                    self.editors.tabs[i].signature = (!text.is_empty()).then_some((text, active));
+                }
+            }
+            R::Definition(list) => {
+                if let Some(l) = list.first() {
+                    self.go_to(l, ctx);
+                }
+            }
+            R::References { name, locations } => {
+                self.references = Some((name, locations));
+                let key = self.layout_key();
+                let layout = layout_for(&mut self.layouts, &key, self.layout_page);
+                layout.reveal(Panel::Search, dock::Dock::Left);
+            }
+            R::Edits(files) => self.apply_edits(files, ctx),
+            R::Symbols { path, symbols } => {
+                let version = self
+                    .editors
+                    .find(&path)
+                    .map_or(0, |i| self.editors.tabs[i].doc.version);
+                self.outline = Some((path, version, symbols));
+            }
+            R::Format {
+                path,
+                edits,
+                then_save,
+            } => {
+                if let Some(i) = find(&self.editors, &path) {
+                    let doc = &mut self.editors.tabs[i].doc;
+                    let list = edits
+                        .iter()
+                        .map(|e| {
+                            (
+                                lsp::from_wire(doc, e.start),
+                                lsp::from_wire(doc, e.end),
+                                e.text.clone(),
+                            )
+                        })
+                        .collect();
+                    doc.edits(list);
+                    if then_save {
+                        self.write_tab(i, ctx);
+                    }
+                }
+            }
+            R::Failed { save, message } => match save.and_then(|p| self.editors.find(&p)) {
+                // The save goes ahead without the formatting.
+                Some(i) => self.write_tab(i, ctx),
+                None => self.lsp.log.push(message),
+            },
+            R::Message(text) => self.notify(Notification::new(Kind::Note, text, ""), ctx),
+        }
+    }
+
+    /// A rename's edits: open files change in the editor (to be saved),
+    /// the others on disk.
+    fn apply_edits(
+        &mut self,
+        files: std::collections::BTreeMap<PathBuf, Vec<lsp::TextEdit>>,
+        ctx: &Context,
+    ) {
+        for (path, edits) in files {
+            let open = self.editors.tabs.iter().position(|t| {
+                t.doc.path == path || self.lsp.canonical_of(&t.doc.path) == Some(path.as_path())
+            });
+            let apply = |doc: &mut editor::Document| {
+                let list = edits
+                    .iter()
+                    .map(|e| {
+                        (
+                            lsp::from_wire(doc, e.start),
+                            lsp::from_wire(doc, e.end),
+                            e.text.clone(),
+                        )
+                    })
+                    .collect();
+                doc.edits(list);
+            };
+            match open {
+                Some(i) => apply(&mut self.editors.tabs[i].doc),
+                None => {
+                    let system = &*self.host.system;
+                    let result = system.read_file(&path).and_then(|text| {
+                        let mut doc = editor::Document::new(path.clone(), &text);
+                        apply(&mut doc);
+                        system.write_file(&path, &doc.disk_text())
+                    });
+                    if let Err(error) = result {
+                        self.notify(
+                            Notification::new(
+                                Kind::Error,
+                                "The rename did not change a file",
+                                error,
+                            ),
+                            ctx,
+                        );
+                    }
+                }
             }
         }
     }
@@ -405,11 +682,31 @@ impl Studio {
     }
 
     fn save_tab(&mut self, i: usize, ctx: &Context) {
-        if let Err(error) = self.editors.save(i, &*self.host.system) {
-            self.notify(
+        let Some(tab) = self.editors.tabs.get(i) else {
+            return;
+        };
+        // Format on save: the server's formatting first, then the write.
+        if self.lsp.ready
+            && lsp::served(&tab.doc.path)
+            && self.lsp.format(&tab.doc, true, &*self.host.system)
+        {
+            return;
+        }
+        self.write_tab(i, ctx);
+    }
+
+    fn write_tab(&mut self, i: usize, ctx: &Context) {
+        let Some(path) = self.editors.tabs.get(i).map(|t| t.doc.path.clone()) else {
+            return;
+        };
+        match self.editors.save(i, &*self.host.system) {
+            Ok(true) => self.lsp.saved(&path, &*self.host.system),
+            // The disk changed: the banner asks first (S049).
+            Ok(false) => {}
+            Err(error) => self.notify(
                 Notification::new(Kind::Error, "The file was not saved", error),
                 ctx,
-            );
+            ),
         }
     }
 
@@ -543,6 +840,11 @@ impl Studio {
                         self.host.system.open(&w.root);
                     }
                 }
+                Event::Lsp(message) => {
+                    if let Some(reply) = self.lsp.receive(&message, &*self.host.system) {
+                        self.lsp_reply(reply, ctx);
+                    }
+                }
                 Event::Installation(_) | Event::Ui { .. } => {}
             }
             ctx.request_repaint();
@@ -553,6 +855,24 @@ impl Studio {
     /// (S048, S049).
     fn files_changed(&mut self, paths: &[PathBuf], ctx: &Context) {
         let now = ctx.input(|i| i.time);
+        if self.lsp.running() {
+            let system = &*self.host.system;
+            let changes = paths
+                .iter()
+                .filter(|p| lsp::served(p) || p.ends_with("wowlua.json"))
+                .map(|p| {
+                    let change = if system.exists(p) {
+                        system::FileChange::Changed
+                    } else {
+                        system::FileChange::Deleted
+                    };
+                    (system.canonical(p), change)
+                })
+                .collect::<Vec<_>>();
+            if !changes.is_empty() {
+                system.lsp_files(changes);
+            }
+        }
         if paths.iter().any(|p| p.ends_with(".git/HEAD")) {
             self.head_changed = Some(now);
             if let Some(w) = &self.workspace {
@@ -593,6 +913,15 @@ impl Studio {
         if !again {
             self.explorer = Explorer::new(&workspace);
             self.editors = Editors::default();
+            self.references = None;
+            self.outline = None;
+            // A package whose requirement excludes this wowlua opens with
+            // checks, hover and completion off (E4300).
+            if workspace.cannot_check.is_none() {
+                self.lsp.start(&workspace.root, &*self.host.system);
+            } else {
+                self.lsp.stop(&*self.host.system);
+            }
             self.host.system.watch(Some(&workspace.root));
             self.page = Page::Files;
             self.layout_page = Page::Files;
@@ -611,6 +940,9 @@ impl Studio {
             self.host.system.watch(None);
             self.explorer = Explorer::default();
             self.editors = Editors::default();
+            self.lsp.stop(&*self.host.system);
+            self.references = None;
+            self.outline = None;
             self.branch = None;
             self.menus_changed = true;
             self.reload_recents();
@@ -1101,6 +1433,21 @@ fn choice(ui: &mut Ui, title: &str, caption: &str, on: bool) -> bool {
     response
         .on_hover_cursor(egui::CursorIcon::PointingHand)
         .clicked()
+}
+
+/// The word around `col` (letters, digits, `_`).
+fn word_bounds(line: &str, col: usize) -> (usize, usize) {
+    let chars: Vec<char> = line.chars().collect();
+    let word = |c: char| c.is_alphanumeric() || c == '_';
+    let mut start = col.min(chars.len());
+    while start > 0 && word(chars[start - 1]) {
+        start -= 1;
+    }
+    let mut end = col.min(chars.len());
+    while end < chars.len() && word(chars[end]) {
+        end += 1;
+    }
+    (start, end)
 }
 
 fn layout_for<'a>(layouts: &'a mut Layouts, workspace: &str, page: Page) -> &'a mut Layout {

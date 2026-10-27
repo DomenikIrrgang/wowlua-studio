@@ -407,6 +407,8 @@ pub struct Session<'a> {
     pub text: &'a str,
     /// Said as a warning (`checks off`).
     pub warning: bool,
+    /// The workspace's errors and warnings, while the server runs.
+    pub problems: Option<(usize, usize)>,
     /// At the right: the flavor, the client.
     pub right: &'a [String],
     /// Room kept at the right end (the notifications' tray).
@@ -433,7 +435,7 @@ pub fn status_bar(ui: &mut Ui, rect: Rect, wowlua_version: &str, session: &Sessi
         p.success,
     );
     x = r.right() + 14.0;
-    painter.text(
+    let r = painter.text(
         Pos2::new(x, cy),
         Align2::LEFT_CENTER,
         session.text,
@@ -444,6 +446,31 @@ pub fn status_bar(ui: &mut Ui, rect: Rect, wowlua_version: &str, session: &Sessi
             p.ink_muted
         },
     );
+    if let Some((errors, warnings)) = session.problems {
+        let plural =
+            |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
+        let e = painter.text(
+            Pos2::new(r.right() + 14.0, cy),
+            Align2::LEFT_CENTER,
+            plural(errors, "error", "errors"),
+            font.clone(),
+            if errors > 0 { p.error } else { p.ink_muted },
+        );
+        let dot = painter.text(
+            Pos2::new(e.right(), cy),
+            Align2::LEFT_CENTER,
+            " · ",
+            font.clone(),
+            p.ink_muted,
+        );
+        painter.text(
+            Pos2::new(dot.right(), cy),
+            Align2::LEFT_CENTER,
+            plural(warnings, "warning", "warnings"),
+            font.clone(),
+            if warnings > 0 { p.warning } else { p.ink_muted },
+        );
+    }
     if rect.width() < NARROW {
         return;
     }

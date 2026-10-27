@@ -27,6 +27,21 @@ pub struct Tab {
     pub clash: Option<Clash>,
     /// The caret moved: scroll it into view.
     pub reveal: bool,
+    /// The language server's hover where the pointer rests.
+    pub hover: Option<(Pos, String)>,
+    /// Completion suggestions at the caret.
+    pub completion: Option<Completion>,
+    /// The call's signature, its active parameter in characters.
+    pub signature: Option<(String, Option<(usize, usize)>)>,
+    /// The new name being typed for a rename, and where.
+    pub rename: Option<(Pos, String)>,
+}
+
+/// Completion suggestions: where they were asked for, and which is chosen.
+pub struct Completion {
+    pub at: Pos,
+    pub items: Vec<crate::lsp::Item>,
+    pub selected: usize,
 }
 
 /// The disk's text against the editor's.
@@ -178,6 +193,10 @@ impl Tab {
             widest: None,
             clash: None,
             reveal: true,
+            hover: None,
+            completion: None,
+            signature: None,
+            rename: None,
         }
     }
 

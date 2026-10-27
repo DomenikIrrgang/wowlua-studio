@@ -5,6 +5,7 @@
 //! is Studio started again with it).
 
 mod frame_stats;
+mod lsp;
 #[cfg(target_os = "macos")]
 mod menu_bar;
 mod native;

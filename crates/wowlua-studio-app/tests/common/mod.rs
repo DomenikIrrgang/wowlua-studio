@@ -121,6 +121,12 @@ impl System for Fake {
     fn highlight(&self, _: &str) -> Vec<system::Highlight> {
         Vec::new()
     }
+    fn canonical(&self, path: &Path) -> PathBuf {
+        path.to_path_buf()
+    }
+    fn lsp_send(&self, _: serde_json::Value) {}
+    fn lsp_files(&self, _: Vec<(PathBuf, system::FileChange)>) {}
+    fn lsp_stop(&self) {}
     fn poll(&self) -> Vec<system::Event> {
         std::mem::take(&mut *self.events.borrow_mut())
     }

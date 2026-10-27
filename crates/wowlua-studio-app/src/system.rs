@@ -135,6 +135,16 @@ pub enum Event {
     Adopted(Result<(PathBuf, Vec<String>), String>),
     /// Files changed under the watched workspace.
     FilesChanged(Vec<PathBuf>),
+    /// A message of the language server (JSON-RPC, as an editor reads it).
+    Lsp(serde_json::Value),
+}
+
+/// How a file changed on disk, for the language server.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileChange {
+    Created,
+    Changed,
+    Deleted,
 }
 
 /// A colour of the highlighting: the design system's syntax tokens.
@@ -210,6 +220,15 @@ pub trait System {
     fn whats_new(&self) -> Vec<String>;
     /// The Git branch checked out in `dir`.
     fn branch(&self, dir: &Path) -> Option<String>;
+    /// `path` as the language server names it: absolute, links resolved.
+    fn canonical(&self, path: &Path) -> PathBuf;
+    /// A message for wowlua's language server, as an editor sends it; the
+    /// first starts the server. Its messages come back as [`Event::Lsp`].
+    fn lsp_send(&self, message: serde_json::Value);
+    /// Files changed on disk, for the server's checks.
+    fn lsp_files(&self, changes: Vec<(PathBuf, FileChange)>);
+    /// Stops the server (the workspace closed).
+    fn lsp_stop(&self);
     /// Work finished since the last call.
     fn poll(&self) -> Vec<Event>;
 }
@@ -270,6 +289,12 @@ impl System for NoSystem {
     fn branch(&self, _: &Path) -> Option<String> {
         None
     }
+    fn canonical(&self, path: &Path) -> PathBuf {
+        path.to_path_buf()
+    }
+    fn lsp_send(&self, _: serde_json::Value) {}
+    fn lsp_files(&self, _: Vec<(PathBuf, FileChange)>) {}
+    fn lsp_stop(&self) {}
     fn poll(&self) -> Vec<Event> {
         Vec::new()
     }
