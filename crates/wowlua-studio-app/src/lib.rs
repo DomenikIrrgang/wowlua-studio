@@ -9,6 +9,7 @@ pub mod commands;
 pub mod dock;
 pub mod editor;
 pub mod explorer;
+pub mod jobs;
 pub mod lsp;
 pub mod notify;
 pub mod pages;
@@ -96,6 +97,9 @@ pub struct Studio {
     lsp: lsp::Lsp,
     /// The search panel: references, a rename's changes, text search.
     search: search::SearchState,
+    /// Background jobs (S044); the checks running, by package.
+    jobs: jobs::Jobs,
+    checks: std::collections::HashMap<PathBuf, u64>,
     /// The active file's outline: its path, the version it is for.
     outline: Option<(PathBuf, u64, Vec<lsp::Symbol>)>,
     /// When the outline was asked for, and for which version.
@@ -169,6 +173,8 @@ impl Studio {
             editors: Editors::default(),
             lsp: lsp::Lsp::default(),
             search: search::SearchState::default(),
+            jobs: jobs::Jobs::default(),
+            checks: std::collections::HashMap::new(),
             outline: None,
             outline_asked: None,
             notes: Notifications::default(),
@@ -324,11 +330,27 @@ impl Studio {
                 (Some(_), None) => "",
             },
             warning: checks_off.is_some(),
-            problems: self.lsp.running().then_some((errors, warnings)),
             right: &right,
             inset: self.notes.tray_width(),
         };
-        chrome::status_bar(ui, status, &self.host.wowlua_version, &session);
+        let session_end = chrome::status_bar(ui, status, &self.host.wowlua_version, &session);
+        let cy = status.center().y;
+        let job_w = if self.workspace.is_some() {
+            self.jobs.button(ui, session_end + 14.0, cy)
+        } else {
+            0.0
+        };
+        if self.lsp.running() {
+            let x = session_end + 14.0 + if job_w > 0.0 { job_w + 14.0 } else { 0.0 };
+            chrome::problems(ui, x, cy, errors, warnings);
+        }
+        if let Some(jobs::Action::Show(panel)) =
+            self.jobs.list(&ctx, session_end + 14.0, status.top())
+        {
+            let key = self.layout_key();
+            let layout = layout_for(&mut self.layouts, &key, self.layout_page);
+            layout.reveal(panel, dock::Dock::Bottom);
+        }
         self.notes.tray_button(ui, status);
 
         let area_top = title.bottom();
@@ -547,6 +569,27 @@ impl Studio {
         self.outline_asked = Some(key);
     }
 
+    /// The name of the package whose manifest is `manifest` (as the server
+    /// names it).
+    fn package_of(&self, manifest: &Path) -> String {
+        let system = &*self.host.system;
+        self.workspace
+            .as_ref()
+            .and_then(|w| {
+                w.members
+                    .iter()
+                    .find(|m| system.canonical(&m.dir.join("wowlua.json")) == manifest)
+            })
+            .map(|m| m.name.clone())
+            .unwrap_or_else(|| {
+                manifest
+                    .parent()
+                    .and_then(|d| d.file_name())
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            })
+    }
+
     /// A line of a file: from its tab when it is open, else from disk.
     fn line_of(&self, path: &Path, line: usize) -> String {
         let open = self
@@ -732,6 +775,44 @@ impl Studio {
                 None => self.lsp.log.push(message),
             },
             R::Message(text) => self.notify(Notification::new(Kind::Note, text, ""), ctx),
+            R::Checking {
+                manifest,
+                begin,
+                first,
+                failed,
+            } => {
+                let now = ctx.input(|i| i.time);
+                if begin {
+                    let package = self.package_of(&manifest);
+                    let detail = if first {
+                        "the open files and what they import"
+                    } else {
+                        "the whole package"
+                    };
+                    let id =
+                        self.jobs
+                            .begin("check", &package, detail, 2.0, Some(Panel::Problems), now);
+                    if let Some(old) = self.checks.insert(manifest, id) {
+                        self.jobs.end(old, jobs::State::Done, None, now);
+                    }
+                } else if let Some(id) = self.checks.remove(&manifest) {
+                    if failed {
+                        let package = self.package_of(&manifest);
+                        self.jobs.end(
+                            id,
+                            jobs::State::Failed("the check failed: see the output".into()),
+                            None,
+                            now,
+                        );
+                        self.notify(
+                            Notification::new(Kind::Error, format!("check failed · {package}"), "The language server's check did not finish. The output panel has what it logged."),
+                            ctx,
+                        );
+                    } else {
+                        self.jobs.end(id, jobs::State::Done, None, now);
+                    }
+                }
+            }
             R::Published(path) => {
                 // A check: the open file's hints and lenses again.
                 if let Some(tab) = self.editors.active()

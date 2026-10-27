@@ -55,7 +55,15 @@ fn run(input: &Receiver<Input>, events: &Sender<Event>, ctx: &egui::Context) {
                 server.files_changed(&changes);
                 Vec::new()
             }
-            Err(RecvTimeoutError::Timeout) => server.run_due(),
+            Err(RecvTimeoutError::Timeout) => {
+                // Each message as it is made: a check's beginning before
+                // the check runs.
+                server.run_due_with(|message| {
+                    let _ = events.send(Event::Lsp(message));
+                    ctx.request_repaint();
+                });
+                Vec::new()
+            }
             Err(RecvTimeoutError::Disconnected) => return,
         };
         if !out.is_empty() {

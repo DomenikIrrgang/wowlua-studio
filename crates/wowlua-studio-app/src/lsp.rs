@@ -154,6 +154,14 @@ pub enum Reply {
     },
     /// A check published its problems of a file (by the server's path).
     Published(PathBuf),
+    /// A check of a package began (`first`: an edit's first pass) or
+    /// ended (`wowlua/checking`).
+    Checking {
+        manifest: PathBuf,
+        begin: bool,
+        first: bool,
+        failed: bool,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -511,6 +519,15 @@ impl Lsp {
                     if let Some(text) = params["message"].as_str() {
                         self.log.push(text.to_owned());
                     }
+                }
+                "wowlua/checking" => {
+                    let manifest = params["manifest"].as_str().and_then(path_of)?;
+                    return Some(Reply::Checking {
+                        manifest,
+                        begin: params["state"] == "begin",
+                        first: params["first"].as_bool().unwrap_or(false),
+                        failed: params["failed"].as_bool().unwrap_or(false),
+                    });
                 }
                 "window/showMessage" => {
                     return params["message"]

@@ -28,13 +28,13 @@ wowlua-studio-app = { path = "crates/wowlua-studio-app" }
 # M2 needs #62 (`wowlua new --check …`, `init --no-pkgmeta`, release notes,
 # cached_ui_source), M3 #63 (the server's semantic tokens, folding, inlay
 # hints, quick fixes and references lenses).
-wowlua-driver = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "e57d945c26cf3d76682845b45105311eff22a098" }
-wowlua-flavors = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "e57d945c26cf3d76682845b45105311eff22a098" }
-wowlua-manifest = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "e57d945c26cf3d76682845b45105311eff22a098" }
-wowlua-test = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "e57d945c26cf3d76682845b45105311eff22a098" }
-wowlua-lsp = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "e57d945c26cf3d76682845b45105311eff22a098" }
-wowlua-span = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "e57d945c26cf3d76682845b45105311eff22a098" }
-wowlua-syntax = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "e57d945c26cf3d76682845b45105311eff22a098" }
+wowlua-driver = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "37214d202b38816a5380f762ccbd717a33163065" }
+wowlua-flavors = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "37214d202b38816a5380f762ccbd717a33163065" }
+wowlua-manifest = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "37214d202b38816a5380f762ccbd717a33163065" }
+wowlua-test = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "37214d202b38816a5380f762ccbd717a33163065" }
+wowlua-lsp = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "37214d202b38816a5380f762ccbd717a33163065" }
+wowlua-span = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "37214d202b38816a5380f762ccbd717a33163065" }
+wowlua-syntax = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "37214d202b38816a5380f762ccbd717a33163065" }
 
 [workspace.lints.rust]
 # Denied, not forbidden: one macOS module may allow it (decision S022).
