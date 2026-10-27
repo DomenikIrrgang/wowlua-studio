@@ -168,12 +168,12 @@ snapshot's changes, a screenshot's stored, new and different images,
 accepting one or all, the output; the coverage panel (totals against the
 minimums, the files with where to test next, a file's lines, branches and
 functions never called) and bars in the editor's gutter; the lenses of
-S053; run on save. wowlua's pull request #64 makes a run's steps a
+S053; run on save. wowlua 0.13.3, pinned, makes a run's steps a
 library (`wowlua_test::runs`, `run_with`'s progress and stop, the
 functions each test called). SuuUI's suite runs in Studio as fast as
 `wowlua test` does (3,618 tests, 185 files). The frame budget holds with
 3,700 results: 0.13 ms median, 0.19 ms at the 99th percentile. Not yet:
-checked by hand on macOS only; wowlua's pull request #64 is not released.
+checked by hand on macOS only.
 
 ## M5: The game
 

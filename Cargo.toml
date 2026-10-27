@@ -24,19 +24,18 @@ wowlua-studio-app = { path = "crates/wowlua-studio-app" }
 # wowlua, pinned to a release (decision S004). To work on both repositories
 # at once, point these at a local checkout in `.cargo/config.toml` (see
 # CLAUDE.md); that file stays out of git.
-# 0.13.2: `wowlua new --check …`, `init --no-pkgmeta`, release notes and
+# 0.13.3: `wowlua new --check …`, `init --no-pkgmeta`, release notes and
 # cached_ui_source (M2); the server's semantic tokens, folding, inlay hints,
-# quick fixes, references lenses and overloads one per line (M3).
-# Until it is released: the commit of wowlua's pull request #64 (on 0.13.2),
-# a test run's steps as a library with progress, stop, each test's
-# functions and the renderer's camera (M4).
-wowlua-driver = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "5cf637eeeea5e7c1fb7f3076f90c6ec6a8298dcb" }
-wowlua-flavors = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "5cf637eeeea5e7c1fb7f3076f90c6ec6a8298dcb" }
-wowlua-manifest = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "5cf637eeeea5e7c1fb7f3076f90c6ec6a8298dcb" }
-wowlua-test = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "5cf637eeeea5e7c1fb7f3076f90c6ec6a8298dcb" }
-wowlua-lsp = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "5cf637eeeea5e7c1fb7f3076f90c6ec6a8298dcb" }
-wowlua-span = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "5cf637eeeea5e7c1fb7f3076f90c6ec6a8298dcb" }
-wowlua-syntax = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "5cf637eeeea5e7c1fb7f3076f90c6ec6a8298dcb" }
+# quick fixes, references lenses and overloads one per line (M3); a test
+# run's steps as a library with progress, stop, each test's functions and
+# the renderer's camera (M4).
+wowlua-driver = { git = "https://github.com/DomenikIrrgang/wowlua", tag = "v0.13.3" }
+wowlua-flavors = { git = "https://github.com/DomenikIrrgang/wowlua", tag = "v0.13.3" }
+wowlua-manifest = { git = "https://github.com/DomenikIrrgang/wowlua", tag = "v0.13.3" }
+wowlua-test = { git = "https://github.com/DomenikIrrgang/wowlua", tag = "v0.13.3" }
+wowlua-lsp = { git = "https://github.com/DomenikIrrgang/wowlua", tag = "v0.13.3" }
+wowlua-span = { git = "https://github.com/DomenikIrrgang/wowlua", tag = "v0.13.3" }
+wowlua-syntax = { git = "https://github.com/DomenikIrrgang/wowlua", tag = "v0.13.3" }
 
 [workspace.lints.rust]
 # Denied, not forbidden: one macOS module may allow it (decision S022).
