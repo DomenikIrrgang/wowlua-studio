@@ -2,7 +2,10 @@
 //! wowlua's library and new windows. The native host implements it; slow
 //! work runs off the UI thread and comes back as [`Event`]s.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
 
 /// A package of the opened workspace.
 #[derive(Clone, Debug, PartialEq)]
@@ -142,6 +145,139 @@ pub enum Event {
         search: Search,
         found: Found,
     },
+    /// A test run's progress (S052): its test files planned, what it does
+    /// (building, fetching Blizzard's UI), each file's results, its end.
+    Tests {
+        run: u64,
+        event: TestEvent,
+    },
+}
+
+/// A test run (the tests page, S052): which tests (`path::name` filters,
+/// all without one), with coverage or not, snapshots and screenshots
+/// written anew or not, in another world profile than `test.profile`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TestRequest {
+    pub filters: Vec<String>,
+    pub coverage: bool,
+    pub update_snapshots: bool,
+    pub profile: Option<String>,
+}
+
+/// What a test run tells as it goes.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TestEvent {
+    /// More test files to run (a flavor's, once built).
+    Planned(usize),
+    /// What it does now: building an addon, fetching Blizzard's UI.
+    Status(String),
+    /// A test file's results.
+    File(TestFile),
+    Done(TestDone),
+}
+
+/// A test file's run for a flavor: its package (the root), the file
+/// relative to it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TestFile {
+    pub package: PathBuf,
+    pub file: String,
+    pub flavor: String,
+    pub tests: Vec<TestCase>,
+    /// The file could not run (it does not compile, an error loading it).
+    pub error: Option<String>,
+    /// What its code printed.
+    pub printed: String,
+    pub seconds: f64,
+}
+
+impl TestFile {
+    pub fn failed(&self) -> bool {
+        self.error.is_some()
+            || self
+                .tests
+                .iter()
+                .any(|t| matches!(t.outcome, TestOutcome::Fail { .. }))
+    }
+}
+
+/// A test's (a case's) result.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TestCase {
+    pub name: String,
+    pub outcome: TestOutcome,
+    pub seconds: f64,
+    /// With coverage: the functions it called, by source (relative to the
+    /// package) and the line each is defined on.
+    pub functions: Vec<(String, u32)>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum TestOutcome {
+    Pass,
+    /// The message and where it happened.
+    Fail {
+        message: String,
+        stack: String,
+    },
+    Skip(String),
+}
+
+/// How a test run ended.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TestDone {
+    /// Nothing could run: the error (the package does not build).
+    pub error: Option<String>,
+    /// Stopped before every file ran.
+    pub stopped: bool,
+    /// With coverage: the run's.
+    pub coverage: Option<Coverage>,
+    /// The coverage kinds below `test.coverage`'s minimums: the kind, the
+    /// run's percentage, the minimum (a whole suite's run only).
+    pub below: Vec<(String, f64, f64)>,
+    /// Snapshots and screenshots written, updated, removed.
+    pub snapshots: (usize, usize, usize),
+    pub seconds: f64,
+}
+
+/// Covered and all, of a kind.
+pub type Count = (u64, u64);
+
+/// A coverage's totals (wowlua's `coverage.json`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct CoverageTotals {
+    pub lines: Count,
+    pub branches: Count,
+    pub functions: Count,
+    pub conditions: Count,
+}
+
+/// A source file's coverage: each line's hits, each branch's counts (the
+/// line and its ordinal: taken, not taken), each function's calls (its
+/// line: name, calls).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CoverageFile {
+    pub totals: CoverageTotals,
+    pub lines: BTreeMap<u32, u64>,
+    pub branches: BTreeMap<(u32, u32), [u64; 2]>,
+    pub functions: BTreeMap<u32, (String, u64)>,
+}
+
+/// A run's coverage, by source file (absolute paths).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Coverage {
+    pub totals: CoverageTotals,
+    pub files: BTreeMap<PathBuf, CoverageFile>,
+    /// The HTML report, when one was written.
+    pub html: Option<PathBuf>,
+}
+
+/// An image to show (a screenshot test's): its size and RGBA pixels.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Image {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
 }
 
 /// How a file changed on disk, for the language server.
@@ -435,6 +571,33 @@ pub trait System {
     /// The system clipboard's text (`ctrl shift v` in the terminal).
     fn clipboard_text(&self) -> Option<String> {
         None
+    }
+    /// The test files (`*.test.wowlua`) under a package's root, as Git
+    /// sees the folder.
+    fn test_files(&self, _root: &Path) -> Vec<PathBuf> {
+        Vec::new()
+    }
+    /// Runs the workspace's tests (→ [`Event::Tests`]): run `run`.
+    fn test_run(&self, _root: &Path, _run: u64, _request: TestRequest) {}
+    /// Stops the test run: no more files run.
+    fn test_stop(&self) {}
+    /// The test files a change to `changed` may change the results of:
+    /// itself, and those that import it, directly or not (run on save).
+    fn affected_tests(&self, _root: &Path, _changed: &Path) -> Vec<PathBuf> {
+        Vec::new()
+    }
+    /// The last run's coverage the workspace's `dist/test/coverage.json`
+    /// keeps (`wowlua test --coverage`'s too).
+    fn coverage_report(&self, _root: &Path) -> Option<Coverage> {
+        None
+    }
+    /// A PNG's pixels (a screenshot test's images).
+    fn read_image(&self, _path: &Path) -> Option<Image> {
+        None
+    }
+    /// Copies a file over another (accepting a screenshot).
+    fn copy_file(&self, from: &Path, _to: &Path) -> Result<(), String> {
+        Err(format!("{} cannot be copied here", from.display()))
     }
     /// Work finished since the last call.
     fn poll(&self) -> Vec<Event>;

@@ -34,6 +34,8 @@ pub struct NativeSystem {
     /// The language server's thread, once started.
     lsp: RefCell<Option<Sender<crate::lsp::Input>>>,
     terminals: crate::terminal::Terminals,
+    /// The test run's stop button.
+    test_stop: RefCell<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl NativeSystem {
@@ -46,6 +48,7 @@ impl NativeSystem {
             watcher: RefCell::new(None),
             lsp: RefCell::new(None),
             terminals: crate::terminal::Terminals::default(),
+            test_stop: RefCell::default(),
         }
     }
 
@@ -393,6 +396,59 @@ impl System for NativeSystem {
         replace: Option<&str>,
     ) -> Result<Vec<FoundIn>, String> {
         find_in(text, search, replace)
+    }
+
+    fn test_files(&self, root: &Path) -> Vec<PathBuf> {
+        let mut files: Vec<PathBuf> = ignore::WalkBuilder::new(root)
+            .build()
+            .flatten()
+            .filter(|e| e.file_type().is_some_and(|t| t.is_file()))
+            .map(|e| e.into_path())
+            .filter(|p| p.to_string_lossy().ends_with(".test.wowlua"))
+            .filter(|p| {
+                !p.components()
+                    .any(|c| skipped(&c.as_os_str().to_string_lossy()))
+            })
+            .collect();
+        files.sort();
+        files
+    }
+
+    fn test_run(&self, root: &Path, run: u64, request: wowlua_studio_app::system::TestRequest) {
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        *self.test_stop.borrow_mut() = stop.clone();
+        let send = std::sync::Mutex::new(self.send.clone());
+        let ctx = self.ctx.clone();
+        crate::tests::start(root.to_path_buf(), request, stop, move |event| {
+            if let Ok(send) = send.lock() {
+                let _ = send.send(Event::Tests { run, event });
+            }
+            ctx.request_repaint();
+        });
+    }
+
+    fn test_stop(&self) {
+        self.test_stop
+            .borrow()
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn affected_tests(&self, root: &Path, changed: &Path) -> Vec<PathBuf> {
+        crate::tests::affected(root, changed)
+    }
+
+    fn coverage_report(&self, root: &Path) -> Option<wowlua_studio_app::system::Coverage> {
+        crate::tests::read_coverage(root)
+    }
+
+    fn read_image(&self, path: &Path) -> Option<wowlua_studio_app::system::Image> {
+        read_png(path)
+    }
+
+    fn copy_file(&self, from: &Path, to: &Path) -> Result<(), String> {
+        std::fs::copy(from, to)
+            .map(|_| ())
+            .map_err(|e| format!("cannot copy {} to {}: {e}", from.display(), to.display()))
     }
 
     fn search(&self, root: &Path, search: Search) {
@@ -900,6 +956,39 @@ fn semantic(text: &str) -> Vec<Highlight> {
         out.push(Highlight { start, end, syntax });
     }
     out
+}
+
+/// A PNG's pixels as RGBA.
+fn read_png(path: &Path) -> Option<wowlua_studio_app::system::Image> {
+    let file = std::fs::File::open(path).ok()?;
+    let mut decoder = png::Decoder::new(std::io::BufReader::new(file));
+    decoder.set_transformations(png::Transformations::normalize_to_color8());
+    let mut reader = decoder.read_info().ok()?;
+    let mut buf = vec![0; reader.output_buffer_size()?];
+    let info = reader.next_frame(&mut buf).ok()?;
+    let pixels = &buf[..info.buffer_size()];
+    let rgba: Vec<u8> = match info.color_type {
+        png::ColorType::Rgba => pixels.to_vec(),
+        png::ColorType::Rgb => pixels
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .flat_map(|&[r, g, b]| [r, g, b, 255])
+            .collect(),
+        png::ColorType::GrayscaleAlpha => pixels
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .flat_map(|&[g, a]| [g, g, g, a])
+            .collect(),
+        png::ColorType::Grayscale => pixels.iter().flat_map(|&g| [g, g, g, 255]).collect(),
+        png::ColorType::Indexed => return None,
+    };
+    Some(wowlua_studio_app::system::Image {
+        width: info.width,
+        height: info.height,
+        rgba,
+    })
 }
 
 /// How many matches a search keeps.

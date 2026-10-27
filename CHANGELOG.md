@@ -25,3 +25,6 @@ All notable changes to wowlua studio. Each minor version closes a milestone of t
 - **Notifications**: a toast over the status bar, then the tray at its end.
 - **Background jobs**: checks that run for a while show in the status bar; click for the list.
 - The [wl] mark as the app's icon, in the macOS Dock's shape on macOS.
+- **Tests**: the tests page lists your test files and their tests, and runs all of them, the failed ones, a file or one test, also from the lenses the editor shows over them. It shows the run's progress (stop it any time), each failure with its source and stack, a snapshot's changes and a screenshot's stored, new and different images, which you can accept one by one or all at once. Results stay until the next run, also after a restart.
+- Run on save runs the tests a saved file affects: a test file itself, and the tests that import the file you saved.
+- **Coverage**: run with coverage on for the totals against `wowlua.json`'s minimums, the files that need tests most, a file's lines and branches, and bars in the editor's gutter. Over each function, `N tests` lists the tests that call it.

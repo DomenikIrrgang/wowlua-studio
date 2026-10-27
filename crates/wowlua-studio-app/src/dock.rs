@@ -153,13 +153,14 @@ impl Layout {
             ),
         };
         // The overview board's anatomy: a 220 px side panel, a 170 px
-        // bottom panel and a 250 px inspector.
+        // bottom panel and a 250 px inspector; the tests board's explorer
+        // is 330 px, for the tests' names.
         Layout {
             left,
             main,
             bottom,
             right,
-            left_width: 220.0,
+            left_width: if page == Page::Tests { 330.0 } else { 220.0 },
             right_width: 250.0,
             bottom_height: 170.0,
             floating: Vec::new(),

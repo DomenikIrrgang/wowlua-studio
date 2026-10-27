@@ -35,14 +35,16 @@ roadmap until the canvas has it.
   [wl] mark and the wordmark, widgets, form controls). egui only.
 - `wowlua-studio-app`: the application (chrome, docking, commands, the
   palette, pages, the start page, the explorer, the editor, the language
-  server's client, search, the terminal panel, notifications, jobs). egui
+  server's client, search, the terminal panel, notifications, jobs, the
+  tests page and coverage). egui
   and serde only: the host gives it the platform, wowlua's version, a file
   store and the system (`system::System`: the disk, Git, wowlua's library,
   the language server, highlighting, the terminal, new windows; slow work
   comes back as events). Both build for wasm (CI checks).
 - `wowlua-studio`: the native host (eframe, the store in the system's
   folder for application data, `native.rs`'s system, the language server's
-  thread `lsp.rs`, the terminals `terminal.rs`, macOS's menu bar) and
+  thread `lsp.rs`, the terminals `terminal.rs`, test runs `tests.rs`,
+  macOS's menu bar) and
   wowlua's crates.
 
 ## Seeing it

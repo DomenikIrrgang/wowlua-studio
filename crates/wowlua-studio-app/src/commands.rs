@@ -37,6 +37,9 @@ pub enum Command {
     /// The find bar's next and previous match.
     FindNext,
     FindPrevious,
+    /// Runs every test, or those that failed last (S052).
+    RunAllTests,
+    RunFailedTests,
     /// The start page's new-addon form.
     NewAddon,
     /// The start page's adopt form.
@@ -176,6 +179,24 @@ pub fn entries(
             "close folder",
             "back to the start page",
             Some(Menu::File),
+            None,
+        );
+    }
+    if workspace {
+        add(
+            Command::RunAllTests,
+            "test",
+            "run all tests",
+            "every test file, with coverage when it is on",
+            Some(Menu::Test),
+            None,
+        );
+        add(
+            Command::RunFailedTests,
+            "test",
+            "run the failed tests",
+            "the tests that failed last",
+            Some(Menu::Test),
             None,
         );
     }

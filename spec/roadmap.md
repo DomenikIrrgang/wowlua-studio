@@ -154,6 +154,26 @@ Artboards: tests, coverage.
 - The test explorer, code lenses, results, snapshots and screenshot diffs
   (accept one, or all), run on save; coverage per file and in the editor's
   gutter, minimums from `wowlua.json`.
+- Runs with wowlua's own steps, as jobs; results and coverage kept until
+  the next run, across restarts; run on save runs the affected tests
+  (S052).
+- The tests' lenses, and over a function the tests that call it (S053).
+- No App Nap while tests run on macOS (S054).
+
+Built 2026-10-28: the test explorer (the workspace's test files as the
+server reads them, filters, failed only, each test's state), runs of all,
+the failed, a file or a test, with progress and stop, a world profile
+over `test.profile`; the results with a failure's source and stack, a
+snapshot's changes, a screenshot's stored, new and different images,
+accepting one or all, the output; the coverage panel (totals against the
+minimums, the files with where to test next, a file's lines, branches and
+functions never called) and bars in the editor's gutter; the lenses of
+S053; run on save. wowlua 0.13.3, pinned, makes a run's steps a
+library (`wowlua_test::runs`, `run_with`'s progress and stop, the
+functions each test called). SuuUI's suite runs in Studio as fast as
+`wowlua test` does (3,618 tests, 185 files). The frame budget holds with
+3,700 results: 0.13 ms median, 0.19 ms at the 99th percentile. Not yet:
+checked by hand on macOS only.
 
 ## M5: The game
 
@@ -269,4 +289,5 @@ app icon and the title bar's mark (S020, S023), the status bar without the
 theme (S021), the start page without GitHub and Claude (S024), the
 question when opening another folder (S025, a new board), the registry's
 dependencies (S010, a new board) and the profiler's recordings from the
-game (S011).
+game (S011). On 2026-10-28: the tests board's explorer pinned by a
+function's lens, "the tests that call stateOf" with `show all` (S053).

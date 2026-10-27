@@ -79,6 +79,14 @@ impl Jobs {
         self.next
     }
 
+    /// A running job's progress (0 to 1) and what it says now.
+    pub fn update(&mut self, id: u64, progress: Option<f32>, detail: &str) {
+        if let Some(job) = self.list.iter_mut().find(|j| j.id == id) {
+            job.progress = progress;
+            detail.clone_into(&mut job.detail);
+        }
+    }
+
     /// A job ended, with what it says now.
     pub fn end(&mut self, id: u64, state: State, detail: Option<String>, now: f64) {
         if let Some(job) = self.list.iter_mut().find(|j| j.id == id) {
