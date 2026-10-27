@@ -2,7 +2,7 @@
 //! person at the screen: `WOWLUA_STUDIO_SCREENSHOT=out.png` draws a few
 //! frames, saves the window as a PNG and quits.
 //! `WOWLUA_STUDIO_SCREENSHOT_RUN` lists commands to run first, separated
-//! by `;`: `open:<folder>`, `file:<file>`, `page:debug`, `theme:light`, `palette`,
+//! by `;`: `open:<folder>`, `file:<file>`, `find:<query>`, `page:debug`, `theme:light`, `palette`,
 //! `about`, `new`, `adopt`, `stats`, `terminal`.
 
 use std::{
@@ -34,6 +34,10 @@ impl Screenshot {
             }
             if let Some(file) = step.strip_prefix("file:") {
                 studio.edit(std::path::Path::new(file));
+                continue;
+            }
+            if let Some(query) = step.strip_prefix("find:") {
+                studio.find(query);
                 continue;
             }
             let command = match step.split_once(':') {

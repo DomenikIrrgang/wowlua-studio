@@ -14,9 +14,9 @@ use wowlua_driver::project::{LoadOptions, find_manifest, load_projects};
 use wowlua_driver::scaffold::{InitRequest, NewRequest};
 use wowlua_manifest::model::{CheckMode, PackageKind};
 use wowlua_studio_app::system::{
-    Adopt, AdoptPreview, ClientFolder, Entry, Event, FileChange, Found, Highlight, Hit,
-    Installation, Member, NewAddon, Opened, PackageNames, Search, Syntax, System, UiState,
-    Workspace,
+    Adopt, AdoptPreview, ClientFolder, Entry, Event, FileChange, Found, FoundIn, Highlight, Hit,
+    Installation, MOST_FOUND, Member, NewAddon, Opened, PackageNames, Search, Syntax, System,
+    UiState, Workspace,
 };
 
 /// Folders the explorer and the watcher leave out: build output and the
@@ -372,6 +372,15 @@ impl System for NativeSystem {
 
     fn terminal_close(&self, id: u64) {
         self.terminals.close(id);
+    }
+
+    fn find_in(
+        &self,
+        text: &str,
+        search: &Search,
+        replace: Option<&str>,
+    ) -> Result<Vec<FoundIn>, String> {
+        find_in(text, search, replace)
     }
 
     fn search(&self, root: &Path, search: Search) {
@@ -912,8 +921,9 @@ fn excerpt(row: &str, start: usize, end: usize) -> (String, usize, usize) {
 
 /// The text files under `root` that match, as Git sees the folder (its
 /// ignore files followed, hidden files left out).
-fn search_files(root: &Path, search: &Search) -> Found {
-    let started = std::time::Instant::now();
+/// The search's regular expression: its text escaped when it is none, in
+/// word boundaries for a whole word.
+fn regex_of(search: &Search) -> Result<regex::Regex, String> {
     let pattern = if search.regex {
         search.query.clone()
     } else {
@@ -924,14 +934,46 @@ fn search_files(root: &Path, search: &Search) -> Found {
     } else {
         pattern
     };
-    let re = match regex::RegexBuilder::new(&pattern)
+    regex::RegexBuilder::new(&pattern)
         .case_insensitive(!search.case)
         .build()
-    {
+        .map_err(|e| format!("not a regular expression: {e}"))
+}
+
+/// The find bar's matches in `text`, with their replacements.
+fn find_in(text: &str, search: &Search, replace: Option<&str>) -> Result<Vec<FoundIn>, String> {
+    let re = regex_of(search)?;
+    let mut out = Vec::new();
+    for caps in re.captures_iter(text).take(MOST_FOUND) {
+        let m = caps.get(0).expect("the whole match");
+        if m.start() == m.end() {
+            continue;
+        }
+        let replacement = replace.map(|r| {
+            if search.regex {
+                let mut expanded = String::new();
+                caps.expand(r, &mut expanded);
+                expanded
+            } else {
+                r.to_owned()
+            }
+        });
+        out.push(FoundIn {
+            start: m.start(),
+            end: m.end(),
+            replacement,
+        });
+    }
+    Ok(out)
+}
+
+fn search_files(root: &Path, search: &Search) -> Found {
+    let started = std::time::Instant::now();
+    let re = match regex_of(search) {
         Ok(re) => re,
-        Err(e) => {
+        Err(error) => {
             return Found {
-                error: Some(format!("not a regular expression: {e}")),
+                error: Some(error),
                 ..Found::default()
             };
         }
@@ -1097,6 +1139,29 @@ print(stateOfX, stateOf)
         assert_eq!(hits.len(), 2);
         assert_eq!((hits[1].line, hits[1].start, hits[1].end), (1, 16, 23));
         assert_eq!(hits[1].at, (16, 23));
+    }
+
+    #[test]
+    fn the_find_bar_s_regular_expressions_replace_with_their_groups() {
+        let search = Search {
+            query: r"(\w+):Show\(\)".to_owned(),
+            regex: true,
+            case: true,
+            ..Search::default()
+        };
+        let found = super::find_in("frame:Show()\nbar:Show()", &search, Some("$1:Hide()")).unwrap();
+        let replaced: Vec<_> = found
+            .iter()
+            .map(|f| f.replacement.clone().unwrap())
+            .collect();
+        assert_eq!(replaced, ["frame:Hide()", "bar:Hide()"]);
+        assert_eq!((found[1].start, found[1].end), (13, 23));
+        let broken = Search {
+            query: "(".to_owned(),
+            regex: true,
+            ..Search::default()
+        };
+        assert!(super::find_in("x", &broken, None).is_err());
     }
 
     #[test]

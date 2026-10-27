@@ -161,6 +161,52 @@ pub struct Search {
     pub regex: bool,
 }
 
+/// How many matches the find bar counts and marks.
+pub const MOST_FOUND: usize = 10_000;
+
+/// A match of the find bar: its bytes, and what replaces it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FoundIn {
+    pub start: usize,
+    pub end: usize,
+    pub replacement: Option<String>,
+}
+
+/// The matches of a search that is no regular expression: its case or
+/// not (ASCII letters), a whole word or not.
+pub fn find_literal(text: &str, search: &Search) -> Vec<(usize, usize)> {
+    let query = search.query.as_str();
+    let mut out = Vec::new();
+    if query.is_empty() {
+        return out;
+    }
+    let word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+    let mut at = 0;
+    while at + query.len() <= text.len() {
+        let here = &text[at..];
+        let found = if search.case {
+            here.find(query)
+        } else {
+            here.char_indices().map(|(i, _)| i).find(|&i| {
+                here.get(i..i + query.len())
+                    .is_some_and(|s| s.eq_ignore_ascii_case(query))
+            })
+        };
+        let Some(i) = found else {
+            break;
+        };
+        let (start, end) = (at + i, at + i + query.len());
+        let whole = !word(text[..start].chars().next_back()) && !word(text[end..].chars().next());
+        if !search.word || whole {
+            out.push((start, end));
+            at = end;
+        } else {
+            at = start + text[start..].chars().next().map_or(1, char::len_utf8);
+        }
+    }
+    out
+}
+
 /// A match: its line (from 0), where it is in the line in UTF-16 units
 /// (as the language server counts), and the piece of the line around it
 /// that is shown, the match its characters `start..end`. A line can be
@@ -318,6 +364,29 @@ pub trait System {
     /// Searches the files under `root` (→ [`Event::Searched`]): ignored
     /// and hidden files left out, as Git leaves them.
     fn search(&self, root: &Path, search: Search);
+    /// The matches of `search` in `text` (the find bar), as byte ranges,
+    /// the first [`MOST_FOUND`]; with `replace`, each one's replacement
+    /// (a regular expression's `$1` … its groups). Without regular
+    /// expressions here: the desktop's system has them.
+    fn find_in(
+        &self,
+        text: &str,
+        search: &Search,
+        replace: Option<&str>,
+    ) -> Result<Vec<FoundIn>, String> {
+        if search.regex {
+            return Err("regular expressions are found by the desktop app".to_owned());
+        }
+        Ok(find_literal(text, search)
+            .into_iter()
+            .take(MOST_FOUND)
+            .map(|(start, end)| FoundIn {
+                start,
+                end,
+                replacement: replace.map(str::to_owned),
+            })
+            .collect())
+    }
     /// Starts the user's shell in a terminal of `cols` × `rows` in `cwd`
     /// (S043); returns its id. The browser has none.
     fn terminal_open(&self, cwd: &Path, cols: u16, rows: u16) -> Result<u64, String>;

@@ -5,6 +5,7 @@
 
 pub mod diff;
 pub mod doc;
+pub mod find;
 pub mod json;
 pub mod view;
 
@@ -77,6 +78,9 @@ pub struct Tab {
     /// The quick fixes at the caret: their titles and edits; which is
     /// chosen.
     pub fixes: Option<(Vec<crate::lsp::Fix>, usize)>,
+    /// The find bar's matches, for the text and the search they were
+    /// found for.
+    pub matches: Option<find::Matches>,
 }
 
 /// Completion suggestions: where they were asked for, and which is chosen.
@@ -116,6 +120,8 @@ pub struct Editors {
     pub active: usize,
     /// Focus the active editor at the next frame.
     pub focus: bool,
+    /// The find bar, the window's (S051).
+    pub finder: find::Finder,
 }
 
 impl Editors {
@@ -277,6 +283,7 @@ impl Tab {
             foldable: None,
             folded: Vec::new(),
             fixes: None,
+            matches: None,
         }
     }
 

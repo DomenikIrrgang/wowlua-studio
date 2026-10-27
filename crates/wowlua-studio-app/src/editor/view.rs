@@ -114,6 +114,17 @@ pub fn show(ui: &mut Ui, editors: &mut Editors, cx: &Cx<'_>) -> Vec<Action> {
     let active = editors.active;
     let tab = &mut editors.tabs[active];
     crumbs(ui, crumbs_rect, &tab.doc, cx.workspace);
+    // Esc in the code closes the find bar, when no popup takes it.
+    let code_id = Id::unique(("wowlua-studio-editor", &tab.doc.path));
+    if editors.finder.open
+        && tab.completion.is_none()
+        && tab.fixes.is_none()
+        && tab.rename.is_none()
+        && ui.memory(|m| m.has_focus(code_id))
+        && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape))
+    {
+        editors.finder.close();
+    }
 
     let mut top = crumbs_rect.bottom();
     if tab.clash.is_some() {
@@ -131,7 +142,22 @@ pub fn show(ui: &mut Ui, editors: &mut Editors, cx: &Cx<'_>) -> Vec<Action> {
         compare(ui, code_rect, &mine, &theirs, &tab.doc.path);
         return actions;
     }
-    code(ui, code_rect, tab, cx, focus, active, &mut actions);
+    // The find bar's matches, marked while it is open.
+    let found: Vec<(Pos, Pos)> = if editors.finder.open {
+        super::find::matches(tab, &editors.finder.search, cx.system)
+            .list
+            .clone()
+    } else {
+        Vec::new()
+    };
+    code(ui, code_rect, tab, cx, focus, active, &found, &mut actions);
+    if editors.finder.open {
+        let p = palette(ui.ctx());
+        super::find::ticks(ui, code_rect, tab.doc.line_count(), &found, p);
+        if super::find::bar(ui, code_rect, &mut editors.finder, tab, cx.system, p) {
+            editors.focus = true;
+        }
+    }
     actions
 }
 
@@ -752,6 +778,7 @@ fn lay(
 
 /// The code: the gutter and the visible rows; the keyboard, the pointer
 /// and the popups.
+#[allow(clippy::too_many_arguments)]
 fn code(
     ui: &mut Ui,
     rect: Rect,
@@ -759,6 +786,7 @@ fn code(
     cx: &Cx<'_>,
     focus: bool,
     index: usize,
+    found: &[(Pos, Pos)],
     actions: &mut Vec<Action>,
 ) {
     let p = palette(ui.ctx());
@@ -983,6 +1011,34 @@ fn code(
                 } else if line == head.line && doc.selection.is_empty() {
                     ui.painter()
                         .rect_filled(row_rect, CornerRadius::ZERO, p.bg_100);
+                }
+                // The find bar's matches on this line; the current one
+                // outlined.
+                let first = found.partition_point(|m| m.1.line < line);
+                for m in found[first..].iter().take_while(|m| m.0.line <= line) {
+                    let from = if m.0.line == line { m.0.col } else { 0 };
+                    let to = if m.1.line == line {
+                        m.1.col
+                    } else {
+                        doc.line_len(line)
+                    };
+                    let r = Rect::from_min_max(
+                        Pos2::new(origin.x + laid.x(from), y + 1.0),
+                        Pos2::new(
+                            origin.x + laid.x(to).max(laid.x(from) + 2.0),
+                            y + LINE_H - 1.0,
+                        ),
+                    );
+                    ui.painter()
+                        .rect_filled(r, CornerRadius::ZERO, p.amber_soft);
+                    if (m.0, m.1) == (sel_start, sel_end) {
+                        ui.painter().rect_stroke(
+                            r,
+                            CornerRadius::ZERO,
+                            Stroke::new(1.0, p.amber_ink),
+                            egui::StrokeKind::Inside,
+                        );
+                    }
                 }
                 // The selection on this line.
                 if line >= sel_start.line && line <= sel_end.line && sel_start != sel_end {
@@ -1719,7 +1775,7 @@ fn char_col(line: &str, dcol: usize) -> usize {
 }
 
 /// The word around `col`: letters, digits and `_`, or a run of others.
-fn word_at(line: &str, col: usize) -> (usize, usize) {
+pub(super) fn word_at(line: &str, col: usize) -> (usize, usize) {
     let chars: Vec<char> = line.chars().collect();
     if chars.is_empty() {
         return (0, 0);

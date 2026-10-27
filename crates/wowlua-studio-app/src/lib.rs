@@ -124,6 +124,8 @@ pub struct Studio {
     queued: Vec<Command>,
     /// Files to open in the editor at the next frame.
     queued_files: Vec<PathBuf>,
+    /// A query for the find bar, once a file is open.
+    queued_find: Option<String>,
     /// The commands changed: the menu bar is made again.
     menus_changed: bool,
     /// When the layouts or settings changed and are not saved yet.
@@ -193,6 +195,7 @@ impl Studio {
             head_changed: None,
             queued: Vec::new(),
             queued_files: Vec::new(),
+            queued_find: None,
             menus_changed: false,
             unsaved_since: None,
             focused: true,
@@ -238,6 +241,12 @@ impl Studio {
         self.queued_files.push(path.to_path_buf());
     }
 
+    /// Opens the find bar with its replace row, `query` in it, once a file
+    /// is open (the screenshot's `find:` step).
+    pub fn find(&mut self, query: &str) {
+        self.queued_find = Some(query.to_owned());
+    }
+
     /// Opens the workspace around `path` in this window.
     pub fn open(&mut self, path: &Path) {
         self.start.opening = Some(path.to_path_buf());
@@ -271,6 +280,11 @@ impl Studio {
         if self.workspace.is_some() {
             for path in std::mem::take(&mut self.queued_files) {
                 self.open_file(&path, &ctx);
+            }
+            if self.editors.active().is_some()
+                && let Some(query) = self.queued_find.take()
+            {
+                self.editors.finder.show_with(&query, true);
             }
         }
         self.lsp
@@ -1489,6 +1503,29 @@ impl Studio {
             Command::CloseEditor => {
                 let i = self.editors.active;
                 self.close_tab(i);
+            }
+            Command::Find | Command::Replace => {
+                let editor::Editors {
+                    tabs,
+                    active,
+                    finder,
+                    ..
+                } = &mut self.editors;
+                finder.show(tabs.get(*active), command == Command::Replace);
+            }
+            Command::FindNext | Command::FindPrevious => {
+                let editor::Editors {
+                    tabs,
+                    active,
+                    finder,
+                    ..
+                } = &mut self.editors;
+                if finder.search.query.is_empty() {
+                    finder.show(tabs.get(*active), false);
+                } else if let Some(tab) = tabs.get_mut(*active) {
+                    let forward = command == Command::FindNext;
+                    editor::find::step(tab, finder, &*self.host.system, forward);
+                }
             }
             Command::NewAddon => {
                 if self.workspace.is_none() {

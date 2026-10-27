@@ -124,6 +124,7 @@ Artboards: editor, search, notifications.
   first; the later milestones' builds, test runs, installs, publishes
   and recordings run as jobs too.
 - Inlay hints and a references lens over functions (S050).
+- Find and replace in the file: the find bar (S051).
 
 Built 2026-10-27: the editor (tabs and preview tabs, the path, undo and
 redo, the clipboard, words and lines, indentation, IME text, the caret's
@@ -140,7 +141,9 @@ unsaved-edits question; notifications; background jobs (the check, told
 by the server's `wowlua/checking`). wowlua's pull request #63 adds the
 server's semantic tokens, folding, inlay hints, quick fixes, lenses and
 the checking notification. The frame budget holds with a 4000-line file
-open: 0.09 ms median, 0.25 ms at the 99th percentile. Not yet: selecting
+open: 0.09 ms median, 0.25 ms at the 99th percentile; a line of megabytes
+is laid out only where it is seen. The find bar (S051): find and replace
+in the file, every match marked. Not yet: selecting
 and copying in the terminal; checked by hand on macOS only.
 
 ## M4: Tests and coverage
