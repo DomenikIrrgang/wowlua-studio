@@ -123,8 +123,32 @@ pub fn show(ui: &mut Ui, state: &mut SearchState, root: &Path) -> Option<Action>
     action
 }
 
-fn section(ui: &mut Ui, text: &str, count: usize, p: &Palette) {
-    let (r, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 28.0), Sense::hover());
+const SECTION_H: f32 = 28.0;
+
+/// A long list in a scroll area, drawing only the rows on screen: each
+/// row's height, and `draw` for row `i` in its place.
+fn rows(ui: &mut Ui, heights: &[f32], mut draw: impl FnMut(&mut Ui, usize, Rect)) {
+    let total: f32 = heights.iter().sum();
+    egui::ScrollArea::vertical()
+        .auto_shrink(false)
+        .show_viewport(ui, |ui, viewport| {
+            let width = ui.available_width();
+            let (all, _) = ui.allocate_exact_size(Vec2::new(width, total), Sense::hover());
+            let mut y = 0.0;
+            for (i, h) in heights.iter().enumerate() {
+                if y > viewport.max.y {
+                    break;
+                }
+                if y + h >= viewport.min.y {
+                    let r = Rect::from_min_size(all.min + Vec2::new(0.0, y), Vec2::new(width, *h));
+                    draw(ui, i, r);
+                }
+                y += h;
+            }
+        });
+}
+
+fn section(ui: &mut Ui, r: Rect, text: &str, count: usize, p: &Palette) {
     let painter = ui.painter().with_clip_rect(r);
     painter.text(
         Pos2::new(r.left() + 12.0, r.bottom() - 9.0),
@@ -148,16 +172,20 @@ fn empty(ui: &mut Ui, text: &str, p: &Palette) {
     });
 }
 
-/// A row of a match: its line number, the line with the match marked.
+/// A row of a match in `r`: its line number, the line with the match
+/// marked.
+#[allow(clippy::too_many_arguments)]
 fn hit_row(
     ui: &mut Ui,
+    r: Rect,
+    id: egui::Id,
     line: usize,
     text: &str,
     start: usize,
     end: usize,
     p: &Palette,
 ) -> egui::Response {
-    let (r, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::click());
+    let resp = ui.interact(r, id, Sense::click());
     if resp.hovered() {
         ui.painter().rect_filled(r, CornerRadius::ZERO, p.bg_300);
     }
@@ -170,7 +198,7 @@ fn hit_row(
         p.ink_muted,
     );
     // The line from a little before the match, trimmed.
-    let chars: Vec<char> = text.chars().collect();
+    let chars: Vec<char> = text.chars().take(end + 300).collect();
     let from = start.saturating_sub(24).max(
         chars
             .iter()
@@ -182,7 +210,8 @@ fn hit_row(
     let hit: String = chars[start.min(chars.len())..end.min(chars.len())]
         .iter()
         .collect();
-    let after: String = chars[end.min(chars.len())..].iter().collect();
+    // No more than a wide panel shows.
+    let after: String = chars[end.min(chars.len())..].iter().take(300).collect();
     let font = Face::Plex.at(12.0);
     let mut x = r.left() + 58.0;
     let a = painter.text(
@@ -244,26 +273,32 @@ fn references(
             p.ink_muted,
         );
     });
+    // The rows: a file's section, then its references.
+    let mut list_rows: Vec<(&Path, Option<&(Location, String)>)> = Vec::new();
+    for (path, locs) in &files {
+        list_rows.push((path, None));
+        list_rows.extend(locs.iter().map(|l| (*path, Some(*l))));
+    }
+    let heights: Vec<f32> = list_rows
+        .iter()
+        .map(|(_, l)| if l.is_some() { ROW_H } else { SECTION_H })
+        .collect();
     let mut picked = None;
-    egui::ScrollArea::vertical()
-        .auto_shrink(false)
-        .show(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = 0.0;
-            for (path, locs) in &files {
-                section(ui, &rel(path, root), locs.len(), p);
-                for (l, text) in locs {
-                    let start = utf16_to_chars(text, l.start.character);
-                    let end = if l.end.line == l.start.line {
-                        utf16_to_chars(text, l.end.character)
-                    } else {
-                        start
-                    };
-                    if hit_row(ui, l.start.line, text, start, end, p).clicked() {
-                        picked = Some(l.clone());
-                    }
-                }
+    rows(ui, &heights, |ui, i, r| match list_rows[i] {
+        (path, None) => section(ui, r, &rel(path, root), files[path].len(), p),
+        (_, Some((l, text))) => {
+            let start = utf16_to_chars(text, l.start.character);
+            let end = if l.end.line == l.start.line {
+                utf16_to_chars(text, l.end.character)
+            } else {
+                start
+            };
+            let id = egui::Id::unique(("wowlua-studio-reference", i));
+            if hit_row(ui, r, id, l.start.line, text, start, end, p).clicked() {
+                picked = Some(l.clone());
             }
-        });
+        }
+    });
     picked
 }
 
@@ -314,7 +349,11 @@ fn rename(ui: &mut Ui, state: &mut SearchState, root: &Path, p: &Palette) -> Opt
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
             for (path, changes) in &mut r.files {
-                section(ui, &rel(path, root), changes.len(), p);
+                let (row, _) = ui.allocate_exact_size(
+                    Vec2::new(ui.available_width(), SECTION_H),
+                    Sense::hover(),
+                );
+                section(ui, row, &rel(path, root), changes.len(), p);
                 for c in changes.iter_mut() {
                     ui.horizontal(|ui| {
                         ui.add_space(12.0);
@@ -469,13 +508,10 @@ fn text(ui: &mut Ui, state: &mut SearchState, root: &Path, p: &Palette) -> Optio
                 let mut edits: BTreeMap<PathBuf, Vec<TextEdit>> = BTreeMap::new();
                 for (path, hits) in &found.files {
                     for h in hits {
-                        let at = |col: usize| Wire {
-                            line: h.line,
-                            character: h.text.chars().take(col).map(char::len_utf16).sum(),
-                        };
+                        let (start, end) = wires(h);
                         edits.entry(path.clone()).or_default().push(TextEdit {
-                            start: at(h.start),
-                            end: at(h.end),
+                            start,
+                            end,
                             text: state.replace.clone(),
                         });
                     }
@@ -485,47 +521,66 @@ fn text(ui: &mut Ui, state: &mut SearchState, root: &Path, p: &Palette) -> Optio
         });
     }
     let _ = search;
+    // The rows: a file's section, then its matches; last the summary.
+    let mut list_rows: Vec<(usize, Option<usize>)> = Vec::new();
+    for (f, (_, hits)) in found.files.iter().enumerate() {
+        list_rows.push((f, None));
+        list_rows.extend((0..hits.len()).map(|h| (f, Some(h))));
+    }
+    let mut heights: Vec<f32> = list_rows
+        .iter()
+        .map(|(_, h)| if h.is_some() { ROW_H } else { SECTION_H })
+        .collect();
+    heights.push(36.0);
+    let cut = if found.cut { " (the first 5000)" } else { "" };
+    let summary = format!(
+        "{matches} matches{cut} in {} files · {} files searched in {} ms",
+        found.files.len(),
+        found.searched,
+        found.millis
+    );
     let mut picked = None;
-    egui::ScrollArea::vertical()
-        .auto_shrink(false)
-        .show(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = 0.0;
-            for (path, hits) in &found.files {
-                section(ui, &rel(path, root), hits.len(), p);
-                for h in hits {
-                    if hit_row(ui, h.line, &h.text, h.start, h.end, p).clicked() {
-                        let at = |col: usize| Wire {
-                            line: h.line,
-                            character: h.text.chars().take(col).map(char::len_utf16).sum(),
-                        };
-                        picked = Some(Location {
-                            path: path.clone(),
-                            start: at(h.start),
-                            end: at(h.end),
-                        });
-                    }
+    rows(ui, &heights, |ui, i, r| {
+        let Some(&(f, hit)) = list_rows.get(i) else {
+            ui.painter().with_clip_rect(r).text(
+                Pos2::new(r.left() + 12.0, r.center().y),
+                Align2::LEFT_CENTER,
+                &summary,
+                Face::Plex.at(11.5),
+                p.ink_muted,
+            );
+            return;
+        };
+        let (path, hits) = &found.files[f];
+        match hit {
+            None => section(ui, r, &rel(path, root), hits.len(), p),
+            Some(h) => {
+                let h = &hits[h];
+                let id = egui::Id::unique(("wowlua-studio-search-hit", i));
+                if hit_row(ui, r, id, h.line, &h.text, h.start, h.end, p).clicked() {
+                    let (start, end) = wires(h);
+                    picked = Some(Location {
+                        path: path.clone(),
+                        start,
+                        end,
+                    });
                 }
             }
-            let cut = if found.cut { " (the first 5000)" } else { "" };
-            forms::padded(ui, 12, 10, |ui| {
-                forms::paragraph(
-                    ui,
-                    &format!(
-                        "{matches} matches{cut} in {} files · {} files searched in {} ms",
-                        found.files.len(),
-                        found.searched,
-                        found.millis
-                    ),
-                    11.5,
-                    16.0,
-                    p.ink_muted,
-                );
-            });
-        });
+        }
+    });
     if let Some(l) = picked {
         action = Some(Action::Show(l));
     }
     action
+}
+
+/// A match's place, as the language server counts.
+fn wires(h: &crate::system::Hit) -> (Wire, Wire) {
+    let at = |character| Wire {
+        line: h.line,
+        character,
+    };
+    (at(h.at.0), at(h.at.1))
 }
 
 /// `path` from the workspace's root, with `/`.

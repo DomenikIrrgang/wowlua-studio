@@ -522,6 +522,9 @@ fn lay(
     };
     let chars: Vec<char> = line.chars().collect();
     let mut h = 0;
+    // The highlights are in order: the one at a column is found by
+    // walking on, not by searching them all for each character.
+    let mut next = 0;
     for col in 0..=chars.len() {
         while let Some(&(at, label)) = hints.get(h)
             && at == col
@@ -536,9 +539,12 @@ fn lay(
         let Some(&c) = chars.get(col) else {
             break;
         };
+        while highlights.get(next).is_some_and(|x| x.1 <= col) {
+            next += 1;
+        }
         let st = highlights
-            .iter()
-            .find(|x| x.0 <= col && col < x.1)
+            .get(next)
+            .filter(|x| x.0 <= col && col < x.1)
             .map(|x| x.2);
         if st != run_style {
             flush(&mut job, &mut run, run_style);
@@ -1286,20 +1292,34 @@ fn completion_popup(ctx: &egui::Context, tab: &mut Tab, caret: Rect, p: &Palette
                     Face::Plex.at(11.0),
                     p.ink_muted,
                 );
-                painter.text(
+                let label = painter.text(
                     Pos2::new(r.left() + 62.0, r.center().y),
                     Align2::LEFT_CENTER,
                     &item.label,
                     Face::Plex.at(12.5),
                     p.ink,
                 );
-                painter.text(
-                    Pos2::new(r.right() - 10.0, r.center().y),
-                    Align2::RIGHT_CENTER,
-                    &item.detail,
-                    Face::Plex.at(11.5),
-                    p.ink_muted,
-                );
+                // The detail in the room the label leaves, cut with `…`.
+                let room = r.right() - 10.0 - (label.right() + 16.0);
+                if room > 24.0 && !item.detail.is_empty() {
+                    let mut job = LayoutJob::simple_singleline(
+                        item.detail.clone(),
+                        Face::Plex.at(11.5),
+                        p.ink_muted,
+                    );
+                    job.wrap = egui::text::TextWrapping {
+                        max_width: room,
+                        max_rows: 1,
+                        break_anywhere: true,
+                        overflow_character: Some('…'),
+                    };
+                    let g = painter.layout_job(job);
+                    let at = Pos2::new(
+                        r.right() - 10.0 - g.size().x,
+                        r.center().y - g.size().y / 2.0,
+                    );
+                    painter.galley(at, g, p.ink_muted);
+                }
                 if resp.clicked() {
                     picked = Some(i);
                 }
@@ -1741,7 +1761,11 @@ fn typed(tab: &mut Tab, text: &str, actions: &mut Vec<Action>) {
         '(' | ',' => actions.push(Action::Signature(head)),
         ')' => tab.signature = None,
         c if c.is_alphanumeric() || c == '_' => {
-            if tab.completion.is_none() && word_before(&tab.doc).1.chars().count() == 1 {
+            // A word's first letter asks; so does each one after while the
+            // server's list is cut (the game's names, for a short prefix).
+            let first = tab.completion.is_none() && word_before(&tab.doc).1.chars().count() == 1;
+            let cut = tab.completion.as_ref().is_some_and(|c| c.incomplete);
+            if first || cut {
                 actions.push(Action::Complete(head));
             }
         }
@@ -2094,11 +2118,13 @@ mod tests {
             kind: 5,
             insert: label.into(),
             range: None,
+            sort: label.into(),
         };
         tab.completion = Some(Completion {
             at: Pos::new(0, 5),
             items: vec![item("name"), item("frame"), item("free")],
             selected: 1,
+            incomplete: false,
         });
         // `fr` keeps frame and free; the second is free.
         assert_eq!(filtered(tab.completion.as_ref().unwrap(), "fr"), [1, 2]);

@@ -80,6 +80,8 @@ pub struct Completion {
     pub at: Pos,
     pub items: Vec<crate::lsp::Item>,
     pub selected: usize,
+    /// The server's list is cut: typing on asks again.
+    pub incomplete: bool,
 }
 
 /// The disk's text against the editor's.

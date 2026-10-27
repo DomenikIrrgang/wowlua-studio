@@ -161,13 +161,17 @@ pub struct Search {
     pub regex: bool,
 }
 
-/// A match: its line (from 0), its characters, the line's text.
+/// A match: its line (from 0), where it is in the line in UTF-16 units
+/// (as the language server counts), and the piece of the line around it
+/// that is shown, the match its characters `start..end`. A line can be
+/// megabytes long (a data file on one line): only the piece is kept.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Hit {
     pub line: usize,
+    pub at: (usize, usize),
+    pub text: String,
     pub start: usize,
     pub end: usize,
-    pub text: String,
 }
 
 /// What a search found.

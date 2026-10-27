@@ -42,12 +42,36 @@ pub fn studio(ctx: &egui::Context) -> (Studio, Memory) {
     (studio, memory)
 }
 
+/// Studio as [`studio`] makes it, and what it sends the language server.
+#[allow(dead_code)]
+pub fn studio_recording(ctx: &egui::Context) -> (Studio, Sent) {
+    let sent = Sent::default();
+    let studio = Studio::new(
+        ctx,
+        Host {
+            platform: Platform::Linux,
+            wowlua_version: "0.13.0".to_owned(),
+            store: Box::new(Memory::default()),
+            system: Box::new(Fake {
+                sent: sent.clone(),
+                ..Fake::default()
+            }),
+        },
+    );
+    (studio, sent)
+}
+
+/// The messages sent to the language server, in order.
+#[derive(Clone, Default)]
+pub struct Sent(pub Rc<RefCell<Vec<serde_json::Value>>>);
+
 /// A system whose folders open at once as a workspace of three packages,
 /// each folder holding a few files; a folder named `plain` has no
 /// `wowlua.json`.
 #[derive(Default)]
 pub struct Fake {
     events: RefCell<Vec<system::Event>>,
+    sent: Sent,
 }
 
 impl System for Fake {
@@ -123,6 +147,13 @@ impl System for Fake {
             }
             return Ok(text);
         }
+        if path.ends_with("long.json") {
+            // A data file on one line: 2 MB.
+            return Ok(format!(
+                "[{}0]",
+                "{\"name\":\"test\",\"id\":12},".repeat(80_000)
+            ));
+        }
         Ok(format!("-- {}\nlocal x = 1\n", path.display()))
     }
     fn write_file(&self, _: &Path, _: &str) -> Result<(), String> {
@@ -140,7 +171,9 @@ impl System for Fake {
     fn canonical(&self, path: &Path) -> PathBuf {
         path.to_path_buf()
     }
-    fn lsp_send(&self, _: serde_json::Value) {}
+    fn lsp_send(&self, message: serde_json::Value) {
+        self.sent.0.borrow_mut().push(message);
+    }
     fn lsp_files(&self, _: Vec<(PathBuf, system::FileChange)>) {}
     fn lsp_stop(&self) {}
     fn search(&self, _: &Path, _: system::Search) {}

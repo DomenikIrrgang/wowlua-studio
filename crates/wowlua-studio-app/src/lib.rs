@@ -544,6 +544,10 @@ impl Studio {
             }
         }
         let system = &*self.host.system;
+        // The server has the text the request is about: what was typed
+        // this frame reaches it first (a `.` asks for members).
+        self.lsp
+            .sync(self.editors.tabs.iter().map(|t| &t.doc), system);
         let Some(tab) = self.editors.active() else {
             return;
         };
@@ -617,8 +621,10 @@ impl Studio {
                             .count();
                         let start = lsp::to_wire(&tab.doc, editor::Pos::new(at.line, start_col));
                         let end = lsp::to_wire(&tab.doc, at);
+                        let label = s.label.trim_matches('"').to_owned();
                         lsp::Item {
-                            label: s.label.trim_matches('"').to_owned(),
+                            sort: label.clone(),
+                            label,
                             detail: s.detail,
                             kind: if place.on_key { 10 } else { 12 },
                             insert: s.insert,
@@ -630,6 +636,7 @@ impl Studio {
                     at,
                     items,
                     selected: 0,
+                    incomplete: false,
                 });
             }
             A::Hover(at) => {
@@ -776,7 +783,12 @@ impl Studio {
                     self.editors.tabs[i].hover = Some(hover);
                 }
             }
-            R::Completion { path, at, items } => {
+            R::Completion {
+                path,
+                at,
+                items,
+                incomplete,
+            } => {
                 if let Some(i) = find(&self.editors, &path)
                     && !items.is_empty()
                     && self.editors.tabs[i].doc.selection.head.line == at.line
@@ -785,6 +797,7 @@ impl Studio {
                         at,
                         items,
                         selected: 0,
+                        incomplete,
                     });
                 }
             }

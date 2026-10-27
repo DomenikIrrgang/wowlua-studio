@@ -884,6 +884,32 @@ fn semantic(text: &str) -> Vec<Highlight> {
 /// How many matches a search keeps.
 const MOST_HITS: usize = 5000;
 
+/// The piece of `row` around the match `start..end` (bytes) that the
+/// search panel shows: a little before it, the line's rest up to a
+/// panel's width after; and the match in it, in characters.
+fn excerpt(row: &str, start: usize, end: usize) -> (String, usize, usize) {
+    const BEFORE: usize = 40;
+    const AFTER: usize = 200;
+    let from = row[..start]
+        .char_indices()
+        .rev()
+        .nth(BEFORE - 1)
+        .map_or(0, |(i, _)| i);
+    // A long match is cut too.
+    let end = row[start..]
+        .char_indices()
+        .nth(AFTER)
+        .map_or(end, |(i, _)| end.min(start + i));
+    let to = row[end..]
+        .char_indices()
+        .nth(AFTER)
+        .map_or(row.len(), |(i, _)| end + i);
+    let text = row[from..to].to_owned();
+    let first = row[from..start].chars().count();
+    let last = first + row[start..end].chars().count();
+    (text, first, last)
+}
+
 /// The text files under `root` that match, as Git sees the folder (its
 /// ignore files followed, hidden files left out).
 fn search_files(root: &Path, search: &Search) -> Found {
@@ -929,17 +955,31 @@ fn search_files(root: &Path, search: &Search) -> Found {
         found.searched += 1;
         let mut hits = Vec::new();
         for (line, row) in text.lines().enumerate() {
+            // UTF-16 units up to `byte`, counted on from the last match:
+            // once over the line however long it is.
+            let (mut byte, mut units) = (0, 0);
+            let mut units_to = |to: usize| {
+                units += row[byte..to].encode_utf16().count();
+                byte = to;
+                units
+            };
             for m in re.find_iter(row) {
                 if m.start() == m.end() {
                     continue;
                 }
+                let at = (units_to(m.start()), units_to(m.end()));
+                let (text, start, end) = excerpt(row, m.start(), m.end());
                 hits.push(Hit {
                     line,
-                    start: row[..m.start()].chars().count(),
-                    end: row[..m.end()].chars().count(),
-                    text: row.to_owned(),
+                    at,
+                    text,
+                    start,
+                    end,
                 });
                 hits_total += 1;
+                if hits_total >= MOST_HITS {
+                    break;
+                }
             }
             if hits_total >= MOST_HITS {
                 found.cut = true;
@@ -1056,5 +1096,30 @@ print(stateOfX, stateOf)
         let hits = &found.files[0].1;
         assert_eq!(hits.len(), 2);
         assert_eq!((hits[1].line, hits[1].start, hits[1].end), (1, 16, 23));
+        assert_eq!(hits[1].at, (16, 23));
+    }
+
+    #[test]
+    fn a_match_on_a_long_line_keeps_a_piece_of_it() {
+        let dir = std::env::temp_dir().join(format!("wowlua-studio-long-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // A data file on one line: 2 MB, matches all along it.
+        let piece = "{\"name\":\"ä test\"},";
+        std::fs::write(dir.join("data.json"), piece.repeat(100_000)).unwrap();
+        let search = Search {
+            query: "test".to_owned(),
+            ..Search::default()
+        };
+        let found = search_files(&dir, &search);
+        std::fs::remove_dir_all(&dir).unwrap();
+        let hits = &found.files[0].1;
+        assert_eq!(hits.len(), super::MOST_HITS);
+        assert!(found.cut);
+        let units = piece.encode_utf16().count();
+        let h = &hits[1000];
+        assert_eq!(h.at, (1000 * units + 11, 1000 * units + 15));
+        assert!(h.text.chars().count() <= 40 + 4 + 200, "{}", h.text.len());
+        let shown: String = h.text.chars().skip(h.start).take(h.end - h.start).collect();
+        assert_eq!(shown, "test");
     }
 }

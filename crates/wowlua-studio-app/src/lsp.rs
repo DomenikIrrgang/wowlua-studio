@@ -64,6 +64,8 @@ pub struct Item {
     /// none is given).
     pub insert: String,
     pub range: Option<(Wire, Wire)>,
+    /// Where it is in the list (the server's sort text, else the label).
+    pub sort: String,
 }
 
 /// A symbol of the outline.
@@ -96,6 +98,8 @@ pub enum Reply {
         path: PathBuf,
         at: Pos,
         items: Vec<Item>,
+        /// The list is cut: asked again as the word grows.
+        incomplete: bool,
     },
     Signature {
         path: PathBuf,
@@ -573,12 +577,20 @@ impl Lsp {
                 text: hover_text(&result["contents"]),
             },
             Ask::Completion(path, at) => {
-                let items = result
+                let mut items: Vec<Item> = result
                     .as_array()
                     .or_else(|| result["items"].as_array())
                     .map(|a| a.iter().map(item).collect())
                     .unwrap_or_default();
-                Reply::Completion { path, at, items }
+                // In the server's order: its sort text, else the label.
+                items.sort_by(|a, b| a.sort.cmp(&b.sort));
+                let incomplete = result["isIncomplete"].as_bool().unwrap_or(false);
+                Reply::Completion {
+                    path,
+                    at,
+                    items,
+                    incomplete,
+                }
             }
             Ask::Signature(path) => {
                 let sigs = result["signatures"].as_array()?;
@@ -725,6 +737,7 @@ fn item(v: &Json) -> Item {
     Item {
         detail: v["detail"].as_str().unwrap_or("").to_owned(),
         kind: v["kind"].as_u64().unwrap_or(0) as u8,
+        sort: v["sortText"].as_str().unwrap_or(&label).to_owned(),
         label,
         insert,
         range,
