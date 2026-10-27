@@ -137,6 +137,11 @@ pub enum Event {
     FilesChanged(Vec<PathBuf>),
     /// A message of the language server (JSON-RPC, as an editor reads it).
     Lsp(serde_json::Value),
+    /// A text search finished.
+    Searched {
+        search: Search,
+        found: Found,
+    },
 }
 
 /// How a file changed on disk, for the language server.
@@ -145,6 +150,36 @@ pub enum FileChange {
     Created,
     Changed,
     Deleted,
+}
+
+/// A text search across the workspace (the search board's text tab).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Search {
+    pub query: String,
+    pub case: bool,
+    pub word: bool,
+    pub regex: bool,
+}
+
+/// A match: its line (from 0), its characters, the line's text.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Hit {
+    pub line: usize,
+    pub start: usize,
+    pub end: usize,
+    pub text: String,
+}
+
+/// What a search found.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Found {
+    pub files: Vec<(PathBuf, Vec<Hit>)>,
+    pub searched: usize,
+    pub millis: u64,
+    /// The query is no regular expression, or nothing could be read.
+    pub error: Option<String>,
+    /// More matches than are kept.
+    pub cut: bool,
 }
 
 /// A colour of the highlighting: the design system's syntax tokens.
@@ -232,6 +267,9 @@ pub trait System {
     fn lsp_files(&self, changes: Vec<(PathBuf, FileChange)>);
     /// Stops the server (the workspace closed).
     fn lsp_stop(&self);
+    /// Searches the files under `root` (→ [`Event::Searched`]): ignored
+    /// and hidden files left out, as Git leaves them.
+    fn search(&self, root: &Path, search: Search);
     /// Work finished since the last call.
     fn poll(&self) -> Vec<Event>;
 }
@@ -301,6 +339,7 @@ impl System for NoSystem {
     fn lsp_send(&self, _: serde_json::Value) {}
     fn lsp_files(&self, _: Vec<(PathBuf, FileChange)>) {}
     fn lsp_stop(&self) {}
+    fn search(&self, _: &Path, _: Search) {}
     fn poll(&self) -> Vec<Event> {
         Vec::new()
     }

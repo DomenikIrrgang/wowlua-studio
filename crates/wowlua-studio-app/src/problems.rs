@@ -1,6 +1,6 @@
 //! The panels the language server fills: problems (every file's, as the
-//! problems panel lists them), the outline of the active file, and the
-//! references found (shown in the search panel, the search board).
+//! problems panel lists them) and the outline of the active file. The
+//! references found are the search panel's.
 
 use std::path::{Path, PathBuf};
 
@@ -168,57 +168,6 @@ pub fn outline(ui: &mut Ui, symbols: Option<&[Symbol]>) -> Option<Wire> {
                 }
                 if resp.clicked() {
                     picked = Some(s.start);
-                }
-            }
-        },
-    );
-    picked
-}
-
-/// The references found; returns the one clicked.
-pub fn references(
-    ui: &mut Ui,
-    found: Option<&(String, Vec<Location>)>,
-    root: &Path,
-) -> Option<Location> {
-    let p = palette(ui.ctx());
-    let Some((name, list)) = found else {
-        empty(
-            ui,
-            "References show here: shift f12 on a name in the editor.",
-        );
-        return None;
-    };
-    let (head, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 30.0), Sense::hover());
-    ui.painter().text(
-        Pos2::new(head.left() + 12.0, head.center().y),
-        Align2::LEFT_CENTER,
-        format!("{} references to {name}", list.len()),
-        Face::Plex.at(11.5),
-        p.ink_muted,
-    );
-    let mut picked = None;
-    egui::ScrollArea::vertical().auto_shrink(false).show_rows(
-        ui,
-        ROW_H,
-        list.len(),
-        |ui, range| {
-            for l in &list[range] {
-                let (r, resp) =
-                    ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::click());
-                if resp.hovered() {
-                    ui.painter().rect_filled(r, CornerRadius::ZERO, p.bg_300);
-                }
-                let rel = l.path.strip_prefix(root).unwrap_or(&l.path);
-                ui.painter().with_clip_rect(r).text(
-                    Pos2::new(r.left() + 12.0, r.center().y),
-                    Align2::LEFT_CENTER,
-                    format!("{}:{}", rel.to_string_lossy(), l.start.line + 1),
-                    Face::Plex.at(12.0),
-                    p.ink,
-                );
-                if resp.clicked() {
-                    picked = Some(l.clone());
                 }
             }
         },

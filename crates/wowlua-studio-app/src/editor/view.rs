@@ -145,8 +145,17 @@ fn tab_bar(ui: &mut Ui, rect: Rect, editors: &mut Editors, actions: &mut Vec<Act
     );
     let mut x = rect.left();
     let clip = painter.with_clip_rect(rect);
+    for tab in &mut editors.tabs {
+        if tab.preview && tab.doc.is_dirty() {
+            tab.preview = false;
+        }
+    }
     for (i, tab) in editors.tabs.iter().enumerate() {
-        let name = file_name(&tab.doc);
+        let name = if tab.preview {
+            format!("{} · preview", file_name(&tab.doc))
+        } else {
+            file_name(&tab.doc)
+        };
         let on = i == editors.active;
         let g = widgets::galley(ui, &name, Face::Plex.at(12.0), p.ink, 0.0);
         let w = 14.0 + 14.0 + 8.0 + g.size().x + 8.0 + 16.0 + 14.0;

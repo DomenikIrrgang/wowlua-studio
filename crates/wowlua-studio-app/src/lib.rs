@@ -16,6 +16,7 @@ pub mod palette;
 pub mod panels;
 pub mod problems;
 pub mod recents;
+pub mod search;
 pub mod start;
 pub mod state;
 pub mod system;
@@ -93,8 +94,8 @@ pub struct Studio {
     /// wowlua's language server, while a workspace that can be checked is
     /// open.
     lsp: lsp::Lsp,
-    /// The references found last, for the search panel.
-    references: Option<(String, Vec<lsp::Location>)>,
+    /// The search panel: references, a rename's changes, text search.
+    search: search::SearchState,
     /// The active file's outline: its path, the version it is for.
     outline: Option<(PathBuf, u64, Vec<lsp::Symbol>)>,
     /// When the outline was asked for, and for which version.
@@ -167,7 +168,7 @@ impl Studio {
             ask: None,
             editors: Editors::default(),
             lsp: lsp::Lsp::default(),
-            references: None,
+            search: search::SearchState::default(),
             outline: None,
             outline_asked: None,
             notes: Notifications::default(),
@@ -386,7 +387,8 @@ impl Studio {
         let explorer = &mut self.explorer;
         let editors = &mut self.editors;
         let lsp_state = &self.lsp;
-        let references = &self.references;
+        let search_state = &mut self.search;
+        let mut search_action = None;
         let outline = &self.outline;
         let system = &*self.host.system;
         let mac = self.host.platform == Platform::MacOs;
@@ -430,11 +432,8 @@ impl Studio {
                     go_to_symbol = Some(w);
                 }
             }
-            Panel::Search => {
-                if let Some(l) = problems::references(ui, references.as_ref(), &workspace.root) {
-                    go_to = Some(l);
-                }
-            }
+            Panel::Search => search_action = search::show(ui, search_state, &workspace.root),
+            Panel::Output => search::output(ui, &lsp_state.log),
             _ => dock::placeholder(ui, panel),
         };
         let changed = dock::show(ui, area, layout, &mut self.dock, &mut content);
@@ -446,6 +445,25 @@ impl Studio {
         }
         if let Some(l) = go_to {
             self.go_to(&l, ctx);
+        }
+        match search_action {
+            Some(search::Action::Show(l)) => self.show_place(&l, ctx),
+            Some(search::Action::Search(s)) => {
+                if let Some(w) = &self.workspace {
+                    self.host.system.search(&w.root, s.clone());
+                }
+                self.search.running = Some(s);
+            }
+            Some(search::Action::Rename(edits)) => self.apply_edits(edits, ctx),
+            Some(search::Action::ReplaceAll(edits)) => {
+                self.apply_edits(edits, ctx);
+                // What is left to find.
+                if let (Some(w), Some((s, _))) = (&self.workspace, &self.search.found) {
+                    self.host.system.search(&w.root, s.clone());
+                    self.search.running = Some(s.clone());
+                }
+            }
+            None => {}
         }
         if let (Some(w), Some(path)) = (
             go_to_symbol,
@@ -487,7 +505,12 @@ impl Studio {
                 let name: String = line.chars().skip(start).take(end - start).collect();
                 self.lsp.references(doc, at, name, system);
             }
-            A::Rename(at, name) => self.lsp.rename(doc, at, &name, system),
+            A::Rename(at, name) => {
+                let line = doc.line(at.line);
+                let (start, end) = word_bounds(line, at.col);
+                let old: String = line.chars().skip(start).take(end - start).collect();
+                self.lsp.rename(doc, at, old, &name, system);
+            }
             A::Fixes(at) => {
                 if !self.lsp.fixes(doc, at, system) {
                     self.notify(Notification::new(Kind::Note, "No quick fix here", ""), ctx);
@@ -522,6 +545,57 @@ impl Studio {
         ctx.data_mut(|d| d.insert_temp(egui::Id::unique("wowlua-studio-outline-typed"), now));
         self.lsp.symbols(&tab.doc, &*self.host.system);
         self.outline_asked = Some(key);
+    }
+
+    /// A line of a file: from its tab when it is open, else from disk.
+    fn line_of(&self, path: &Path, line: usize) -> String {
+        let open = self
+            .editors
+            .tabs
+            .iter()
+            .find(|t| t.doc.path == path || self.lsp.canonical_of(&t.doc.path) == Some(path));
+        match open {
+            Some(t) => t.doc.line(line).to_owned(),
+            None => self
+                .host
+                .system
+                .read_file(path)
+                .ok()
+                .and_then(|text| text.lines().nth(line).map(str::to_owned))
+                .unwrap_or_default(),
+        }
+    }
+
+    /// Shows the search panel.
+    fn reveal_search(&mut self) {
+        let key = self.layout_key();
+        let layout = layout_for(&mut self.layouts, &key, self.layout_page);
+        if !layout.contains(Panel::Search) {
+            layout.reveal(Panel::Search, dock::Dock::Left);
+        }
+    }
+
+    /// Shows a place from the search panel, in the preview tab.
+    fn show_place(&mut self, l: &lsp::Location, ctx: &Context) {
+        let path = self
+            .editors
+            .tabs
+            .iter()
+            .map(|t| t.doc.path.clone())
+            .find(|p| self.lsp.canonical_of(p) == Some(l.path.as_path()))
+            .unwrap_or_else(|| l.path.clone());
+        if let Err(error) = self.editors.preview(&path, &*self.host.system) {
+            self.notify(
+                Notification::new(Kind::Error, "The file did not open", error),
+                ctx,
+            );
+            return;
+        }
+        if let Some(tab) = self.editors.active_mut() {
+            let at = lsp::from_wire(&tab.doc, l.start);
+            tab.doc.selection = editor::Selection::caret(at);
+            tab.reveal = true;
+        }
     }
 
     /// Opens a file at a place the server named.
@@ -576,12 +650,52 @@ impl Studio {
                 }
             }
             R::References { name, locations } => {
-                self.references = Some((name, locations));
-                let key = self.layout_key();
-                let layout = layout_for(&mut self.layouts, &key, self.layout_page);
-                layout.reveal(Panel::Search, dock::Dock::Left);
+                let list = locations
+                    .into_iter()
+                    .map(|l| {
+                        let text = self.line_of(&l.path, l.start.line);
+                        (l, text)
+                    })
+                    .collect();
+                self.search.references = Some((name, list));
+                self.search.tab = search::Tab::References;
+                self.reveal_search();
             }
-            R::Edits(files) => self.apply_edits(files, ctx),
+            R::Renamed { old, new, files } => {
+                // The changes are shown first: checked, then made (the
+                // search board's rename).
+                let files = files
+                    .into_iter()
+                    .map(|(path, edits)| {
+                        let changes = edits
+                            .into_iter()
+                            .map(|edit| search::Change {
+                                line: self.line_of(&path, edit.start.line),
+                                edit,
+                                checked: true,
+                            })
+                            .collect();
+                        (path, changes)
+                    })
+                    .collect();
+                self.search.rename = Some(search::Rename {
+                    old,
+                    new,
+                    files,
+                    refused: None,
+                });
+                self.search.tab = search::Tab::Rename;
+                self.reveal_search();
+            }
+            R::RenameRefused { old, message } => {
+                self.search.rename = Some(search::Rename {
+                    old,
+                    refused: Some(message),
+                    ..search::Rename::default()
+                });
+                self.search.tab = search::Tab::Rename;
+                self.reveal_search();
+            }
             R::Symbols { path, symbols } => {
                 let version = self
                     .editors
@@ -895,6 +1009,12 @@ impl Studio {
                         self.host.system.open(&w.root);
                     }
                 }
+                Event::Searched { search, found } => {
+                    if self.search.running.as_ref() == Some(&search) {
+                        self.search.running = None;
+                        self.search.found = Some((search, found));
+                    }
+                }
                 Event::Lsp(message) => {
                     if let Some(reply) = self.lsp.receive(&message, &*self.host.system) {
                         self.lsp_reply(reply, ctx);
@@ -968,7 +1088,7 @@ impl Studio {
         if !again {
             self.explorer = Explorer::new(&workspace);
             self.editors = Editors::default();
-            self.references = None;
+            self.search = search::SearchState::default();
             self.outline = None;
             // A package whose requirement excludes this wowlua opens with
             // checks, hover and completion off (E4300).
@@ -996,7 +1116,7 @@ impl Studio {
             self.explorer = Explorer::default();
             self.editors = Editors::default();
             self.lsp.stop(&*self.host.system);
-            self.references = None;
+            self.search = search::SearchState::default();
             self.outline = None;
             self.branch = None;
             self.menus_changed = true;

@@ -14,8 +14,9 @@ use wowlua_driver::project::{LoadOptions, find_manifest, load_projects};
 use wowlua_driver::scaffold::{InitRequest, NewRequest};
 use wowlua_manifest::model::{CheckMode, PackageKind};
 use wowlua_studio_app::system::{
-    Adopt, AdoptPreview, ClientFolder, Entry, Event, FileChange, Highlight, Installation, Member,
-    NewAddon, Opened, PackageNames, Syntax, System, UiState, Workspace,
+    Adopt, AdoptPreview, ClientFolder, Entry, Event, FileChange, Found, Highlight, Hit,
+    Installation, Member, NewAddon, Opened, PackageNames, Search, Syntax, System, UiState,
+    Workspace,
 };
 
 /// Folders the explorer and the watcher leave out: build output and the
@@ -337,6 +338,14 @@ impl System for NativeSystem {
     fn lsp_stop(&self) {
         // Dropping the channel ends the thread.
         self.lsp.borrow_mut().take();
+    }
+
+    fn search(&self, root: &Path, search: Search) {
+        let root = root.to_path_buf();
+        self.spawn(move || {
+            let found = search_files(&root, &search);
+            Event::Searched { search, found }
+        });
     }
 
     fn poll(&self) -> Vec<Event> {
@@ -838,6 +847,83 @@ fn semantic(text: &str) -> Vec<Highlight> {
     out
 }
 
+/// How many matches a search keeps.
+const MOST_HITS: usize = 5000;
+
+/// The text files under `root` that match, as Git sees the folder (its
+/// ignore files followed, hidden files left out).
+fn search_files(root: &Path, search: &Search) -> Found {
+    let started = std::time::Instant::now();
+    let pattern = if search.regex {
+        search.query.clone()
+    } else {
+        regex::escape(&search.query)
+    };
+    let pattern = if search.word {
+        format!(r"\b(?:{pattern})\b")
+    } else {
+        pattern
+    };
+    let re = match regex::RegexBuilder::new(&pattern)
+        .case_insensitive(!search.case)
+        .build()
+    {
+        Ok(re) => re,
+        Err(e) => {
+            return Found {
+                error: Some(format!("not a regular expression: {e}")),
+                ..Found::default()
+            };
+        }
+    };
+    let mut found = Found::default();
+    let mut hits_total = 0;
+    for entry in ignore::WalkBuilder::new(root).build().flatten() {
+        if !entry.file_type().is_some_and(|t| t.is_file()) {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(entry.path()) else {
+            continue;
+        };
+        // Binary files (a NUL early on) are passed over.
+        if bytes.iter().take(8000).any(|&b| b == 0) {
+            continue;
+        }
+        let Ok(text) = String::from_utf8(bytes) else {
+            continue;
+        };
+        found.searched += 1;
+        let mut hits = Vec::new();
+        for (line, row) in text.lines().enumerate() {
+            for m in re.find_iter(row) {
+                if m.start() == m.end() {
+                    continue;
+                }
+                hits.push(Hit {
+                    line,
+                    start: row[..m.start()].chars().count(),
+                    end: row[..m.end()].chars().count(),
+                    text: row.to_owned(),
+                });
+                hits_total += 1;
+            }
+            if hits_total >= MOST_HITS {
+                found.cut = true;
+                break;
+            }
+        }
+        if !hits.is_empty() {
+            found.files.push((entry.path().to_path_buf(), hits));
+        }
+        if found.cut {
+            break;
+        }
+    }
+    found.files.sort_by(|a, b| a.0.cmp(&b.0));
+    found.millis = started.elapsed().as_millis() as u64;
+    found
+}
+
 /// The `### New` lines of a changelog section, as plain text.
 fn new_lines(section: &str) -> Vec<String> {
     let Some(start) = section.find("### New") else {
@@ -853,7 +939,8 @@ fn new_lines(section: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::new_lines;
+    use super::{new_lines, search_files};
+    use wowlua_studio_app::system::Search;
 
     #[test]
     fn whats_new_is_the_new_section_as_text() {
@@ -862,5 +949,37 @@ mod tests {
             new_lines(section),
             ["Test runner: wowlua test runs.", "Two."]
         );
+    }
+
+    #[test]
+    fn a_search_finds_words_and_leaves_ignored_files_out() {
+        let dir = std::env::temp_dir().join(format!("wowlua-studio-search-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(
+            dir.join("src/a.wowlua"),
+            "local stateOf = 1
+print(stateOfX, stateOf)
+",
+        )
+        .unwrap();
+        std::fs::write(dir.join(".ignore"), "dist/\n").unwrap();
+        std::fs::create_dir_all(dir.join("dist")).unwrap();
+        std::fs::write(
+            dir.join("dist/b.lua"),
+            "stateOf
+",
+        )
+        .unwrap();
+        let search = Search {
+            query: "stateof".into(),
+            word: true,
+            ..Search::default()
+        };
+        let found = search_files(&dir, &search);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(found.files.len(), 1, "{found:?}");
+        let hits = &found.files[0].1;
+        assert_eq!(hits.len(), 2);
+        assert_eq!((hits[1].line, hits[1].start, hits[1].end), (1, 16, 23));
     }
 }

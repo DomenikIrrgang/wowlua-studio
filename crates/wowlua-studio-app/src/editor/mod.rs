@@ -31,6 +31,9 @@ pub struct Tab {
     pub clash: Option<Clash>,
     /// The caret moved: scroll it into view.
     pub reveal: bool,
+    /// Opened to look at (from the search panel): the next preview
+    /// replaces it, an edit keeps it.
+    pub preview: bool,
     /// The language server's hover where the pointer rests.
     pub hover: Option<(Pos, String)>,
     /// Completion suggestions at the caret.
@@ -116,6 +119,32 @@ impl Editors {
             .push(Tab::new(Document::new(path.to_path_buf(), &text)));
         self.active = self.tabs.len() - 1;
         self.focus = true;
+        Ok(())
+    }
+
+    /// Opens `path` to look at: in the preview tab, which it replaces.
+    pub fn preview(&mut self, path: &Path, system: &dyn System) -> Result<(), String> {
+        if let Some(i) = self.find(path) {
+            self.active = i;
+            return Ok(());
+        }
+        let text = system.read_file(path)?;
+        let mut tab = Tab::new(Document::new(path.to_path_buf(), &text));
+        tab.preview = true;
+        match self
+            .tabs
+            .iter()
+            .position(|t| t.preview && !t.doc.is_dirty())
+        {
+            Some(i) => {
+                self.tabs[i] = tab;
+                self.active = i;
+            }
+            None => {
+                self.tabs.push(tab);
+                self.active = self.tabs.len() - 1;
+            }
+        }
         Ok(())
     }
 
@@ -210,6 +239,7 @@ impl Tab {
             widest: None,
             clash: None,
             reveal: true,
+            preview: false,
             hover: None,
             completion: None,
             signature: None,

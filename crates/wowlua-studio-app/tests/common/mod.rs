@@ -130,6 +130,7 @@ impl System for Fake {
     fn lsp_send(&self, _: serde_json::Value) {}
     fn lsp_files(&self, _: Vec<(PathBuf, system::FileChange)>) {}
     fn lsp_stop(&self) {}
+    fn search(&self, _: &Path, _: system::Search) {}
     fn poll(&self) -> Vec<system::Event> {
         std::mem::take(&mut *self.events.borrow_mut())
     }

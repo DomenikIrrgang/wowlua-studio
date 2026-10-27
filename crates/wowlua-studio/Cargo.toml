@@ -11,8 +11,10 @@ authors.workspace = true
 [dependencies]
 dirs = "7.0"
 eframe.workspace = true
+ignore = "0.4"
 notify = "8.2"
 png = "0.18"
+regex = "1.13"
 rfd = "0.17"
 # Keeps the order of wowlua's config.json when Studio writes `wow.path`.
 serde_json = { workspace = true, features = ["preserve_order"] }

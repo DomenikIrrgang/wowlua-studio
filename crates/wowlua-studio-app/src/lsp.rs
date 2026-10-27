@@ -107,8 +107,17 @@ pub enum Reply {
         name: String,
         locations: Vec<Location>,
     },
-    /// Edits per file (a rename).
-    Edits(BTreeMap<PathBuf, Vec<TextEdit>>),
+    /// A rename's edits per file, before they are made.
+    Renamed {
+        old: String,
+        new: String,
+        files: BTreeMap<PathBuf, Vec<TextEdit>>,
+    },
+    /// The server refused a rename, and why.
+    RenameRefused {
+        old: String,
+        message: String,
+    },
     Symbols {
         path: PathBuf,
         symbols: Vec<Symbol>,
@@ -155,7 +164,7 @@ enum Ask {
     Signature(PathBuf),
     Definition,
     References(String),
-    Rename,
+    Rename(String, String),
     Symbols(PathBuf),
     Format(PathBuf, bool),
     Hints(PathBuf, u64),
@@ -381,10 +390,22 @@ impl Lsp {
         }
     }
 
-    pub fn rename(&mut self, doc: &Document, pos: Pos, name: &str, system: &dyn System) {
+    pub fn rename(
+        &mut self,
+        doc: &Document,
+        pos: Pos,
+        old: String,
+        name: &str,
+        system: &dyn System,
+    ) {
         if let Some(mut params) = self.at(doc, pos) {
             params["newName"] = json!(name);
-            self.request(system, Ask::Rename, "textDocument/rename", params);
+            self.request(
+                system,
+                Ask::Rename(old, name.to_owned()),
+                "textDocument/rename",
+                params,
+            );
         }
     }
 
@@ -512,6 +533,9 @@ impl Lsp {
                 .as_str()
                 .unwrap_or("the language server failed")
                 .to_owned();
+            if let Ask::Rename(old, _) = ask {
+                return Some(Reply::RenameRefused { old, message: text });
+            }
             return Some(Reply::Failed {
                 save: match ask {
                     Ask::Format(path, true) => Some(path),
@@ -570,7 +594,11 @@ impl Lsp {
                 name,
                 locations: locations(result),
             },
-            Ask::Rename => Reply::Edits(workspace_edit(result)),
+            Ask::Rename(old, new) => Reply::Renamed {
+                old,
+                new,
+                files: workspace_edit(result),
+            },
             Ask::Symbols(path) => {
                 let mut symbols = Vec::new();
                 if let Some(list) = result.as_array() {
