@@ -138,9 +138,9 @@ first), the outline, quick fixes (`cmd .`), format on save; text search
 with replace; the output panel; a terminal emulator; JSON completion and
 hover from wowlua's schemas; files changed or deleted outside; the
 unsaved-edits question; notifications; background jobs (the check, told
-by the server's `wowlua/checking`). wowlua's pull request #63 adds the
-server's semantic tokens, folding, inlay hints, quick fixes, lenses and
-the checking notification. The frame budget holds with a 4000-line file
+by the server's `wowlua/checking`). wowlua 0.13.2, pinned, adds the
+server's semantic tokens, folding, inlay hints, quick fixes, lenses, the
+checking notification and a function's overloads one per line. The frame budget holds with a 4000-line file
 open: 0.09 ms median, 0.25 ms at the 99th percentile; a line of megabytes
 is laid out only where it is seen. The find bar (S051): find and replace
 in the file, every match marked. The terminal selects as a terminal app
