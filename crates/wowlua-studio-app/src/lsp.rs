@@ -94,6 +94,12 @@ pub enum Reply {
         at: Pos,
         text: String,
     },
+    /// Whether the name at `at` has a definition.
+    Linkable {
+        path: PathBuf,
+        at: Pos,
+        found: bool,
+    },
     Completion {
         path: PathBuf,
         at: Pos,
@@ -175,6 +181,8 @@ enum Ask {
     Completion(PathBuf, Pos),
     Signature(PathBuf),
     Definition,
+    /// Whether the name at the place has a definition (cmd held over it).
+    Linkable(PathBuf, Pos),
     References(String),
     Rename(String, String),
     Symbols(PathBuf),
@@ -387,6 +395,15 @@ impl Lsp {
     pub fn definition(&mut self, doc: &Document, pos: Pos, system: &dyn System) {
         if let Some(params) = self.at(doc, pos) {
             self.request(system, Ask::Definition, "textDocument/definition", params);
+        }
+    }
+
+    /// Asks whether the name at `pos` goes somewhere: its underline while
+    /// cmd is held (→ [`Reply::Linkable`]).
+    pub fn linkable(&mut self, doc: &Document, pos: Pos, system: &dyn System) {
+        if let Some(params) = self.at(doc, pos) {
+            let ask = Ask::Linkable(doc.path.clone(), pos);
+            self.request(system, ask, "textDocument/definition", params);
         }
     }
 
@@ -619,6 +636,11 @@ impl Lsp {
                 }
             }
             Ask::Definition => Reply::Definition(locations(result)),
+            Ask::Linkable(path, at) => Reply::Linkable {
+                path,
+                at,
+                found: !locations(result).is_empty(),
+            },
             Ask::References(name) => Reply::References {
                 name,
                 locations: locations(result),

@@ -186,6 +186,18 @@ impl System for Fake {
                     "result": { "contents": { "kind": "markdown", "value": value } },
                 })));
         }
+        // Every name's definition is the file's first line.
+        if message["method"] == "textDocument/definition" {
+            let uri = message["params"]["textDocument"]["uri"].clone();
+            let at = serde_json::json!({ "line": 0, "character": 0 });
+            self.events
+                .borrow_mut()
+                .push(system::Event::Lsp(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": message["id"],
+                    "result": [{ "uri": uri, "range": { "start": at, "end": at } }],
+                })));
+        }
         self.sent.0.borrow_mut().push(message);
     }
     fn lsp_files(&self, _: Vec<(PathBuf, system::FileChange)>) {}

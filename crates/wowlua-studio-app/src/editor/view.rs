@@ -53,6 +53,8 @@ pub enum Action {
     Complete(Pos),
     Signature(Pos),
     Definition(Pos),
+    /// Whether the name at the place has a definition (cmd held over it).
+    Linkable(Pos),
     References(Pos),
     Rename(Pos, String),
     /// The quick fixes of the problems at the place.
@@ -883,6 +885,13 @@ fn code(
     let mut hover_at: Option<(Pos, Pos2)> = None;
     let mut clear_hover = false;
     let mut unfold: Option<usize> = None;
+    // cmd held over a name with a definition: it is underlined, as a link.
+    let cmd = ctx.input(|i| i.modifiers.command);
+    let underline = tab
+        .link
+        .as_ref()
+        .filter(|l| cmd && l.found == Some(true) && l.version == doc.version)
+        .map(|l| (l.line, l.start, l.end));
     let lay_cx = LayCx {
         highlights,
         hints: &hints,
@@ -1077,6 +1086,16 @@ fn code(
                 let text_y = y + (LINE_H - laid.galley.size().y) / 2.0;
                 ui.painter()
                     .galley(Pos2::new(origin.x, text_y), laid.galley.clone(), p.ink);
+                // The name cmd + click goes to the definition of.
+                if let Some((l, s, e)) = underline
+                    && l == line
+                {
+                    ui.painter().hline(
+                        origin.x + laid.x(s)..=origin.x + laid.x(e),
+                        y + LINE_H - 3.0,
+                        Stroke::new(1.0, p.ink),
+                    );
+                }
                 // A folded line ends in `⋯`: a click opens it.
                 if let Some(&(_, last)) = folded.iter().find(|f| f.0 == line) {
                     let x = origin.x + laid.galley.size().x + 8.0;
@@ -1139,6 +1158,41 @@ fn code(
         });
     if let Some(line) = unfold {
         tab.folded.retain(|f| f.0 != line);
+    }
+
+    // The name under the pointer while cmd is held: asked once whether it
+    // has a definition; a hand over it when it has.
+    let pointed = hover_at.filter(|_| cmd).and_then(|(at, _)| {
+        let text = tab.doc.line(at.line);
+        let (start, end) = word_at(text, at.col);
+        let name = text
+            .chars()
+            .skip(start)
+            .take(end - start)
+            .any(|c| c.is_alphanumeric() || c == '_');
+        name.then_some((at.line, start, end))
+    });
+    match pointed {
+        Some((line, start, end)) => {
+            let version = tab.doc.version;
+            let same = tab.link.as_ref().is_some_and(|l| {
+                (l.version, l.line, l.start, l.end) == (version, line, start, end)
+            });
+            if !same {
+                tab.link = Some(super::Link {
+                    version,
+                    line,
+                    start,
+                    end,
+                    found: None,
+                });
+                actions.push(Action::Linkable(Pos::new(line, start)));
+            }
+            if underline == Some((line, start, end)) {
+                ctx.set_cursor_icon(CursorIcon::PointingHand);
+            }
+        }
+        None => tab.link = None,
     }
 
     // The hover: asked for once the pointer rests on a place.

@@ -11,7 +11,22 @@ use wowlua_studio_app::Studio;
 
 /// A frame at `time`, the pointer at `pointer`, with `more` events.
 fn frame(ctx: &egui::Context, studio: &mut Studio, time: f64, pointer: Pos2, more: Vec<Event>) {
-    let mut events = vec![Event::PointerMoved(pointer)];
+    frame_with(ctx, studio, time, pointer, more, egui::Modifiers::NONE);
+}
+
+/// [`frame`], with `modifiers` held.
+fn frame_with(
+    ctx: &egui::Context,
+    studio: &mut Studio,
+    time: f64,
+    pointer: Pos2,
+    more: Vec<Event>,
+    modifiers: egui::Modifiers,
+) {
+    let mut events = vec![
+        Event::ModifiersChanged(modifiers),
+        Event::PointerMoved(pointer),
+    ];
     events.extend(more);
     let input = RawInput {
         screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1440.0, 900.0))),
@@ -36,6 +51,35 @@ fn rest_until_hover(ctx: &egui::Context, studio: &mut Studio, time: &mut f64) ->
         }
     }
     panic!("no hover over the code");
+}
+
+#[test]
+fn a_name_with_a_definition_is_underlined_while_cmd_is_held() {
+    let ctx = egui::Context::default();
+    let (mut studio, _) = common::studio(&ctx);
+    let mut t = 0.0;
+    let far = Pos2::new(1430.0, 895.0);
+    studio.open(Path::new("/p/suuui"));
+    frame(&ctx, &mut studio, t, far, Vec::new());
+    studio.edit(Path::new("/p/suuui/src/main.wowlua"));
+    for _ in 0..3 {
+        t += 0.05;
+        frame(&ctx, &mut studio, t, far, Vec::new());
+    }
+    // A place over a name: where a hover comes.
+    let on = rest_until_hover(&ctx, &mut studio, &mut t);
+    assert_eq!(studio.linked(), None, "without cmd, no link");
+    let cmd = egui::Modifiers::COMMAND;
+    for _ in 0..3 {
+        t += 0.05;
+        frame_with(&ctx, &mut studio, t, on, Vec::new(), cmd);
+    }
+    let (line, start, end) = studio.linked().expect("underlined while cmd is held");
+    assert_eq!(Some(line), studio.hovered().map(|h| h.0));
+    assert!(start < end);
+    t += 0.05;
+    frame(&ctx, &mut studio, t, on, Vec::new());
+    assert_eq!(studio.linked(), None, "cmd let go: no link");
 }
 
 #[test]

@@ -253,6 +253,13 @@ impl Studio {
         Some((hover.at.line, hover.at.col))
     }
 
+    /// The name underlined as a link (cmd held over a name with a
+    /// definition): its line and characters.
+    pub fn linked(&self) -> Option<(usize, usize, usize)> {
+        let link = self.editors.active()?.link.as_ref()?;
+        (link.found == Some(true)).then_some((link.line, link.start, link.end))
+    }
+
     /// Opens the workspace around `path` in this window.
     pub fn open(&mut self, path: &Path) {
         self.start.opening = Some(path.to_path_buf());
@@ -579,6 +586,7 @@ impl Studio {
             A::Complete(at) => self.lsp.complete(doc, at, system),
             A::Signature(at) => self.lsp.signature(doc, at, system),
             A::Definition(at) => self.lsp.definition(doc, at, system),
+            A::Linkable(at) => self.lsp.linkable(doc, at, system),
             A::References(at) => {
                 let line = doc.line(at.line);
                 let (start, end) = word_bounds(line, at.col);
@@ -801,6 +809,14 @@ impl Studio {
                 if let Some(i) = find(&self.editors, &path) {
                     let hover = editor::Hover::new(at, text, &*self.host.system);
                     self.editors.tabs[i].hover = Some(hover);
+                }
+            }
+            R::Linkable { path, at, found } => {
+                if let Some(i) = find(&self.editors, &path)
+                    && let Some(link) = &mut self.editors.tabs[i].link
+                    && (link.line, link.start) == (at.line, at.col)
+                {
+                    link.found = Some(found);
                 }
             }
             R::Completion {

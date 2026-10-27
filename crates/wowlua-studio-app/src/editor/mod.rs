@@ -37,6 +37,16 @@ impl Hover {
     }
 }
 
+/// The name under the pointer while cmd is held: where it is, for the
+/// text's version, and whether it has a definition (asked, then known).
+pub struct Link {
+    pub version: u64,
+    pub line: usize,
+    pub start: usize,
+    pub end: usize,
+    pub found: Option<bool>,
+}
+
 /// An open file.
 pub struct Tab {
     pub doc: Document,
@@ -81,6 +91,8 @@ pub struct Tab {
     /// The find bar's matches, for the text and the search they were
     /// found for.
     pub matches: Option<find::Matches>,
+    /// The name cmd + click would go to the definition of: underlined.
+    pub link: Option<Link>,
 }
 
 /// Completion suggestions: where they were asked for, and which is chosen.
@@ -284,6 +296,7 @@ impl Tab {
             folded: Vec::new(),
             fixes: None,
             matches: None,
+            link: None,
         }
     }
 
