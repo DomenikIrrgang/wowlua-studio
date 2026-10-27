@@ -28,6 +28,15 @@ pub struct Diag {
     pub severity: u8,
     pub code: Option<String>,
     pub message: String,
+    /// As the server sent it: quick fixes send it back.
+    pub raw: Json,
+}
+
+/// A quick fix: its title and its edits per file.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Fix {
+    pub title: String,
+    pub edits: BTreeMap<PathBuf, Vec<TextEdit>>,
 }
 
 impl Diag {
@@ -117,6 +126,25 @@ pub enum Reply {
     },
     /// A message to show (`window/showMessage`).
     Message(String),
+    /// Inlay hints: where, and what; for the version asked about.
+    Hints {
+        path: PathBuf,
+        version: u64,
+        hints: Vec<(Wire, String)>,
+    },
+    /// Lenses: the line, the title, where its command points.
+    Lenses {
+        path: PathBuf,
+        version: u64,
+        lenses: Vec<(usize, String, Wire)>,
+    },
+    /// The quick fixes at the caret.
+    Fixes {
+        path: PathBuf,
+        fixes: Vec<Fix>,
+    },
+    /// A check published its problems of a file (by the server's path).
+    Published(PathBuf),
 }
 
 #[derive(Clone, Debug)]
@@ -130,6 +158,9 @@ enum Ask {
     Rename,
     Symbols(PathBuf),
     Format(PathBuf, bool),
+    Hints(PathBuf, u64),
+    Lenses(PathBuf, u64),
+    Fixes(PathBuf),
 }
 
 #[derive(Default)]
@@ -369,6 +400,59 @@ impl Lsp {
         }
     }
 
+    /// Asks for the whole file's inlay hints and lenses (after a check).
+    pub fn decorations(&mut self, doc: &Document, system: &dyn System) {
+        let Some((_, canonical)) = self.opened.get(&doc.path) else {
+            return;
+        };
+        let uri = uri_of(canonical);
+        let lines = doc.line_count();
+        self.request(
+            system,
+            Ask::Hints(doc.path.clone(), doc.version),
+            "textDocument/inlayHint",
+            json!({
+                "textDocument": { "uri": uri },
+                "range": { "start": { "line": 0, "character": 0 }, "end": { "line": lines, "character": 0 } },
+            }),
+        );
+        self.request(
+            system,
+            Ask::Lenses(doc.path.clone(), doc.version),
+            "textDocument/codeLens",
+            json!({ "textDocument": { "uri": uri } }),
+        );
+    }
+
+    /// Asks for the fixes of the problems at `pos`.
+    pub fn fixes(&mut self, doc: &Document, pos: Pos, system: &dyn System) -> bool {
+        let wire = to_wire(doc, pos);
+        let here: Vec<Json> = self
+            .diagnostics_of(&doc.path)
+            .iter()
+            .filter(|d| d.start <= wire && wire <= d.end)
+            .map(|d| d.raw.clone())
+            .collect();
+        let Some((_, canonical)) = self.opened.get(&doc.path) else {
+            return false;
+        };
+        if here.is_empty() {
+            return false;
+        }
+        let params = json!({
+            "textDocument": { "uri": uri_of(canonical) },
+            "range": { "start": wire_json(wire), "end": wire_json(wire) },
+            "context": { "diagnostics": here },
+        });
+        self.request(
+            system,
+            Ask::Fixes(doc.path.clone()),
+            "textDocument/codeAction",
+            params,
+        );
+        true
+    }
+
     /// Asks for the file's formatting; `then_save` when a save waits.
     /// Returns false when the server does not have the file.
     pub fn format(&mut self, doc: &Document, then_save: bool, system: &dyn System) -> bool {
@@ -399,7 +483,8 @@ impl Lsp {
                         .as_array()
                         .map(|a| a.iter().map(diag).collect())
                         .unwrap_or_default();
-                    self.diagnostics.insert(path, list);
+                    self.diagnostics.insert(path.clone(), list);
+                    return Some(Reply::Published(path));
                 }
                 "window/logMessage" => {
                     if let Some(text) = params["message"].as_str() {
@@ -493,6 +578,51 @@ impl Lsp {
                 }
                 Reply::Symbols { path, symbols }
             }
+            Ask::Hints(path, version) => Reply::Hints {
+                path,
+                version,
+                hints: result
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|h| {
+                        let label = match &h["label"] {
+                            Json::String(s) => s.clone(),
+                            Json::Array(parts) => {
+                                parts.iter().filter_map(|p| p["value"].as_str()).collect()
+                            }
+                            _ => String::new(),
+                        };
+                        (wire(&h["position"]), label)
+                    })
+                    .collect(),
+            },
+            Ask::Lenses(path, version) => Reply::Lenses {
+                path,
+                version,
+                lenses: result
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|l| {
+                        let title = l["command"]["title"].as_str()?.to_owned();
+                        let at = wire(&l["command"]["arguments"][1]);
+                        Some((l["range"]["start"]["line"].as_u64()? as usize, title, at))
+                    })
+                    .collect(),
+            },
+            Ask::Fixes(path) => Reply::Fixes {
+                path,
+                fixes: result
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|a| Fix {
+                        title: a["title"].as_str().unwrap_or("fix").to_owned(),
+                        edits: workspace_edit(&a["edit"]),
+                    })
+                    .collect(),
+            },
             Ask::Format(path, then_save) => Reply::Format {
                 path,
                 edits: result
@@ -527,6 +657,7 @@ fn diag(v: &Json) -> Diag {
             _ => None,
         },
         message: v["message"].as_str().unwrap_or("").to_owned(),
+        raw: v.clone(),
     }
 }
 

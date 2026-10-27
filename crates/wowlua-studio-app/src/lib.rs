@@ -488,6 +488,12 @@ impl Studio {
                 self.lsp.references(doc, at, name, system);
             }
             A::Rename(at, name) => self.lsp.rename(doc, at, &name, system),
+            A::Fixes(at) => {
+                if !self.lsp.fixes(doc, at, system) {
+                    self.notify(Notification::new(Kind::Note, "No quick fix here", ""), ctx);
+                }
+            }
+            A::ApplyFix(fix) => self.apply_edits(fix.edits, ctx),
         }
     }
 
@@ -612,6 +618,55 @@ impl Studio {
                 None => self.lsp.log.push(message),
             },
             R::Message(text) => self.notify(Notification::new(Kind::Note, text, ""), ctx),
+            R::Published(path) => {
+                // A check: the open file's hints and lenses again.
+                if let Some(tab) = self.editors.active()
+                    && self.lsp.canonical_of(&tab.doc.path) == Some(path.as_path())
+                {
+                    self.lsp.decorations(&tab.doc, &*self.host.system);
+                }
+            }
+            R::Hints {
+                path,
+                version,
+                hints,
+            } => {
+                if let Some(i) = find(&self.editors, &path) {
+                    let tab = &mut self.editors.tabs[i];
+                    if tab.doc.version == version {
+                        let list = hints
+                            .into_iter()
+                            .map(|(w, label)| (lsp::from_wire(&tab.doc, w), label))
+                            .collect();
+                        tab.hints = Some((version, list));
+                    }
+                }
+            }
+            R::Lenses {
+                path,
+                version,
+                lenses,
+            } => {
+                if let Some(i) = find(&self.editors, &path) {
+                    let tab = &mut self.editors.tabs[i];
+                    if tab.doc.version == version {
+                        let list = lenses
+                            .into_iter()
+                            .map(|(line, title, w)| (line, title, lsp::from_wire(&tab.doc, w)))
+                            .collect();
+                        tab.lenses = Some((version, list));
+                    }
+                }
+            }
+            R::Fixes { path, fixes } => {
+                if let Some(i) = find(&self.editors, &path) {
+                    if fixes.is_empty() {
+                        self.notify(Notification::new(Kind::Note, "No quick fix here", ""), ctx);
+                    } else {
+                        self.editors.tabs[i].fixes = Some((fixes, 0));
+                    }
+                }
+            }
         }
     }
 

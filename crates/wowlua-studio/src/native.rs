@@ -131,7 +131,27 @@ impl System for NativeSystem {
     }
 
     fn highlight(&self, text: &str) -> Vec<Highlight> {
-        highlight(text)
+        let mut out = highlight(text);
+        // The names, as the server's semantic tokens tell them (S042).
+        let names = semantic(text);
+        if !names.is_empty() {
+            out.retain(|h| !names.iter().any(|n| n.start < h.end && h.start < n.end));
+            out.extend(names);
+            out.sort_by_key(|h| h.start);
+        }
+        out
+    }
+
+    fn folding(&self, text: &str) -> Vec<(usize, usize)> {
+        wowlua_lsp::editor::folding_ranges(text)
+            .iter()
+            .filter_map(|r| {
+                Some((
+                    r["startLine"].as_u64()? as usize,
+                    r["endLine"].as_u64()? as usize,
+                ))
+            })
+            .collect()
     }
 
     fn open(&self, path: &Path) {
@@ -770,6 +790,51 @@ fn highlight(text: &str) -> Vec<Highlight> {
         previous = token.kind;
     }
     out.sort_by_key(|h| h.start);
+    out
+}
+
+/// The server's semantic tokens as byte ranges with the design's colours:
+/// keywords, types (classes, enums, namespaces too), functions and
+/// methods, decorators. Parameters and fields keep the text's colour.
+fn semantic(text: &str) -> Vec<Highlight> {
+    let data = wowlua_lsp::editor::semantic_tokens(text);
+    let types = wowlua_lsp::editor::TOKEN_TYPES;
+    let mut starts = vec![0];
+    starts.extend(text.match_indices('\n').map(|(i, _)| i + 1));
+    let (mut line, mut col) = (0usize, 0usize);
+    let mut out = Vec::new();
+    for q in data.chunks(5) {
+        if q[0] > 0 {
+            col = 0;
+        }
+        line += q[0] as usize;
+        col += q[1] as usize;
+        let syntax = match types.get(q[3] as usize).copied() {
+            Some("keyword") => Syntax::Keyword,
+            Some("type" | "class" | "namespace") => Syntax::Type,
+            Some("function" | "method") => Syntax::Function,
+            Some("decorator") => Syntax::Decorator,
+            _ => continue,
+        };
+        let Some(&line_start) = starts.get(line) else {
+            break;
+        };
+        // UTF-16 columns to bytes.
+        let row = &text[line_start..];
+        let byte = |units: usize| {
+            let mut seen = 0;
+            for (b, c) in row.char_indices() {
+                if seen >= units {
+                    return b;
+                }
+                seen += c.len_utf16();
+            }
+            row.len()
+        };
+        let start = line_start + byte(col);
+        let end = line_start + byte(col + q[2] as usize);
+        out.push(Highlight { start, end, syntax });
+    }
     out
 }
 

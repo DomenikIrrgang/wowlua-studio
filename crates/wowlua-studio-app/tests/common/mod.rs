@@ -121,6 +121,9 @@ impl System for Fake {
     fn highlight(&self, _: &str) -> Vec<system::Highlight> {
         Vec::new()
     }
+    fn folding(&self, _: &str) -> Vec<(usize, usize)> {
+        Vec::new()
+    }
     fn canonical(&self, path: &Path) -> PathBuf {
         path.to_path_buf()
     }

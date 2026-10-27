@@ -12,13 +12,17 @@ use std::path::{Path, PathBuf};
 use crate::system::{Highlight, Syntax, System};
 pub use doc::{Document, EditKind, Pos, Selection};
 
-/// A file's highlighting: per line, display columns and colours.
+/// A file's highlighting: per line, character columns and colours.
 type LineHighlights = Vec<Vec<(usize, usize, Syntax)>>;
+
+/// Lenses over functions: the line, the title, where its references are
+/// asked for.
+pub type Lenses = Vec<(usize, String, Pos)>;
 
 /// An open file.
 pub struct Tab {
     pub doc: Document,
-    /// The highlighting, per line: display columns and colour, for the
+    /// The highlighting, per line: character columns and colour, for the
     /// version it was made for.
     highlights: Option<(u64, LineHighlights)>,
     /// The longest line's width in characters, for the version.
@@ -35,6 +39,19 @@ pub struct Tab {
     pub signature: Option<(String, Option<(usize, usize)>)>,
     /// The new name being typed for a rename, and where.
     pub rename: Option<(Pos, String)>,
+    /// The types of locals declared without one (inlay hints), for the
+    /// version they were asked for.
+    pub hints: Option<(u64, Vec<(Pos, String)>)>,
+    /// Lenses over functions: the line, the title, where its references
+    /// are asked for; for the version.
+    pub lenses: Option<(u64, Lenses)>,
+    /// The lines that fold (first, last), for the version.
+    foldable: Option<(u64, Vec<(usize, usize)>)>,
+    /// The folded ranges (first, last): the first line stays.
+    pub folded: Vec<(usize, usize)>,
+    /// The quick fixes at the caret: their titles and edits; which is
+    /// chosen.
+    pub fixes: Option<(Vec<crate::lsp::Fix>, usize)>,
 }
 
 /// Completion suggestions: where they were asked for, and which is chosen.
@@ -197,6 +214,11 @@ impl Tab {
             completion: None,
             signature: None,
             rename: None,
+            hints: None,
+            lenses: None,
+            foldable: None,
+            folded: Vec::new(),
+            fixes: None,
         }
     }
 
@@ -227,6 +249,26 @@ impl Tab {
             self.highlights = Some((version, lines));
         }
         &self.highlights.as_ref().expect("made").1
+    }
+
+    /// The lines that fold, made again when the text changed; folds
+    /// whose first line no longer folds open.
+    pub fn foldable(&mut self, system: &dyn System) -> &[(usize, usize)] {
+        let version = self.doc.version;
+        if self.foldable.as_ref().is_none_or(|(v, _)| *v != version) {
+            let ranges = if highlighted(&self.doc.path) {
+                system.folding(&self.doc.text())
+            } else {
+                Vec::new()
+            };
+            self.folded = self
+                .folded
+                .iter()
+                .filter_map(|&(first, _)| ranges.iter().find(|r| r.0 == first).copied())
+                .collect();
+            self.foldable = Some((version, ranges));
+        }
+        &self.foldable.as_ref().expect("made").1
     }
 
     /// The longest line's width in display columns.
@@ -275,7 +317,7 @@ fn per_line(doc: &Document, highlights: &[Highlight]) -> Vec<Vec<(usize, usize, 
             let from = h.start.saturating_sub(starts[line]).min(text.len());
             let to = (h.end - starts[line]).min(text.len());
             if to > from {
-                let cols = columns[line].get_or_insert_with(|| byte_columns(text));
+                let cols = columns[line].get_or_insert_with(|| char_columns(text));
                 out[line].push((cols[from], cols[to], h.syntax));
             }
             line += 1;
@@ -284,16 +326,17 @@ fn per_line(doc: &Document, highlights: &[Highlight]) -> Vec<Vec<(usize, usize, 
     out
 }
 
-/// Each byte offset of `line` (and its end) as a display column.
-fn byte_columns(line: &str) -> Vec<usize> {
-    let (_, map) = view::display(line);
+/// Each byte offset of `line` (and its end) as a character column.
+fn char_columns(line: &str) -> Vec<usize> {
     let mut out = vec![0; line.len() + 1];
+    let mut count = 0;
     for (col, (b, c)) in line.char_indices().enumerate() {
         for slot in &mut out[b..b + c.len_utf8()] {
-            *slot = map[col];
+            *slot = col;
         }
+        count = col + 1;
     }
-    out[line.len()] = map[map.len() - 1];
+    out[line.len()] = count;
     out
 }
 
@@ -314,8 +357,8 @@ mod tests {
             }],
         );
         assert_eq!(lines[0], [(0, 5, Syntax::Comment)]);
-        // The tab is four display columns.
-        assert_eq!(lines[1], [(0, 7, Syntax::Comment)]);
+        // Characters: the tab is one.
+        assert_eq!(lines[1], [(0, 4, Syntax::Comment)]);
     }
 
     #[test]

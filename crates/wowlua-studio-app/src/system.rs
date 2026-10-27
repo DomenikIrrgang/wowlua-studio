@@ -191,9 +191,12 @@ pub trait System {
     fn list(&self, dir: &Path) -> Vec<Entry>;
     fn read_file(&self, path: &Path) -> Result<String, String>;
     fn write_file(&self, path: &Path, text: &str) -> Result<(), String>;
-    /// The highlighting of a wowlua or Lua file's text, from wowlua's
-    /// lexer (S045).
+    /// The highlighting of a wowlua or Lua file's text: wowlua's lexer,
+    /// and over its names the server's semantic tokens (S045).
     fn highlight(&self, text: &str) -> Vec<Highlight>;
+    /// The lines a wowlua or Lua file's text folds: first and last, the
+    /// last staying in sight.
+    fn folding(&self, text: &str) -> Vec<(usize, usize)>;
     /// Opens the workspace around `path` (→ [`Event::Opened`]).
     fn open(&self, path: &Path);
     /// Watches the workspace's files (→ [`Event::FilesChanged`]); `None`
@@ -260,6 +263,9 @@ impl System for NoSystem {
         Err(format!("{} cannot be written here", path.display()))
     }
     fn highlight(&self, _: &str) -> Vec<Highlight> {
+        Vec::new()
+    }
+    fn folding(&self, _: &str) -> Vec<(usize, usize)> {
         Vec::new()
     }
     fn open(&self, _: &Path) {}

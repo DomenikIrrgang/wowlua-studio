@@ -1,9 +1,10 @@
 //! Drawing the editor and taking its input (the design's editor board):
 //! the tabs, the path, the changed-on-disk banner, and the code with its
-//! gutter, the server's problems underlined, and its popups: hover,
-//! completion, signature help, rename. Only the lines on screen are laid
-//! out; positions come from each line's laid-out text, so wide characters
-//! and tabs place the caret right.
+//! gutter: folds, the lenses over functions, the types of locals as inlay
+//! hints, the server's problems underlined, and its popups: hover,
+//! completion, signature help, rename, quick fixes. Only the rows on screen
+//! are laid out; positions come from each line's laid-out text, so wide
+//! characters, tabs and hints place the caret right.
 
 use std::sync::Arc;
 
@@ -20,10 +21,12 @@ use wowlua_studio_ui::{Face, Icon, Palette, icons, palette};
 use super::diff;
 use super::doc::{Document, EditKind, Pos, Selection};
 use super::{Completion, Editors, Tab};
-use crate::lsp::{self, Diag};
+use crate::lsp::{self, Diag, Fix};
 use crate::system::{Syntax, System, Workspace};
 
 pub const LINE_H: f32 = 21.0;
+/// A lens row over a function (`st-ln--lens`).
+const LENS_H: f32 = 18.0;
 const PAD_TOP: f32 = 6.0;
 /// The breakpoint column and the line numbers.
 const GUTTER: f32 = 20.0 + 46.0;
@@ -46,6 +49,10 @@ pub enum Action {
     Definition(Pos),
     References(Pos),
     Rename(Pos, String),
+    /// The quick fixes of the problems at the place.
+    Fixes(Pos),
+    /// Apply a quick fix.
+    ApplyFix(Fix),
 }
 
 /// What the editor needs from Studio.
@@ -371,7 +378,183 @@ fn compare(ui: &mut Ui, rect: Rect, mine: &str, theirs: &str, path: &std::path::
         });
 }
 
-/// The code: the gutter and the visible lines; the keyboard, the pointer
+/// A row of the code: a line, or the lens over one.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Row {
+    Line(usize),
+    Lens(usize),
+}
+
+impl Row {
+    fn line(self) -> usize {
+        match self {
+            Row::Line(l) | Row::Lens(l) => l,
+        }
+    }
+
+    fn height(self) -> f32 {
+        match self {
+            Row::Line(_) => LINE_H,
+            Row::Lens(_) => LENS_H,
+        }
+    }
+}
+
+/// The code's rows from the top: folded lines left out, lenses in.
+struct Rows {
+    rows: Vec<(Row, f32)>,
+    height: f32,
+}
+
+impl Rows {
+    fn new(lines: usize, folded: &[(usize, usize)], lens_lines: &[usize]) -> Rows {
+        let mut rows = Vec::with_capacity(lines + lens_lines.len());
+        let mut y = PAD_TOP;
+        let mut line = 0;
+        while line < lines {
+            if lens_lines.binary_search(&line).is_ok() {
+                rows.push((Row::Lens(line), y));
+                y += LENS_H;
+            }
+            rows.push((Row::Line(line), y));
+            y += LINE_H;
+            line = match folded.iter().find(|f| f.0 == line) {
+                Some(&(_, last)) => last + 1,
+                None => line + 1,
+            };
+        }
+        Rows { rows, height: y }
+    }
+
+    /// The top of a line's row (a hidden line: the fold's first).
+    fn y_of(&self, line: usize) -> f32 {
+        let i = self
+            .rows
+            .partition_point(|(r, _)| r.line() < line || matches!(r, Row::Lens(l) if *l == line));
+        match self.rows.get(i) {
+            Some((Row::Line(l), y)) if *l == line => *y,
+            _ => self.rows[i.saturating_sub(1).min(self.rows.len() - 1)].1,
+        }
+    }
+
+    /// The row at `y`.
+    fn at(&self, y: f32) -> Row {
+        let i = self
+            .rows
+            .partition_point(|(_, top)| *top <= y)
+            .saturating_sub(1);
+        self.rows[i.min(self.rows.len() - 1)].0
+    }
+
+    /// The rows between `top` and `bottom`.
+    fn between(&self, top: f32, bottom: f32) -> &[(Row, f32)] {
+        let first = self.rows.partition_point(|(r, y)| y + r.height() < top);
+        let last = self.rows.partition_point(|(_, y)| *y <= bottom);
+        &self.rows[first..last.max(first)]
+    }
+}
+
+/// A line as it is drawn: its layout, and where each character (and the
+/// end) is in it; inlay hints are in it too.
+struct Laid {
+    galley: Arc<Galley>,
+    map: Vec<usize>,
+}
+
+impl Laid {
+    /// The x of character `col`.
+    fn x(&self, col: usize) -> f32 {
+        let i = self.map[col.min(self.map.len() - 1)];
+        self.galley.pos_from_cursor(CCursor::new(i)).min.x
+    }
+
+    /// The character at `x`.
+    fn col_at(&self, x: f32) -> usize {
+        let i = self.galley.cursor_from_pos(Vec2::new(x, 0.0)).index.0;
+        self.map
+            .iter()
+            .position(|&m| m >= i)
+            .unwrap_or(self.map.len() - 1)
+    }
+}
+
+/// Lays out a line in its colours (character columns), with the hints at
+/// their columns (`st-inlay`).
+fn lay(
+    ui: &Ui,
+    line: &str,
+    highlights: &[(usize, usize, Syntax)],
+    hints: &[(usize, &str)],
+    font: &FontId,
+    p: &Palette,
+) -> Laid {
+    let mut job = LayoutJob::default();
+    let mut map = Vec::with_capacity(line.len() + 1);
+    let mut index = 0;
+    let mut tab_col = 0;
+    let mut run = String::new();
+    let mut run_style: Option<Syntax> = None;
+    let flush = |job: &mut LayoutJob, run: &mut String, style_of: Option<Syntax>| {
+        if !run.is_empty() {
+            let format = match style_of {
+                Some(s) => style(s, font, p),
+                None => TextFormat::simple(font.clone(), p.ink),
+            };
+            job.append(run, 0.0, format);
+            run.clear();
+        }
+    };
+    let hint_format = TextFormat {
+        font_id: Face::Plex.at(11.0),
+        color: p.ink_muted,
+        background: p.bg_300,
+        valign: egui::Align::Center,
+        ..Default::default()
+    };
+    let chars: Vec<char> = line.chars().collect();
+    let mut h = 0;
+    for col in 0..=chars.len() {
+        while let Some(&(at, label)) = hints.get(h)
+            && at == col
+        {
+            flush(&mut job, &mut run, run_style);
+            let text = format!("\u{2009}{label}\u{2009}");
+            index += text.chars().count();
+            job.append(&text, 0.0, hint_format.clone());
+            h += 1;
+        }
+        map.push(index);
+        let Some(&c) = chars.get(col) else {
+            break;
+        };
+        let st = highlights
+            .iter()
+            .find(|x| x.0 <= col && col < x.1)
+            .map(|x| x.2);
+        if st != run_style {
+            flush(&mut job, &mut run, run_style);
+            run_style = st;
+        }
+        if c == '\t' {
+            let n = TAB_STOP - tab_col % TAB_STOP;
+            run.extend(std::iter::repeat_n(' ', n));
+            index += n;
+            tab_col += n;
+        } else {
+            run.push(c);
+            index += 1;
+            tab_col += 1;
+        }
+    }
+    flush(&mut job, &mut run, run_style);
+    job.wrap.max_rows = 1;
+    Laid {
+        galley: ui.fonts_mut(|f| f.layout_job(job)),
+        map,
+    }
+}
+
+/// The code: the gutter and the visible rows; the keyboard, the pointer
 /// and the popups.
 fn code(
     ui: &mut Ui,
@@ -417,15 +600,40 @@ fn code(
         }
     }
 
+    // The caret in a fold opens it.
+    let head_line = tab.doc.selection.head.line;
+    tab.folded
+        .retain(|&(a, b)| !(head_line > a && head_line <= b));
+
     let widest = tab.widest();
     tab.highlights(cx.system);
+    let foldable: Vec<(usize, usize)> = tab.foldable(cx.system).to_vec();
+    let version = tab.doc.version;
+    // Hints and lenses are shown for the text they were made for.
+    let hints: Vec<(Pos, String)> = tab
+        .hints
+        .as_ref()
+        .filter(|(v, _)| *v == version)
+        .map(|(_, h)| h.clone())
+        .unwrap_or_default();
+    let lenses: Vec<(usize, String, Pos)> = tab
+        .lenses
+        .as_ref()
+        .filter(|(v, _)| *v == version)
+        .map(|(_, l)| l.clone())
+        .unwrap_or_default();
+    let mut lens_lines: Vec<usize> = lenses.iter().map(|l| l.0).collect();
+    lens_lines.sort_unstable();
+    lens_lines.dedup();
     let highlights: &[Vec<(usize, usize, Syntax)>] =
         tab.highlights.as_ref().map_or(&[], |(_, h)| h.as_slice());
+    let folded = tab.folded.clone();
     let doc = &mut tab.doc;
     let lines = doc.line_count();
+    let rows = Rows::new(lines, &folded, &lens_lines);
     let content = Vec2::new(
-        GUTTER.max(widest as f32 * char_w + 48.0),
-        PAD_TOP + lines as f32 * LINE_H + 24.0 + rect.height() * 0.5,
+        GUTTER.max(widest as f32 * char_w + 160.0),
+        rows.height + 24.0 + rect.height() * 0.5,
     );
     let mut child = ui.new_child(UiBuilder::new().max_rect(text_rect));
     child.set_clip_rect(text_rect);
@@ -433,6 +641,23 @@ fn code(
     let mut caret_screen = None;
     let mut hover_at: Option<(Pos, Pos2)> = None;
     let mut clear_hover = false;
+    let mut unfold: Option<usize> = None;
+    let laid_of = |ui: &Ui, doc: &Document, line: usize| {
+        let mut here: Vec<(usize, &str)> = hints
+            .iter()
+            .filter(|(pos, _)| pos.line == line)
+            .map(|(pos, label)| (pos.col, label.as_str()))
+            .collect();
+        here.sort_by_key(|h| h.0);
+        lay(
+            ui,
+            doc.line(line),
+            highlights.get(line).map_or(&[][..], |h| h.as_slice()),
+            &here,
+            &font,
+            p,
+        )
+    };
     let output = egui::ScrollArea::both()
         .id_salt(("wowlua-studio-code", &doc.path))
         .auto_shrink(false)
@@ -444,27 +669,11 @@ fn code(
             if response.hovered() {
                 ctx.set_cursor_icon(CursorIcon::Text);
             }
-            let first = (((viewport.min.y - PAD_TOP) / LINE_H).floor().max(0.0)) as usize;
-            let last = ((((viewport.max.y - PAD_TOP) / LINE_H).ceil()) as usize + 1).min(lines);
-            let line_y = |line: usize| origin.y + PAD_TOP + line as f32 * LINE_H;
-            let galley_of = |ui: &Ui, text: &str, line: usize| {
-                layout(
-                    ui,
-                    text,
-                    highlights.get(line).map_or(&[][..], |h| h.as_slice()),
-                    &font,
-                    p,
-                )
-            };
-            let pos_at = |ui: &Ui, doc: &Document, point: Pos2| {
-                let line = (((point.y - origin.y - PAD_TOP) / LINE_H).floor().max(0.0) as usize)
-                    .min(lines - 1);
-                let g = galley_of(ui, doc.line(line), line);
-                let dcol = g
-                    .cursor_from_pos(Vec2::new(point.x - origin.x, 0.0))
-                    .index
-                    .0;
-                Pos::new(line, char_col(doc.line(line), dcol))
+            let pos_at = |ui: &Ui, doc: &Document, point: Pos2| match rows.at(point.y - origin.y) {
+                Row::Lens(line) => Pos::new(line, 0),
+                Row::Line(line) => {
+                    Pos::new(line, laid_of(ui, doc, line).col_at(point.x - origin.x))
+                }
             };
 
             // The pointer: place the caret, select by dragging, words and
@@ -512,18 +721,50 @@ fn code(
                 ctx.data_mut(|d| d.insert_temp(id.with("typed"), now));
                 clear_hover = true;
             } else if let Some(point) = response.hover_pos() {
-                hover_at = Some((pos_at(ui, doc, point), point));
+                if matches!(rows.at(point.y - origin.y), Row::Line(_)) {
+                    hover_at = Some((pos_at(ui, doc, point), point));
+                }
             } else {
                 clear_hover = true;
             }
 
             let (sel_start, sel_end) = doc.selection.range();
             let head = doc.selection.head;
-            for line in first..last {
-                let y = line_y(line);
+            for &(row, top) in rows.between(viewport.min.y, viewport.max.y) {
+                let y = origin.y + top;
+                let line = row.line();
+                let laid = laid_of(ui, doc, line);
                 let text = doc.line(line);
-                let g = galley_of(ui, text, line);
-                let row = Rect::from_min_size(
+                if let Row::Lens(_) = row {
+                    // The lens: how many places refer to the function.
+                    let indent = text.chars().take_while(|c| c.is_whitespace()).count();
+                    let mut x = origin.x + laid.x(indent);
+                    for (_, title, at) in lenses.iter().filter(|l| l.0 == line) {
+                        let r = ui.painter().text(
+                            Pos2::new(x, y + LENS_H / 2.0),
+                            Align2::LEFT_CENTER,
+                            title,
+                            Face::Plex.at(11.0),
+                            p.ink_muted,
+                        );
+                        ui.painter().hline(
+                            r.x_range(),
+                            r.bottom() + 1.0,
+                            Stroke::new(1.0, p.ink_faint),
+                        );
+                        let resp = ui.interact(
+                            r.expand(2.0),
+                            id.with(("lens", line, title)),
+                            Sense::click(),
+                        );
+                        if resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
+                            actions.push(Action::References(*at));
+                        }
+                        x = r.right() + 12.0;
+                    }
+                    continue;
+                }
+                let row_rect = Rect::from_min_size(
                     Pos2::new(viewport.min.x + origin.x, y),
                     Vec2::new(viewport.width().max(full.width()), LINE_H),
                 );
@@ -537,9 +778,10 @@ fn code(
                     .any(|d| d.is_error() && d.start.line == line)
                 {
                     ui.painter()
-                        .rect_filled(row, CornerRadius::ZERO, p.error_soft);
+                        .rect_filled(row_rect, CornerRadius::ZERO, p.error_soft);
                 } else if line == head.line && doc.selection.is_empty() {
-                    ui.painter().rect_filled(row, CornerRadius::ZERO, p.bg_100);
+                    ui.painter()
+                        .rect_filled(row_rect, CornerRadius::ZERO, p.bg_100);
                 }
                 // The selection on this line.
                 if line >= sel_start.line && line <= sel_end.line && sel_start != sel_end {
@@ -554,8 +796,8 @@ fn code(
                     } else {
                         sel_end.col
                     };
-                    let x0 = x_of(&g, text, from);
-                    let mut x1 = x_of(&g, text, to);
+                    let x0 = laid.x(from);
+                    let mut x1 = laid.x(to);
                     if to_end {
                         x1 += char_w * 0.6;
                     }
@@ -570,9 +812,31 @@ fn code(
                         );
                     }
                 }
-                let text_y = y + (LINE_H - g.size().y) / 2.0;
+                let text_y = y + (LINE_H - laid.galley.size().y) / 2.0;
                 ui.painter()
-                    .galley(Pos2::new(origin.x, text_y), g.clone(), p.ink);
+                    .galley(Pos2::new(origin.x, text_y), laid.galley.clone(), p.ink);
+                // A folded line ends in `⋯`: a click opens it.
+                if let Some(&(_, last)) = folded.iter().find(|f| f.0 == line) {
+                    let x = origin.x + laid.galley.size().x + 8.0;
+                    let chip =
+                        Rect::from_min_size(Pos2::new(x, y + 3.0), Vec2::new(28.0, LINE_H - 6.0));
+                    ui.painter()
+                        .rect_filled(chip, CornerRadius::same(2), p.bg_300);
+                    ui.painter().text(
+                        chip.center(),
+                        Align2::CENTER_CENTER,
+                        "⋯",
+                        Face::Plex.at(12.0),
+                        p.ink_muted,
+                    );
+                    let resp = ui.interact(chip, id.with(("fold-chip", line)), Sense::click());
+                    if resp
+                        .on_hover_text(format!("lines {}–{}", line + 2, last + 1))
+                        .clicked()
+                    {
+                        unfold = Some(line);
+                    }
+                }
                 // The problems, underlined in waves (`st-sq-err`, `st-sq-warn`).
                 for d in line_diags {
                     let from = if d.start.line == line {
@@ -585,13 +849,13 @@ fn code(
                     } else {
                         doc.line_len(line)
                     };
-                    let x0 = origin.x + x_of(&g, text, from);
-                    let x1 = (origin.x + x_of(&g, text, to)).max(x0 + char_w);
+                    let x0 = origin.x + laid.x(from);
+                    let x1 = (origin.x + laid.x(to)).max(x0 + char_w);
                     let color = if d.is_error() { p.error } else { p.warning };
                     wave(ui, x0, x1, y + LINE_H - 3.0, color);
                 }
                 if line == head.line {
-                    let x = origin.x + x_of(&g, text, head.col);
+                    let x = origin.x + laid.x(head.col);
                     caret_screen = Some(Rect::from_min_size(
                         Pos2::new(x, y + 2.0),
                         Vec2::new(2.0, LINE_H - 4.0),
@@ -599,9 +863,9 @@ fn code(
                 }
             }
             if reveal {
-                let g = galley_of(ui, doc.line(head.line), head.line);
-                let x = origin.x + x_of(&g, doc.line(head.line), head.col);
-                let y = line_y(head.line);
+                let laid = laid_of(ui, doc, head.line);
+                let x = origin.x + laid.x(head.col);
+                let y = origin.y + rows.y_of(head.line);
                 ui.scroll_to_rect(
                     Rect::from_min_size(
                         Pos2::new(x - 24.0, y - LINE_H),
@@ -611,6 +875,9 @@ fn code(
                 );
             }
         });
+    if let Some(line) = unfold {
+        tab.folded.retain(|f| f.0 != line);
+    }
 
     // The hover: asked for once the pointer rests on a place.
     let popup_hovered: bool = ctx
@@ -673,28 +940,58 @@ fn code(
         });
     }
 
-    // The gutter, beside the scrolled lines.
+    // The gutter, beside the scrolled rows: line numbers and the folds.
     let offset = output.state.clamped_offset().y;
     let gutter = Rect::from_min_max(rect.min, Pos2::new(rect.left() + GUTTER, rect.bottom()));
     let painter = ui.painter().with_clip_rect(gutter);
     painter.rect_filled(gutter, CornerRadius::ZERO, p.bg_000);
-    let first = ((offset - PAD_TOP) / LINE_H).floor().max(0.0) as usize;
-    let last = ((offset + rect.height()) / LINE_H).ceil() as usize + 1;
+    let gutter_hovered = ctx
+        .input(|i| i.pointer.hover_pos())
+        .is_some_and(|pt| gutter.contains(pt));
     let head_line = tab.doc.selection.head.line;
-    for line in first..last.min(lines) {
-        let y = rect.top() + PAD_TOP + line as f32 * LINE_H - offset + LINE_H / 2.0;
+    let mut toggle = None;
+    for &(row, top) in rows.between(offset, offset + rect.height()) {
+        let Row::Line(line) = row else {
+            continue;
+        };
+        let cy = rect.top() + top - offset + LINE_H / 2.0;
         let color = if line == head_line {
             p.ink
         } else {
             p.ink_muted
         };
         painter.text(
-            Pos2::new(gutter.right() - 16.0, y),
+            Pos2::new(gutter.right() - 16.0, cy),
             Align2::RIGHT_CENTER,
             (line + 1).to_string(),
             Face::Plex.at(FONT_SIZE),
             color,
         );
+        if let Some(&range) = foldable.iter().find(|f| f.0 == line) {
+            let is_folded = folded.iter().any(|f| f.0 == line);
+            if is_folded || gutter_hovered {
+                let r =
+                    Rect::from_center_size(Pos2::new(gutter.right() - 7.0, cy), Vec2::splat(12.0));
+                let resp = ui.interact(r, id.with(("fold", line)), Sense::click());
+                painter.text(
+                    r.center(),
+                    Align2::CENTER_CENTER,
+                    if is_folded { "+" } else { "−" },
+                    Face::Plex.at(12.0),
+                    if resp.hovered() { p.ink } else { p.ink_muted },
+                );
+                if resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
+                    toggle = Some(range);
+                }
+            }
+        }
+    }
+    if let Some(range) = toggle {
+        if tab.folded.iter().any(|f| f.0 == range.0) {
+            tab.folded.retain(|f| f.0 != range.0);
+        } else {
+            tab.folded.push(range);
+        }
     }
 
     // The popups, over everything.
@@ -703,6 +1000,7 @@ fn code(
     if let Some(caret) = caret {
         signature_popup(&ctx, tab, caret, p);
         completion_popup(&ctx, tab, caret, p);
+        fixes_popup(&ctx, tab, caret, p, actions);
         rename_popup(&ctx, id, tab, caret, p, actions);
     }
 }
@@ -985,6 +1283,55 @@ fn completion_popup(ctx: &egui::Context, tab: &mut Tab, caret: Rect, p: &Palette
     }
 }
 
+/// The quick fixes at the caret: one is chosen, enter applies it.
+fn fixes_popup(
+    ctx: &egui::Context,
+    tab: &mut Tab,
+    caret: Rect,
+    p: &Palette,
+    actions: &mut Vec<Action>,
+) {
+    let Some((fixes, selected)) = &mut tab.fixes else {
+        return;
+    };
+    let mut picked = None;
+    popup(
+        ctx,
+        Id::unique("wowlua-studio-fixes"),
+        Pos2::new(caret.left() - 8.0, caret.bottom() + 4.0),
+        Align2::LEFT_TOP,
+        420.0,
+        |ui| {
+            ui.set_width(420.0);
+            ui.spacing_mut().item_spacing.y = 0.0;
+            for (i, fix) in fixes.iter().enumerate() {
+                let (r, resp) = ui.allocate_exact_size(Vec2::new(420.0, 26.0), Sense::click());
+                if i == *selected {
+                    ui.painter().rect_filled(r, CornerRadius::ZERO, p.bg_400);
+                } else if resp.hovered() {
+                    ui.painter().rect_filled(r, CornerRadius::ZERO, p.bg_300);
+                }
+                ui.painter().with_clip_rect(r).text(
+                    Pos2::new(r.left() + 10.0, r.center().y),
+                    Align2::LEFT_CENTER,
+                    &fix.title,
+                    Face::Plex.at(12.5),
+                    p.ink,
+                );
+                if resp.clicked() {
+                    picked = Some(i);
+                }
+            }
+        },
+    );
+    if let Some(i) = picked {
+        *selected = i;
+        if let Some((fixes, i)) = tab.fixes.take() {
+            actions.push(Action::ApplyFix(fixes[i].clone()));
+        }
+    }
+}
+
 /// The new name for a rename, at the caret.
 fn rename_popup(
     ctx: &egui::Context,
@@ -1112,43 +1459,6 @@ fn accept(tab: &mut Tab) {
     tab.doc.edit(start, head, &item.insert, EditKind::Other);
 }
 
-/// A line laid out in its colours.
-fn layout(
-    ui: &Ui,
-    line: &str,
-    highlights: &[(usize, usize, Syntax)],
-    font: &FontId,
-    p: &Palette,
-) -> Arc<Galley> {
-    let (shown, _) = display(line);
-    let mut job = LayoutJob::default();
-    let plain = TextFormat::simple(font.clone(), p.ink);
-    let mut at = 0;
-    let byte = |col: usize| {
-        shown
-            .char_indices()
-            .nth(col)
-            .map_or(shown.len(), |(b, _)| b)
-    };
-    for &(from, to, syntax) in highlights {
-        let (from, to) = (byte(from.max(at)), byte(to));
-        let at_b = byte(at);
-        if from > at_b {
-            job.append(&shown[at_b..from], 0.0, plain.clone());
-        }
-        if to > from {
-            job.append(&shown[from..to], 0.0, style(syntax, font, p));
-        }
-        at = shown[..to.max(at_b)].chars().count();
-    }
-    let at_b = byte(at);
-    if at_b < shown.len() {
-        job.append(&shown[at_b..], 0.0, plain);
-    }
-    job.wrap.max_rows = 1;
-    ui.fonts_mut(|f| f.layout_job(job))
-}
-
 /// The design system's syntax colours (`tok-*`).
 fn style(syntax: Syntax, font: &FontId, p: &Palette) -> TextFormat {
     let (color, face) = match syntax {
@@ -1165,13 +1475,6 @@ fn style(syntax: Syntax, font: &FontId, p: &Palette) -> TextFormat {
         face.map_or_else(|| font.clone(), |f| f.at(font.size)),
         color,
     )
-}
-
-/// The x of character `col` in a line's layout.
-fn x_of(galley: &Galley, line: &str, col: usize) -> f32 {
-    let (_, map) = display(line);
-    let dcol = map[col.min(map.len() - 1)];
-    galley.pos_from_cursor(CCursor::new(dcol)).min.x
 }
 
 /// The character at display column `dcol` (the nearest one's start).
@@ -1232,6 +1535,36 @@ fn keyboard(ui: &Ui, tab: &mut Tab, mac: bool, page: usize, actions: &mut Vec<Ac
     }
     let events = ui.input(|i| i.events.clone());
     for event in events {
+        // The quick fixes take the keys that choose one.
+        if let Some((fixes, selected)) = &mut tab.fixes
+            && let Event::Key {
+                key, pressed: true, ..
+            } = &event
+        {
+            match key {
+                Key::ArrowDown => {
+                    *selected = (*selected + 1) % fixes.len().max(1);
+                    continue;
+                }
+                Key::ArrowUp => {
+                    *selected = (*selected + fixes.len().max(1) - 1) % fixes.len().max(1);
+                    continue;
+                }
+                Key::Enter => {
+                    if let Some((fixes, i)) = tab.fixes.take()
+                        && let Some(fix) = fixes.get(i)
+                    {
+                        actions.push(Action::ApplyFix(fix.clone()));
+                    }
+                    continue;
+                }
+                Key::Escape => {
+                    tab.fixes = None;
+                    continue;
+                }
+                _ => tab.fixes = None,
+            }
+        }
         // The suggestions take the keys that choose one.
         if tab.completion.is_some()
             && let Event::Key {
@@ -1336,6 +1669,7 @@ fn keyboard(ui: &Ui, tab: &mut Tab, mac: bool, page: usize, actions: &mut Vec<Ac
                         tab.rename = Some((head, word));
                     }
                     Key::Space if modifiers.ctrl => actions.push(Action::Complete(head)),
+                    Key::Period if modifiers.command => actions.push(Action::Fixes(head)),
                     _ => {
                         if key_press(&mut tab.doc, key, modifiers, mac, page) {
                             changed.moved = true;
@@ -1658,6 +1992,26 @@ mod tests {
         assert_eq!(shown, "    a   b");
         assert_eq!(map, [0, 4, 5, 8, 9]);
         assert_eq!(char_col("\ta", 2), 1);
+    }
+
+    #[test]
+    fn rows_leave_folds_out_and_put_lenses_in() {
+        let rows = Rows::new(6, &[(1, 3)], &[4]);
+        let kinds: Vec<Row> = rows.rows.iter().map(|r| r.0).collect();
+        assert_eq!(
+            kinds,
+            [
+                Row::Line(0),
+                Row::Line(1),
+                Row::Lens(4),
+                Row::Line(4),
+                Row::Line(5)
+            ]
+        );
+        assert_eq!(rows.y_of(4), PAD_TOP + 2.0 * LINE_H + LENS_H);
+        assert_eq!(rows.at(PAD_TOP + 2.0 * LINE_H + 1.0), Row::Lens(4));
+        // A hidden line is drawn where its fold's first is.
+        assert_eq!(rows.y_of(2), rows.y_of(1));
     }
 
     #[test]
