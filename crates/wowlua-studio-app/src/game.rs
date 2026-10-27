@@ -900,13 +900,10 @@ pub fn frames(ui: &mut Ui, state: &mut GameState, system: &dyn System) {
         state.ask(system, Asked::Tree, GameRequest::FrameTree { hidden });
     }
     forms::padded(ui, 10, 8, |ui| {
+        let width = ui.available_width();
+        forms::text_input(ui, &mut state.query, width, "filter frames");
+        ui.add_space(6.0);
         ui.horizontal(|ui| {
-            forms::text_input(
-                ui,
-                &mut state.query,
-                (ui.available_width() - 150.0).max(60.0),
-                "filter frames",
-            );
             if forms::checkbox(ui, &mut state.hidden, "hidden", None) {
                 state.polled.remove("tree");
             }

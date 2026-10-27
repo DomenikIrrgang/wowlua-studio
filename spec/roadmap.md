@@ -186,7 +186,7 @@ Artboard: game (its UI; the 3D world is M13).
   the units (S055).
 
 Built 2026-10-28: the game page runs the workspace's addon on wowlua's
-debugger in Studio's process (wowlua's pull request #65:
+debugger in Studio's process (wowlua 0.13.4, pinned:
 `session::run_hosted`'s frame hook, the inspector, pick, units, target,
 the event log, the game's settings at runtime and a world profile's
 `screen`). Each changed scene is drawn on eframe's device; the screen
@@ -200,7 +200,7 @@ scale on the toolbar. SuuUI runs on it: 0.33 ms median frames with its UI
 live. The frame budget holds with 5,000 frames and 1,000 events: 0.07 ms
 median. Not yet: some frames take 20 to 60 ms while SuuUI runs (the cause
 not found yet); the frame tree's "Blizzard's" switch; checked by hand on
-macOS only; wowlua's pull request #65 is not released.
+macOS only.
 
 ## M6: Debugger
 

@@ -24,25 +24,23 @@ wowlua-studio-app = { path = "crates/wowlua-studio-app" }
 # wowlua, pinned to a release (decision S004). To work on both repositories
 # at once, point these at a local checkout in `.cargo/config.toml` (see
 # CLAUDE.md); that file stays out of git.
-# 0.13.3: `wowlua new --check …`, `init --no-pkgmeta`, release notes and
+# 0.13.4: `wowlua new --check …`, `init --no-pkgmeta`, release notes and
 # cached_ui_source (M2); the server's semantic tokens, folding, inlay hints,
 # quick fixes, references lenses and overloads one per line (M3); a test
 # run's steps as a library with progress, stop, each test's functions and
-# the renderer's camera (M4).
-# Until it is released: the commit of wowlua's pull request #65 (on 0.13.3),
-# the game's settings at runtime and sessions hosted in process, with the
-# event log, the inspector and the units (M5).
-wowlua-debug = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "bcfed8fd514e8bb9000569ff4e3694a0639d153a" }
-wowlua-engine = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "bcfed8fd514e8bb9000569ff4e3694a0639d153a" }
-wowlua-render = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "bcfed8fd514e8bb9000569ff4e3694a0639d153a" }
-wowlua-vm = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "bcfed8fd514e8bb9000569ff4e3694a0639d153a" }
-wowlua-driver = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "bcfed8fd514e8bb9000569ff4e3694a0639d153a" }
-wowlua-flavors = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "bcfed8fd514e8bb9000569ff4e3694a0639d153a" }
-wowlua-manifest = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "bcfed8fd514e8bb9000569ff4e3694a0639d153a" }
-wowlua-test = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "bcfed8fd514e8bb9000569ff4e3694a0639d153a" }
-wowlua-lsp = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "bcfed8fd514e8bb9000569ff4e3694a0639d153a" }
-wowlua-span = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "bcfed8fd514e8bb9000569ff4e3694a0639d153a" }
-wowlua-syntax = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "bcfed8fd514e8bb9000569ff4e3694a0639d153a" }
+# the renderer's camera (M4); the game's settings at runtime and sessions
+# hosted in process, with the event log, the inspector and the units (M5).
+wowlua-debug = { git = "https://github.com/DomenikIrrgang/wowlua", tag = "v0.13.4" }
+wowlua-engine = { git = "https://github.com/DomenikIrrgang/wowlua", tag = "v0.13.4" }
+wowlua-render = { git = "https://github.com/DomenikIrrgang/wowlua", tag = "v0.13.4" }
+wowlua-vm = { git = "https://github.com/DomenikIrrgang/wowlua", tag = "v0.13.4" }
+wowlua-driver = { git = "https://github.com/DomenikIrrgang/wowlua", tag = "v0.13.4" }
+wowlua-flavors = { git = "https://github.com/DomenikIrrgang/wowlua", tag = "v0.13.4" }
+wowlua-manifest = { git = "https://github.com/DomenikIrrgang/wowlua", tag = "v0.13.4" }
+wowlua-test = { git = "https://github.com/DomenikIrrgang/wowlua", tag = "v0.13.4" }
+wowlua-lsp = { git = "https://github.com/DomenikIrrgang/wowlua", tag = "v0.13.4" }
+wowlua-span = { git = "https://github.com/DomenikIrrgang/wowlua", tag = "v0.13.4" }
+wowlua-syntax = { git = "https://github.com/DomenikIrrgang/wowlua", tag = "v0.13.4" }
 
 [workspace.lints.rust]
 # Denied, not forbidden: one macOS module may allow it (decision S022).
