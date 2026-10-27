@@ -182,6 +182,47 @@ pub struct Found {
     pub cut: bool,
 }
 
+/// A colour of a terminal's cell: the terminal's own, one of the sixteen
+/// ANSI colours, one of the 256, or a colour of its own.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TermColor {
+    #[default]
+    Default,
+    Ansi(u8),
+    Indexed(u8),
+    Rgb([u8; 3]),
+}
+
+/// A cell of a terminal's screen.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct TermCell {
+    pub c: char,
+    pub fg: TermColor,
+    pub bg: TermColor,
+    pub bold: bool,
+    pub italic: bool,
+    pub underline: bool,
+    pub inverse: bool,
+    pub dim: bool,
+    /// The second half of a wide character: nothing to draw.
+    pub spacer: bool,
+}
+
+/// What a terminal shows now (S043).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TermScreen {
+    pub rows: Vec<Vec<TermCell>>,
+    /// Row and column; `None` when hidden or scrolled away.
+    pub cursor: Option<(usize, usize)>,
+    /// The arrows send application sequences (`ESC O A`).
+    pub app_cursor: bool,
+    pub bracketed_paste: bool,
+    /// Lines scrolled back from the bottom.
+    pub scrolled: usize,
+    /// The shell ended.
+    pub exited: bool,
+}
+
 /// A colour of the highlighting: the design system's syntax tokens.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Syntax {
@@ -273,6 +314,16 @@ pub trait System {
     /// Searches the files under `root` (→ [`Event::Searched`]): ignored
     /// and hidden files left out, as Git leaves them.
     fn search(&self, root: &Path, search: Search);
+    /// Starts the user's shell in a terminal of `cols` × `rows` in `cwd`
+    /// (S043); returns its id. The browser has none.
+    fn terminal_open(&self, cwd: &Path, cols: u16, rows: u16) -> Result<u64, String>;
+    /// Keys and text typed into the terminal, as bytes.
+    fn terminal_input(&self, id: u64, bytes: &[u8]);
+    fn terminal_resize(&self, id: u64, cols: u16, rows: u16);
+    /// Scrolls the terminal back (positive) or forward, in lines.
+    fn terminal_scroll(&self, id: u64, lines: i32);
+    fn terminal_screen(&self, id: u64) -> Option<TermScreen>;
+    fn terminal_close(&self, id: u64);
     /// Work finished since the last call.
     fn poll(&self) -> Vec<Event>;
 }
@@ -346,6 +397,16 @@ impl System for NoSystem {
     fn lsp_files(&self, _: Vec<(PathBuf, FileChange)>) {}
     fn lsp_stop(&self) {}
     fn search(&self, _: &Path, _: Search) {}
+    fn terminal_open(&self, _: &Path, _: u16, _: u16) -> Result<u64, String> {
+        Err("this system has no terminal".into())
+    }
+    fn terminal_input(&self, _: u64, _: &[u8]) {}
+    fn terminal_resize(&self, _: u64, _: u16, _: u16) {}
+    fn terminal_scroll(&self, _: u64, _: i32) {}
+    fn terminal_screen(&self, _: u64) -> Option<TermScreen> {
+        None
+    }
+    fn terminal_close(&self, _: u64) {}
     fn poll(&self) -> Vec<Event> {
         Vec::new()
     }

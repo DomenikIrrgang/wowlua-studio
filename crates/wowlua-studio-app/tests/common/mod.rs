@@ -134,6 +134,16 @@ impl System for Fake {
     fn lsp_files(&self, _: Vec<(PathBuf, system::FileChange)>) {}
     fn lsp_stop(&self) {}
     fn search(&self, _: &Path, _: system::Search) {}
+    fn terminal_open(&self, _: &Path, _: u16, _: u16) -> Result<u64, String> {
+        Err("none".into())
+    }
+    fn terminal_input(&self, _: u64, _: &[u8]) {}
+    fn terminal_resize(&self, _: u64, _: u16, _: u16) {}
+    fn terminal_scroll(&self, _: u64, _: i32) {}
+    fn terminal_screen(&self, _: u64) -> Option<system::TermScreen> {
+        None
+    }
+    fn terminal_close(&self, _: u64) {}
     fn poll(&self) -> Vec<system::Event> {
         std::mem::take(&mut *self.events.borrow_mut())
     }

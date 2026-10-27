@@ -33,6 +33,7 @@ pub struct NativeSystem {
     watcher: RefCell<Option<notify::RecommendedWatcher>>,
     /// The language server's thread, once started.
     lsp: RefCell<Option<Sender<crate::lsp::Input>>>,
+    terminals: crate::terminal::Terminals,
 }
 
 impl NativeSystem {
@@ -44,6 +45,7 @@ impl NativeSystem {
             ctx: ctx.clone(),
             watcher: RefCell::new(None),
             lsp: RefCell::new(None),
+            terminals: crate::terminal::Terminals::default(),
         }
     }
 
@@ -346,6 +348,30 @@ impl System for NativeSystem {
     fn lsp_stop(&self) {
         // Dropping the channel ends the thread.
         self.lsp.borrow_mut().take();
+    }
+
+    fn terminal_open(&self, cwd: &Path, cols: u16, rows: u16) -> Result<u64, String> {
+        self.terminals.open(cwd, cols, rows, &self.ctx)
+    }
+
+    fn terminal_input(&self, id: u64, bytes: &[u8]) {
+        self.terminals.input(id, bytes);
+    }
+
+    fn terminal_resize(&self, id: u64, cols: u16, rows: u16) {
+        self.terminals.resize(id, cols, rows);
+    }
+
+    fn terminal_scroll(&self, id: u64, lines: i32) {
+        self.terminals.scroll(id, lines);
+    }
+
+    fn terminal_screen(&self, id: u64) -> Option<wowlua_studio_app::system::TermScreen> {
+        self.terminals.screen(id)
+    }
+
+    fn terminal_close(&self, id: u64) {
+        self.terminals.close(id);
     }
 
     fn search(&self, root: &Path, search: Search) {

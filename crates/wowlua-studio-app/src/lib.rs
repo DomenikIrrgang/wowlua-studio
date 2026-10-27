@@ -21,6 +21,7 @@ pub mod search;
 pub mod start;
 pub mod state;
 pub mod system;
+pub mod terminal;
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -99,6 +100,8 @@ pub struct Studio {
     search: search::SearchState,
     /// The schemas of `wowlua.json` and world profiles, once read (S046).
     schemas: std::collections::HashMap<editor::json::Schema, serde_json::Value>,
+    /// The terminal panel's shell (S043).
+    terminal: terminal::TerminalState,
     /// Background jobs (S044); the checks running, by package.
     jobs: jobs::Jobs,
     checks: std::collections::HashMap<PathBuf, u64>,
@@ -176,6 +179,7 @@ impl Studio {
             lsp: lsp::Lsp::default(),
             search: search::SearchState::default(),
             schemas: std::collections::HashMap::new(),
+            terminal: terminal::TerminalState::default(),
             jobs: jobs::Jobs::default(),
             checks: std::collections::HashMap::new(),
             outline: None,
@@ -413,6 +417,7 @@ impl Studio {
         let editors = &mut self.editors;
         let lsp_state = &self.lsp;
         let search_state = &mut self.search;
+        let term_state = &mut self.terminal;
         let mut search_action = None;
         let outline = &self.outline;
         let system = &*self.host.system;
@@ -461,6 +466,7 @@ impl Studio {
             }
             Panel::Search => search_action = search::show(ui, search_state, &workspace.root),
             Panel::Output => search::output(ui, &lsp_state.log),
+            Panel::Terminal => terminal::show(ui, term_state, system, &workspace.root, mac),
             _ => dock::placeholder(ui, panel),
         };
         let changed = dock::show(ui, area, layout, &mut self.dock, &mut content);
@@ -1262,6 +1268,7 @@ impl Studio {
                 self.lsp.start(&workspace.root, &*self.host.system);
             } else {
                 self.lsp.stop(&*self.host.system);
+                self.terminal.close(&*self.host.system);
             }
             self.host.system.watch(Some(&workspace.root));
             self.page = Page::Files;
