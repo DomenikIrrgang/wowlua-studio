@@ -48,7 +48,7 @@ switches; every frame's UI is built within the budget (S014).
 Until M2 opens workspaces, the shell shows with no folder open; M2 adds
 the start page the design shows then (no rail, no status bar).
 
-Built 2026-10-27: the design system's tokens, fonts, icons, the [wl] pixel
+Built 2026-10-27: the design system's tokens, fonts, icons, the [wl]
 mark, buttons, segmented controls, badges, key caps and icon buttons
 (selects, tables, cards and callouts come with the first page that uses
 them); the title bar, rail and status bar, Studio's window buttons and
@@ -198,5 +198,6 @@ missing a part; the canvas is updated to match.
   (S019).
 - The status bar without the theme switch; the theme is a setting (S021).
 - The app icon: the mark tile, in Apple's shape on macOS (S020).
+- The title bar's mark: the [wl] mark at 20 px, not the 16 px pixel mark (S023).
 - A dependencies view for the registry (S010, M10) and the in-game
   recordings as a profiler source (S011, M7).

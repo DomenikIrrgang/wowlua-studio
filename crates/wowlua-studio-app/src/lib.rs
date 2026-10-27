@@ -220,7 +220,7 @@ impl Studio {
         let modal = egui::Modal::new(egui::Id::unique("wowlua-studio-about")).show(ctx, |ui| {
             ui.set_width(360.0);
             let (rect, _) = ui.allocate_exact_size(Vec2::splat(48.0), egui::Sense::hover());
-            mark::paint_mark16(ui.painter(), rect.min, 3, p);
+            mark::paint_mark(ctx, ui.painter(), rect, p);
             ui.add_space(8.0);
             ui.label(egui::RichText::new("wowlua studio").font(Face::MartianBold.at(20.0)).color(p.ink));
             ui.label(

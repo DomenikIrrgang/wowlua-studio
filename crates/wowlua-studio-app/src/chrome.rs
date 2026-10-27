@@ -59,16 +59,17 @@ pub fn title_bar(
     let cy = rect.center().y;
     let mut x = rect.left() + if mac { TRAFFIC_LIGHTS_W } else { 10.0 };
 
-    // The app: the pixel mark and the name.
-    let mark_at = Pos2::new((x + 6.0).round(), (cy - 8.0).round());
-    mark::paint_mark16(&painter, mark_at, 1, p);
+    // The app: the mark at 20 px (S023) and the name.
+    let mark_rect = Rect::from_min_size(Pos2::new(x + 6.0, cy - 10.0), Vec2::splat(20.0));
+    mark::paint_mark(&ctx, &painter, mark_rect, p);
     let name = widgets::galley(ui, "wowlua studio", Face::PlexSemiBold.at(12.5), p.ink, 0.0);
+    let name_x = mark_rect.right() + 8.0;
     painter.galley(
-        Pos2::new(x + 30.0, cy - name.size().y / 2.0),
+        Pos2::new(name_x, cy - name.size().y / 2.0),
         name.clone(),
         p.ink,
     );
-    x += 30.0 + name.size().x + 14.0;
+    x = name_x + name.size().x + 14.0;
 
     // The menus; a menu with no commands yet is left out.
     if !mac && !narrow {

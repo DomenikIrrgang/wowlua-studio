@@ -32,7 +32,7 @@ roadmap until the canvas has it.
 ## Crates
 
 - `wowlua-studio-ui`: the design system in egui (theme, fonts, icons, the
-  pixel mark, widgets). egui only.
+  [wl] mark, widgets). egui only.
 - `wowlua-studio-app`: the application (chrome, docking, commands, the
   palette, pages). egui and serde only: the host gives it the platform,
   wowlua's version and a file store. Both build for wasm (CI checks).

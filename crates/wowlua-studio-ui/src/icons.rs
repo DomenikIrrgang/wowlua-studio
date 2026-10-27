@@ -99,9 +99,9 @@ icons! {
 
 /// A run of straight lines in the 16 × 16 box.
 #[derive(Debug, PartialEq)]
-struct Subpath {
-    points: Vec<Pos2>,
-    closed: bool,
+pub(crate) struct Subpath {
+    pub(crate) points: Vec<Pos2>,
+    pub(crate) closed: bool,
 }
 
 fn parsed(icon: Icon) -> &'static [Subpath] {
@@ -111,7 +111,7 @@ fn parsed(icon: Icon) -> &'static [Subpath] {
 }
 
 /// Parses the design's path data: `M L H V Z` and their relative forms.
-fn parse(d: &str) -> Vec<Subpath> {
+pub(crate) fn parse(d: &str) -> Vec<Subpath> {
     let mut out: Vec<Subpath> = Vec::new();
     let mut cur = Pos2::ZERO;
     let mut start = Pos2::ZERO;
