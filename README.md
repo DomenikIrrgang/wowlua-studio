@@ -33,8 +33,8 @@ Rust and drawn on the GPU. wowlua's compiler, language server, test runner,
 debugger and renderer run inside it.
 
 > [!NOTE]
-> Studio is at its beginning: milestone M0 of the [roadmap](spec/roadmap.md).
-> It opens a window and nothing more yet.
+> Studio is at its beginning: milestone M1 of the [roadmap](spec/roadmap.md).
+> It has its window, pages and panels; opening folders comes next.
 
 ## Building
 

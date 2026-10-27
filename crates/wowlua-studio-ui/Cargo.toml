@@ -1,0 +1,15 @@
+[package]
+name = "wowlua-studio-ui"
+description = "wowlua studio's design system in egui: theme, fonts, icons and widgets"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+egui.workspace = true
+
+[lints]
+workspace = true

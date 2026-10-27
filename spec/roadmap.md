@@ -45,6 +45,23 @@ palette.
 panels; a panel is dragged to another dock, split and floated; the theme
 switches; every frame's UI is built within the budget (S014).
 
+Until M2 opens workspaces, the shell shows with no folder open; M2 adds
+the start page the design shows then (no rail, no status bar).
+
+Built 2026-10-27: the design system's tokens, fonts, icons, the [wl] pixel
+mark, buttons, segmented controls, badges, key caps and icon buttons
+(selects, tables, cards and callouts come with the first page that uses
+them); the title bar, rail and status bar, Studio's window buttons and
+resize edges on Windows and Linux, the menu bar on macOS; docking with a
+preset per page (S017), splitters, drag and drop onto the panels board's
+five drop zones, a panel menu (move, split, float, maximize, close),
+floating windows, `ctrl shift m`; the command palette (S018) and the
+command registry behind it, the menus and the keys (S019); settings and
+layouts saved in the system's folder for application data. The frame
+budget is checked in CI's optimized builds: 0.08 ms median and 0.17 ms
+at the 99th percentile on an Apple M-series laptop. Not yet checked by
+hand: dragging and floating panels, and the window on Windows and Linux.
+
 ## M2: Workspaces
 
 Artboard: start.
@@ -165,3 +182,19 @@ Asked when their milestone starts; nothing here is decided yet.
 - Installers and code signing per system (first release).
 - The GitHub app Studio signs in with, and who registers it (M12).
 - Whether "sign in with Claude" is possible for a third-party app (M14).
+
+## Design changes owed
+
+Where Studio was decided to differ from the canvas, or the canvas is
+missing a part; the canvas is updated to match.
+
+- The panels board's presets: the tests preset puts the results in the
+  main area (the tests artboard's), Claude is a page of its own (the
+  Claude artboard's), not a right-dock panel (S017); the seven pages the
+  board has no preset for get theirs from their artboards.
+- The command palette: the amber prompt holds the mode, the field only
+  the text after it (S018).
+- The menus: the title bar names them, nothing says what is in them
+  (S019).
+- A dependencies view for the registry (S010, M10) and the in-game
+  recordings as a profiler source (S011, M7).

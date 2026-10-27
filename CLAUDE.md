@@ -22,8 +22,27 @@ differs from it updates it too (the roadmap, and a row in
 The canvas [wowlua studio](https://claude.ai/artifact/RBjKPKR9gzEDfr6KA4u9CV)
 is the design: one artboard per screen, its states as tweaks, drawn with the
 wowlua design system (tokens, fonts, components). Read it with the Artifact
-tool (`project/canvas.json` lists the artboards). Where Studio differs from
-it, the design changes first.
+tool (`project/canvas.json` lists the artboards). Where Studio is decided
+to differ from it, the decision is a row in `spec/appendix/decisions.md`
+and the canvas change is listed under "Design changes owed" in the
+roadmap until the canvas has it.
+
+## Crates
+
+- `wowlua-studio-ui`: the design system in egui (theme, fonts, icons, the
+  pixel mark, widgets). egui only.
+- `wowlua-studio-app`: the application (chrome, docking, commands, the
+  palette, pages). egui and serde only: the host gives it the platform,
+  wowlua's version and a file store. Both build for wasm (CI checks).
+- `wowlua-studio`: the native host (eframe, the store in the system's
+  folder for application data, macOS's menu bar) and wowlua's crates.
+
+## Seeing it
+
+`WOWLUA_STUDIO_SCREENSHOT=out.png` draws a few frames, saves the window as
+a PNG and quits; `WOWLUA_STUDIO_SCREENSHOT_RUN="page:debug;theme:light;palette"`
+runs commands first. `WOWLUA_STUDIO_DATA=<dir>` keeps settings and layouts
+there instead of the user's folder.
 
 ## wowlua
 
@@ -44,8 +63,9 @@ rules, and Studio moves its pin to the release that has it.
 ## Checks
 
 Before a commit: `cargo fmt --all -- --check`,
-`cargo clippy --workspace --all-targets -- -D warnings` and
-`cargo test --workspace`.
+`cargo clippy --workspace --all-targets -- -D warnings`,
+`cargo test --workspace`, and the frame budget optimized:
+`cargo test --release -p wowlua-studio-app --test frame_budget`.
 
 ## Versions
 
