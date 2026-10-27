@@ -12,14 +12,37 @@ use crate::lsp::{Diag, Location, Symbol, Wire};
 const ROW_H: f32 = 24.0;
 
 /// The problems of every file; returns the one clicked.
+/// The problems of every file, or of `only` (the editor's file) when the
+/// panel is switched to "this file" (`this_file`); returns the one
+/// clicked.
 pub fn problems<'a>(
     ui: &mut Ui,
     diagnostics: impl Iterator<Item = (&'a PathBuf, &'a Vec<Diag>)>,
     root: &Path,
+    this_file: &mut bool,
+    only: Option<&Path>,
 ) -> Option<Location> {
     let p = palette(ui.ctx());
+    // The scope (the editor board's): the workspace, or this file.
+    let (bar, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 30.0), Sense::hover());
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(bar.shrink2(Vec2::new(12.0, 3.0)))
+            .layout(egui::Layout::right_to_left(egui::Align::Center)),
+    );
+    if let Some(i) = wowlua_studio_ui::widgets::seg(
+        &mut child,
+        "problems-scope",
+        &["workspace", "this file"],
+        usize::from(*this_file),
+        false,
+    ) {
+        *this_file = i == 1;
+    }
     let mut rows: Vec<Row<'a>> = Vec::new();
-    for (path, list) in diagnostics.filter(|(_, l)| !l.is_empty()) {
+    let shown = diagnostics
+        .filter(|(path, l)| !l.is_empty() && (!*this_file || only == Some(path.as_path())));
+    for (path, list) in shown {
         rows.push(Row::File(path, list.len()));
         for d in list {
             rows.push(Row::Diag(path, d));

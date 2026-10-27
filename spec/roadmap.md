@@ -123,6 +123,25 @@ Artboards: editor, search, notifications.
 - Background jobs in the status bar (the jobs board): the check is the
   first; the later milestones' builds, test runs, installs, publishes
   and recordings run as jobs too.
+- Inlay hints and a references lens over functions (S050).
+
+Built 2026-10-27: the editor (tabs and preview tabs, the path, undo and
+redo, the clipboard, words and lines, indentation, IME text, the caret's
+blink) drawing only the rows on screen, with wowlua's lexer and the
+server's semantic tokens, folding from the gutter, inlay hints and
+references lenses; the embedded server on its own thread, with
+diagnostics (squiggles, the problems panel with its scope, the status
+bar's counts), hover, completion, signature help, go to definition,
+references and rename in the search panel (a rename's changes checked
+first), the outline, quick fixes (`cmd .`), format on save; text search
+with replace; the output panel; a terminal emulator; JSON completion and
+hover from wowlua's schemas; files changed or deleted outside; the
+unsaved-edits question; notifications; background jobs (the check, told
+by the server's `wowlua/checking`). wowlua's pull request #63 adds the
+server's semantic tokens, folding, inlay hints, quick fixes, lenses and
+the checking notification. The frame budget holds with a 4000-line file
+open: 0.09 ms median, 0.25 ms at the 99th percentile. Not yet: selecting
+and copying in the terminal; checked by hand on macOS only.
 
 ## M4: Tests and coverage
 

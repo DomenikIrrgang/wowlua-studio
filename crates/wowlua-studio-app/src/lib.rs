@@ -102,6 +102,8 @@ pub struct Studio {
     schemas: std::collections::HashMap<editor::json::Schema, serde_json::Value>,
     /// The terminal panel's shell (S043).
     terminal: terminal::TerminalState,
+    /// The problems panel shows the editor's file only.
+    problems_this_file: bool,
     /// Background jobs (S044); the checks running, by package.
     jobs: jobs::Jobs,
     checks: std::collections::HashMap<PathBuf, u64>,
@@ -180,6 +182,7 @@ impl Studio {
             search: search::SearchState::default(),
             schemas: std::collections::HashMap::new(),
             terminal: terminal::TerminalState::default(),
+            problems_this_file: false,
             jobs: jobs::Jobs::default(),
             checks: std::collections::HashMap::new(),
             outline: None,
@@ -418,6 +421,7 @@ impl Studio {
         let lsp_state = &self.lsp;
         let search_state = &mut self.search;
         let term_state = &mut self.terminal;
+        let problems_this_file = &mut self.problems_this_file;
         let mut search_action = None;
         let outline = &self.outline;
         let system = &*self.host.system;
@@ -448,9 +452,14 @@ impl Studio {
                 actions.extend(editor::view::show(ui, editors, &cx));
             }
             Panel::Problems => {
-                if let Some(l) =
-                    problems::problems(ui, lsp_state.diagnostics.iter(), &workspace.root)
-                {
+                let only = editors.active().map(|t| t.canonical.clone());
+                if let Some(l) = problems::problems(
+                    ui,
+                    lsp_state.diagnostics.iter(),
+                    &workspace.root,
+                    problems_this_file,
+                    only.as_deref(),
+                ) {
                     go_to = Some(l);
                 }
             }

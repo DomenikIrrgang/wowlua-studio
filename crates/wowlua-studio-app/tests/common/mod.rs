@@ -113,6 +113,16 @@ impl System for Fake {
             })));
     }
     fn read_file(&self, path: &Path) -> Result<String, String> {
+        if path.ends_with("big.wowlua") {
+            // A large file: 4000 lines of code.
+            let mut text = String::new();
+            for i in 0..1000 {
+                text.push_str(&format!(
+                    "local function f{i}(entry: ThreatEntry): string?\n    local s = entry.status -- a comment {i}\n    return s == 2 and \"warning\" or nil\nend\n"
+                ));
+            }
+            return Ok(text);
+        }
         Ok(format!("-- {}\nlocal x = 1\n", path.display()))
     }
     fn write_file(&self, _: &Path, _: &str) -> Result<(), String> {

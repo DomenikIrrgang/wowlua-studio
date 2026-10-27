@@ -15,4 +15,12 @@ All notable changes to wowlua studio. Each minor version closes a milestone of t
 - The command palette: `ctrl k` (`cmd k` on macOS), then `>` for commands.
 - Dark and light themes, from the command palette or the view menu.
 - Frame stats in the status bar (`frame stats: show` in the view menu): frames drawn a second and each frame's time.
+- **Editor**: open files from the explorer in tabs; wowlua's own colours (types, functions, parameters, decorators, and keywords like `import` only where they are keywords), folding, the types of locals as hints, references counted over each function; undo and redo, the clipboard, indentation, `cmd s` to save (formatted as `wowlua fmt` does).
+- The language server inside Studio: problems underlined and in the problems panel, hover, completion, a call's parameters, go to definition (`f12`, `cmd` + click), references (`shift f12`), rename (`f2`, its changes shown to check first), the outline, quick fixes (`cmd .`, `ctrl .` on Windows and Linux).
+- **Search**: text across the workspace, with case, whole word, regular expressions and replace.
+- **Terminal**: your shell in the workspace's folder, in the bottom panel.
+- `wowlua.json` and world profiles complete their keys and values and explain them on hover.
+- Files changed outside Studio reload; with unsaved edits a banner offers compare, keep mine or take theirs. A file deleted outside closes, and a notification can restore it.
+- **Notifications**: a toast over the status bar, then the tray at its end.
+- **Background jobs**: checks that run for a while show in the status bar; click for the list.
 - The [wl] mark as the app's icon, in the macOS Dock's shape on macOS.

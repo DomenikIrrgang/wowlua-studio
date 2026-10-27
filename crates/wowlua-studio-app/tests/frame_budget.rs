@@ -27,6 +27,10 @@ fn frames_stay_within_the_budget() {
         if frame == 200 {
             studio.open(Path::new("/p/suuui"));
         }
+        // A large file in the editor, from frame 300.
+        if frame == 300 {
+            studio.edit(Path::new("/p/suuui/src/big.wowlua"));
+        }
         if frame < 200 && frame % 50 == 25 {
             studio.queue(if frame % 100 == 25 {
                 Command::NewAddon
