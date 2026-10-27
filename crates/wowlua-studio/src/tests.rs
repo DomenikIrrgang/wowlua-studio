@@ -42,7 +42,7 @@ pub fn start(
     }
 }
 
-/// Runs `work` as work the user started (S053): macOS's App Nap slows a
+/// Runs `work` as work the user started (S054): macOS's App Nap slows a
 /// window that is not in front to a fraction of one core, a test run of
 /// SuuUI's 185 files from 80 s to many minutes. The system may still
 /// sleep.
@@ -546,4 +546,107 @@ pub fn read_coverage(root: &Path) -> Option<Coverage> {
         files,
         html: html.is_file().then_some(html),
     })
+}
+
+#[cfg(test)]
+mod unit {
+    use super::{affected, read_coverage};
+    use std::path::{Path, PathBuf};
+
+    /// A package in a folder of its own: its files, by path and text.
+    fn package(name: &str, files: &[(&str, &str)]) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("wowlua-studio-tests-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let manifest = r#"{ "package": { "name": "demo", "version": "1.0.0" }, "flavors": { "retail": {} }, "addon": { "title": "Demo" } }"#;
+        for (path, text) in [("wowlua.json", manifest)]
+            .into_iter()
+            .chain(files.iter().copied())
+        {
+            let path = dir.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        }
+        std::fs::canonicalize(dir).unwrap()
+    }
+
+    fn names(files: Vec<PathBuf>, root: &Path) -> Vec<String> {
+        files
+            .iter()
+            .map(|f| {
+                f.strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect()
+    }
+
+    /// A saved file runs the tests importing it, directly or through other
+    /// files, by any specifier; a saved test file runs itself.
+    #[test]
+    fn a_change_affects_the_tests_that_import_it() {
+        let root = package(
+            "affected",
+            &[
+                (
+                    "src/a.wowlua",
+                    "export function double(x: number): number\n    return x * 2\nend\n",
+                ),
+                (
+                    "src/b.wowlua",
+                    "import { double } from \"./a\"\nexport function quad(x: number): number\n    return double(double(x))\nend\n",
+                ),
+                ("src/c.wowlua", "export const C = 1\n"),
+                ("tests/b.test.wowlua", "import { quad } from \"/b\"\n"),
+                (
+                    "tests/name.test.wowlua",
+                    "import { double } from \"demo/a\"\n",
+                ),
+                ("tests/c.test.wowlua", "import { C } from \"/c\"\n"),
+            ],
+        );
+        assert_eq!(
+            names(affected(&root, &root.join("src/a.wowlua")), &root),
+            ["tests/b.test.wowlua", "tests/name.test.wowlua"]
+        );
+        assert_eq!(
+            names(affected(&root, &root.join("tests/c.test.wowlua")), &root),
+            ["tests/c.test.wowlua"]
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// `dist/test/coverage.json` as Studio shows it: by absolute path.
+    #[test]
+    fn the_kept_coverage_is_read() {
+        let json = r#"{
+            "totals": { "lines": { "covered": 3, "total": 4, "percent": 75 } },
+            "files": { "src/a.wowlua": {
+                "totals": { "lines": { "covered": 3, "total": 4, "percent": 75 } },
+                "lines": { "1": 2, "2": 0 },
+                "branches": [{ "line": 2, "index": 0, "taken": 1, "notTaken": 0 }],
+                "functions": [{ "line": 1, "name": "double", "calls": 2 }]
+            } }
+        }"#;
+        let root = package(
+            "coverage",
+            &[
+                (
+                    "src/a.wowlua",
+                    "export function double(x: number): number\n    return x * 2\nend\n",
+                ),
+                ("dist/test/coverage.json", json),
+            ],
+        );
+        let coverage = read_coverage(&root).expect("coverage");
+        assert_eq!(coverage.totals.lines, (3, 4));
+        let file = &coverage.files[&root.join("src/a.wowlua")];
+        assert_eq!(file.lines.get(&1), Some(&2));
+        assert_eq!(file.lines.get(&2), Some(&0));
+        assert_eq!(file.branches.get(&(2, 0)), Some(&[1, 0]));
+        assert_eq!(file.functions.get(&1), Some(&("double".to_owned(), 2)));
+        assert_eq!(coverage.html, None);
+        let _ = std::fs::remove_dir_all(root);
+    }
 }

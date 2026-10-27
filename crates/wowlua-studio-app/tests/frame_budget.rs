@@ -205,3 +205,125 @@ fn the_search_panel_stays_within_the_budget() {
         assert!(at(0.99) <= BUDGET, "p99 {:.3} ms", ms(at(0.99)));
     }
 }
+
+/// The tests page with a large suite's results (SuuUI's: 185 files, about
+/// 3,700 tests, some failing): the explorer scrolled through beside the
+/// results.
+#[test]
+fn the_tests_page_stays_within_the_budget() {
+    use egui::UiBuilder;
+    use wowlua_studio_app::lsp::Discovered;
+    use wowlua_studio_app::system::{NoSystem, TestCase, TestFile, TestOutcome, Workspace};
+    use wowlua_studio_app::tests::{self, Kept, TestsState};
+    let ctx = egui::Context::default();
+    let _ = common::studio(&ctx);
+    let workspace = Workspace {
+        root: "/p/suuui".into(),
+        name: "SuuUI".into(),
+        members: Vec::new(),
+        flavors: vec!["retail".into()],
+        cannot_check: None,
+    };
+    let mut state = TestsState::default();
+    let mut files = Vec::new();
+    let mut results = Vec::new();
+    for f in 0..185 {
+        let rel = format!("tests/m{}/f{f}.test.wowlua", f % 12);
+        let path = workspace.root.join(&rel);
+        let names: Vec<String> = (0..20).map(|t| format!("does thing {t}")).collect();
+        state.discovered(
+            path.clone(),
+            names
+                .iter()
+                .enumerate()
+                .map(|(i, n)| Discovered {
+                    name: n.clone(),
+                    line: i * 6 + 2,
+                    start: i * 6 + 1,
+                    skip: false,
+                    cases: false,
+                })
+                .collect(),
+        );
+        results.push(TestFile {
+            package: workspace.root.clone(),
+            file: rel,
+            flavor: "retail".into(),
+            tests: names
+                .iter()
+                .enumerate()
+                .map(|(i, n)| TestCase {
+                    name: n.clone(),
+                    outcome: if (f + i) % 97 == 0 {
+                        TestOutcome::Fail {
+                            message: "expected 2, got 3".into(),
+                            stack: format!(
+                                "tests/m0/f{f}.test.wowlua:{}: in function 'fn'",
+                                i * 6 + 3
+                            ),
+                        }
+                    } else {
+                        TestOutcome::Pass
+                    },
+                    seconds: 0.002,
+                    functions: vec![("src/core.wowlua".into(), 10)],
+                })
+                .collect(),
+            error: None,
+            printed: String::new(),
+            seconds: 0.3,
+        });
+        files.push(path);
+    }
+    state.files = Some(files);
+    state.restore(Kept {
+        results,
+        last: None,
+    });
+    let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(1440.0, 900.0));
+    let left = Rect::from_min_max(Pos2::ZERO, Pos2::new(330.0, 900.0));
+    let right = Rect::from_min_max(Pos2::new(330.0, 0.0), Pos2::new(1440.0, 900.0));
+    let mut times = Vec::new();
+    for frame in 0..300u32 {
+        let mut input = RawInput {
+            screen_rect: Some(screen),
+            ..Default::default()
+        };
+        input.events.push(Event::PointerMoved(Pos2::new(
+            160.0,
+            (frame * 3 % 900) as f32,
+        )));
+        input.events.push(Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: Vec2::new(0.0, -300.0),
+            modifiers: egui::Modifiers::NONE,
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Wheel,
+        });
+        let started = Instant::now();
+        let mut output = ctx.run_ui(input, |ui| {
+            ui.scope_builder(UiBuilder::new().max_rect(left), |ui| {
+                tests::explorer(ui, &mut state, &workspace);
+            });
+            ui.scope_builder(UiBuilder::new().max_rect(right), |ui| {
+                tests::results(ui, &mut state, &workspace, &NoSystem, &[]);
+            });
+        });
+        let _ = ctx.tessellate(output.shapes, output.pixels_per_point);
+        output.textures_delta.clear();
+        if frame >= 20 {
+            times.push(started.elapsed());
+        }
+    }
+    times.sort_unstable();
+    let at = |q: f64| times[((times.len() - 1) as f64 * q) as usize];
+    let ms = |d: Duration| d.as_secs_f64() * 1000.0;
+    eprintln!(
+        "tests page: median {:.3} ms · p99 {:.3} ms",
+        ms(at(0.5)),
+        ms(at(0.99))
+    );
+    if !cfg!(debug_assertions) {
+        assert!(at(0.99) <= BUDGET, "p99 {:.3} ms", ms(at(0.99)));
+    }
+}

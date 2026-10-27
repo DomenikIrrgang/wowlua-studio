@@ -35,7 +35,7 @@ wowlua-syntax.workspace = true
 wowlua-test = { workspace = true, features = ["native", "camera"] }
 
 # The system menu bar and the window buttons in Studio's bar (S013, S022);
-# a test run kept from App Nap (S053).
+# a test run kept from App Nap (S054).
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = { version = "0.6", default-features = false, features = ["std"] }
 muda = { version = "0.21", default-features = false }

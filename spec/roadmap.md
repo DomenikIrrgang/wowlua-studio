@@ -154,6 +154,26 @@ Artboards: tests, coverage.
 - The test explorer, code lenses, results, snapshots and screenshot diffs
   (accept one, or all), run on save; coverage per file and in the editor's
   gutter, minimums from `wowlua.json`.
+- Runs with wowlua's own steps, as jobs; results and coverage kept until
+  the next run, across restarts; run on save runs the affected tests
+  (S052).
+- The tests' lenses, and over a function the tests that call it (S053).
+- No App Nap while tests run on macOS (S054).
+
+Built 2026-10-28: the test explorer (the workspace's test files as the
+server reads them, filters, failed only, each test's state), runs of all,
+the failed, a file or a test, with progress and stop, a world profile
+over `test.profile`; the results with a failure's source and stack, a
+snapshot's changes, a screenshot's stored, new and different images,
+accepting one or all, the output; the coverage panel (totals against the
+minimums, the files with where to test next, a file's lines, branches and
+functions never called) and bars in the editor's gutter; the lenses of
+S053; run on save. wowlua's pull request #64 makes a run's steps a
+library (`wowlua_test::runs`, `run_with`'s progress and stop, the
+functions each test called). SuuUI's suite runs in Studio as fast as
+`wowlua test` does (3,618 tests, 185 files). The frame budget holds with
+3,700 results: 0.13 ms median, 0.19 ms at the 99th percentile. Not yet:
+checked by hand on macOS only; wowlua's pull request #64 is not released.
 
 ## M5: The game
 
@@ -262,6 +282,8 @@ missing a part; the canvas is updated to match.
   workflow at `.github/workflows/ci.yml` (S036).
 - A recent workspace that can't be checked opens with `open` until the
   editor (M3) can open its `wowlua.json`.
+- The tests board's explorer pinned by a function's lens: "the tests that
+  call double" with `show all` over the tree (S053).
 
 Brought up to date on 2026-10-27: the panels board's presets
 for every page (S017), the palette's prompt (S018), the menus (S019), the

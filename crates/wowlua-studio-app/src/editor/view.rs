@@ -73,7 +73,7 @@ pub struct Cx<'a> {
     pub mac: bool,
     /// The active file's problems.
     pub diagnostics: &'a [Diag],
-    /// Studio's lenses over the active file's lines (its tests', S052).
+    /// Studio's lenses over the active file's lines (its tests', S053).
     pub lenses: &'a [Lens],
     /// The active file's coverage, shown in the gutter.
     pub coverage: Option<&'a crate::system::CoverageFile>,

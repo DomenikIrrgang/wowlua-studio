@@ -393,7 +393,7 @@ fn files_list(
     match state.cov.files {
         Files::Next => {
             rows.retain(|(_, f, n)| *n > 0 || f.functions.values().any(|(_, c)| *c == 0));
-            rows.sort_by(|a, b| b.2.cmp(&a.2));
+            rows.sort_by_key(|r| std::cmp::Reverse(r.2));
         }
         Files::All => {
             if state.cov.partial {

@@ -361,7 +361,7 @@ fn rel_of(workspace: &Workspace, path: &Path) -> String {
         .replace('\\', "/")
 }
 
-/// The tests' lenses over a file (S052): a test file's run, each test's
+/// The tests' lenses over a file (S053): a test file's run, each test's
 /// result and run or failure; over a source function, after a run with
 /// coverage, how many tests call it.
 pub fn lenses(state: &TestsState, workspace: &Workspace, path: &Path) -> Vec<Lens> {
@@ -385,6 +385,12 @@ pub fn lenses(state: &TestsState, workspace: &Workspace, path: &Path) -> Vec<Len
                 file: file.clone(),
                 test: None,
             },
+        ));
+        let n = tests.len();
+        out.push(note(
+            format!("{n} test{}", if n == 1 { "" } else { "s" }),
+            0,
+            Tone::Muted,
         ));
         for t in tests {
             let results = state.results_of(path, &t.name);
@@ -1902,5 +1908,244 @@ fn screenshot_view(
         && system.copy_file(now, stored).is_ok()
     {
         state.images.remove(stored);
+    }
+}
+
+#[cfg(test)]
+mod unit {
+    use super::*;
+    use crate::system::{CoverageFile, TestCase};
+
+    fn workspace() -> Workspace {
+        Workspace {
+            root: "/p/demo".into(),
+            name: "demo".into(),
+            members: Vec::new(),
+            flavors: vec!["retail".into()],
+            cannot_check: None,
+        }
+    }
+
+    fn case(name: &str, outcome: TestOutcome, functions: &[(&str, u32)]) -> TestCase {
+        TestCase {
+            name: name.into(),
+            outcome,
+            seconds: 0.0,
+            functions: functions.iter().map(|(s, l)| ((*s).into(), *l)).collect(),
+        }
+    }
+
+    fn failed(message: &str) -> TestOutcome {
+        TestOutcome::Fail {
+            message: message.into(),
+            stack: "tests/a.test.wowlua:7: in function 'fn'".into(),
+        }
+    }
+
+    fn file(tests: Vec<TestCase>) -> TestFile {
+        TestFile {
+            package: "/p/demo".into(),
+            file: "tests/a.test.wowlua".into(),
+            flavor: "retail".into(),
+            tests,
+            error: None,
+            printed: String::new(),
+            seconds: 0.1,
+        }
+    }
+
+    fn discovered(name: &str, line: usize) -> Discovered {
+        Discovered {
+            name: name.into(),
+            line,
+            start: line - 1,
+            skip: false,
+            cases: false,
+        }
+    }
+
+    const A: &str = "/p/demo/tests/a.test.wowlua";
+
+    #[test]
+    fn a_case_is_its_tests() {
+        assert_eq!(declared("doubles [1, 2]"), "doubles");
+        assert_eq!(declared("doubles"), "doubles");
+        assert_eq!(declared("[a] b"), "[a] b");
+    }
+
+    #[test]
+    fn filters_select_files_and_tests() {
+        let a = Path::new(A);
+        assert!(selects(&[], a, None));
+        assert!(selects(
+            &["tests/a.test.wowlua::adds".into()],
+            a,
+            Some("adds")
+        ));
+        assert!(!selects(
+            &["tests/a.test.wowlua::adds".into()],
+            a,
+            Some("draws")
+        ));
+        assert!(selects(&["a.test".into()], a, Some("draws")));
+        assert!(!selects(&["b.test".into()], a, None));
+    }
+
+    /// A whole run, then one of its failures again: the second's results
+    /// go over the first's, and a run already over is not heard.
+    #[test]
+    fn a_filtered_run_goes_over_the_last() {
+        let mut state = TestsState::default();
+        let run = state.next_run();
+        state.begin(run, TestRequest::default(), 1);
+        state.event(run, TestEvent::Planned(1));
+        state.event(
+            run,
+            TestEvent::File(file(vec![
+                case("adds", TestOutcome::Pass, &[]),
+                case("draws [1]", failed("boom"), &[]),
+            ])),
+        );
+        assert_eq!(
+            state.running.as_ref().map(|r| (r.done, r.failed)),
+            Some((1, 1))
+        );
+        assert!(
+            state
+                .event(run, TestEvent::Done(TestDone::default()))
+                .is_some()
+        );
+        assert_eq!(state.counts(), (1, 1, 0, 1));
+        assert_eq!(state.failed_filters(), ["tests/a.test.wowlua::draws"]);
+
+        let again = state.next_run();
+        let request = TestRequest {
+            filters: state.failed_filters(),
+            ..TestRequest::default()
+        };
+        state.begin(again, request, 2);
+        assert_eq!(state.counts(), (1, 1, 0, 1), "kept while it runs");
+        state.event(
+            again,
+            TestEvent::File(file(vec![case("draws [1]", TestOutcome::Pass, &[])])),
+        );
+        assert!(state.event(run, TestEvent::Status("old".into())).is_none());
+        state.event(again, TestEvent::Done(TestDone::default()));
+        assert_eq!(state.counts(), (2, 0, 0, 1));
+        assert_eq!(state.last.as_ref().map(|l| l.whole), Some(false));
+    }
+
+    #[test]
+    fn failures_are_read_from_their_messages() {
+        let snapshot =
+            "the snapshot \"rows\" differs (- stored, + now):\n  \"a\"\n- \"b\"\n+ \"c\"";
+        assert_eq!(
+            snapshot_diff(snapshot),
+            Some(vec!["  \"a\"", "- \"b\"", "+ \"c\""])
+        );
+        assert_eq!(snapshot_diff("expected 1, got 2\n- nothing"), None);
+        let screenshot = "the screenshot \"box\" differs: 3% of its pixels\n  stored: /s/box.png\n  now:    /s/box.actual.png\n  diff:   /s/box.diff.png";
+        assert!(is_screenshot(screenshot));
+        assert_eq!(
+            screenshot_paths(screenshot),
+            Some((
+                "/s/box.png".into(),
+                "/s/box.actual.png".into(),
+                "/s/box.diff.png".into()
+            ))
+        );
+        let stack = "src/tracker.wowlua:12: in function 'double'\ntests/a.test.wowlua:7: in function 'fn'\nwowlua/test.lua:40: in function 'run'\nsrc/never.lua:1:";
+        assert_eq!(
+            places(stack),
+            [
+                ("double".into(), "src/tracker.wowlua".into(), 12),
+                ("fn".into(), "tests/a.test.wowlua".into(), 7),
+                (String::new(), "src/never.lua".into(), 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn lenses_tell_each_tests_result_and_who_calls_a_function() {
+        let mut state = TestsState::default();
+        state.discovered(
+            A.into(),
+            vec![
+                discovered("adds", 3),
+                discovered("draws", 6),
+                discovered("new", 9),
+            ],
+        );
+        state.restore(Kept {
+            results: vec![file(vec![
+                case("adds", TestOutcome::Pass, &[("src/math.wowlua", 1)]),
+                case(
+                    "draws",
+                    failed("boom"),
+                    &[("src/math.wowlua", 1), ("src/ui.wowlua", 4)],
+                ),
+            ])],
+            last: None,
+        });
+        let titles = |path: &str| -> Vec<(usize, String)> {
+            lenses(&state, &workspace(), Path::new(path))
+                .into_iter()
+                .map(|l| (l.line, l.title))
+                .collect()
+        };
+        let line = |n: usize, t: &str| (n, t.to_owned());
+        assert_eq!(
+            titles(A),
+            [
+                line(0, "run all tests"),
+                line(0, "3 tests"),
+                line(2, "passed"),
+                line(2, "run test"),
+                line(5, "failed at line 7"),
+                line(5, "show failure"),
+                line(5, "run test"),
+                line(8, "run test"),
+            ]
+        );
+        assert_eq!(titles("/p/demo/src/math.wowlua"), [line(0, "2 tests")]);
+        assert_eq!(titles("/p/demo/src/ui.wowlua"), [line(3, "1 test")]);
+    }
+
+    /// A function's lens pins the explorer to the tests calling it.
+    #[test]
+    fn pinned_callers_are_all_the_explorer_shows() {
+        let b = "/p/demo/tests/b.test.wowlua";
+        let mut state = TestsState::default();
+        let files: Vec<PathBuf> = vec![A.into(), b.into()];
+        state.discovered(
+            A.into(),
+            vec![discovered("adds", 3), discovered("draws", 6)],
+        );
+        state.discovered(b.into(), vec![discovered("other", 2)]);
+        state.restore(Kept {
+            results: vec![file(vec![
+                case("adds", TestOutcome::Pass, &[]),
+                case("draws [1]", TestOutcome::Pass, &[("src/ui.wowlua", 4)]),
+                case("draws [2]", TestOutcome::Pass, &[("src/ui.wowlua", 4)]),
+            ])],
+            last: None,
+        });
+        let mut coverage = crate::system::Coverage::default();
+        let mut ui = CoverageFile::default();
+        ui.functions.insert(4, ("draw".into(), 2));
+        coverage.files.insert("/p/demo/src/ui.wowlua".into(), ui);
+        state.coverage = Some(coverage);
+        state.pin_callers(&workspace(), Path::new("/p/demo/src/ui.wowlua"), 4);
+        let (what, list) = state.pinned.clone().unwrap_or_default();
+        assert_eq!(what, "the tests that call draw");
+        assert_eq!(list, [(PathBuf::from(A), "draws".to_owned())]);
+        let names: Vec<String> = rows(&state, &workspace(), &files)
+            .into_iter()
+            .filter_map(|r| match r {
+                Row::File { name, .. } | Row::Test { name, .. } => Some(name),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(names, ["a.test.wowlua", "draws"]);
     }
 }
