@@ -36,6 +36,10 @@ pub struct NativeSystem {
     terminals: crate::terminal::Terminals,
     /// The test run's stop button.
     test_stop: RefCell<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// The game page's session, its scenes, and its screen (S055).
+    game: RefCell<Option<crate::game::Running>>,
+    game_frames: RefCell<std::sync::Arc<std::sync::Mutex<crate::game::Frames>>>,
+    game_screen: RefCell<Option<crate::game::Screen>>,
 }
 
 impl NativeSystem {
@@ -49,7 +53,16 @@ impl NativeSystem {
             lsp: RefCell::new(None),
             terminals: crate::terminal::Terminals::default(),
             test_stop: RefCell::default(),
+            game: RefCell::new(None),
+            game_frames: RefCell::default(),
+            game_screen: RefCell::new(None),
         }
+    }
+
+    /// eframe's GPU device and egui's renderer: the game's screen draws
+    /// there.
+    pub fn set_gpu(&mut self, gpu: eframe::egui_wgpu::RenderState) {
+        self.game_screen = RefCell::new(Some(crate::game::Screen::new(gpu)));
     }
 
     /// Runs `work` on a thread of its own; its event wakes Studio up.
@@ -425,6 +438,47 @@ impl System for NativeSystem {
             }
             ctx.request_repaint();
         });
+    }
+
+    fn game_start(&self, root: &Path, session: u64, profile: Option<String>) {
+        if let Some(old) = self.game.borrow_mut().take() {
+            old.stop();
+        }
+        let frames = std::sync::Arc::new(std::sync::Mutex::new(crate::game::Frames::default()));
+        *self.game_frames.borrow_mut() = frames.clone();
+        let send = std::sync::Arc::new(std::sync::Mutex::new(self.send.clone()));
+        let ctx = self.ctx.clone();
+        let wake_ctx = self.ctx.clone();
+        let running = crate::game::start(
+            root.to_path_buf(),
+            profile,
+            frames,
+            move |event| {
+                if let Ok(send) = send.lock() {
+                    let _ = send.send(Event::Game { session, event });
+                }
+                ctx.request_repaint();
+            },
+            move || wake_ctx.request_repaint(),
+        );
+        *self.game.borrow_mut() = Some(running);
+    }
+
+    fn game_request(&self, id: u64, request: wowlua_studio_app::system::GameRequest) {
+        if let Some(running) = self.game.borrow().as_ref() {
+            running.ask(id, request);
+        }
+    }
+
+    fn game_stop(&self) {
+        if let Some(running) = self.game.borrow_mut().take() {
+            running.stop();
+        }
+    }
+
+    fn game_screen(&self) -> Option<wowlua_studio_app::system::GameScreen> {
+        let frames = self.game_frames.borrow().clone();
+        self.game_screen.borrow_mut().as_mut()?.show(&frames)
     }
 
     fn test_stop(&self) {

@@ -41,6 +41,18 @@ impl Screenshot {
                 studio.tests_tab(tab);
                 continue;
             }
+            if step == "rungame" {
+                studio.run_game();
+                continue;
+            }
+            if let Some((x, y)) = step
+                .strip_prefix("gamepick:")
+                .and_then(|p| p.split_once(','))
+                .and_then(|(x, y)| Some((x.parse().ok()?, y.parse().ok()?)))
+            {
+                studio.game_pick(x, y);
+                continue;
+            }
             if step == "runtests" || step == "runcoverage" {
                 studio.run_tests(step == "runcoverage");
                 continue;

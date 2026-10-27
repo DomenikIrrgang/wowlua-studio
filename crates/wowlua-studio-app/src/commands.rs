@@ -40,6 +40,9 @@ pub enum Command {
     /// Runs every test, or those that failed last (S052).
     RunAllTests,
     RunFailedTests,
+    /// Runs the workspace's addon on the game page, or stops it (S055).
+    RunAddon,
+    StopSession,
     /// The start page's new-addon form.
     NewAddon,
     /// The start page's adopt form.
@@ -197,6 +200,22 @@ pub fn entries(
             "run the failed tests",
             "the tests that failed last",
             Some(Menu::Test),
+            None,
+        );
+        add(
+            Command::RunAddon,
+            "run",
+            "run the addon",
+            "the addon logged in, on the game page",
+            Some(Menu::Run),
+            None,
+        );
+        add(
+            Command::StopSession,
+            "run",
+            "stop the session",
+            "the game page's running addon",
+            Some(Menu::Run),
             None,
         );
     }
