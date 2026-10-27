@@ -374,6 +374,18 @@ impl System for NativeSystem {
         self.terminals.close(id);
     }
 
+    fn terminal_select(&self, id: u64, select: wowlua_studio_app::system::TermSelect) {
+        self.terminals.select(id, select);
+    }
+
+    fn terminal_selection(&self, id: u64) -> Option<String> {
+        self.terminals.selection(id)
+    }
+
+    fn clipboard_text(&self) -> Option<String> {
+        arboard::Clipboard::new().ok()?.get_text().ok()
+    }
+
     fn find_in(
         &self,
         text: &str,

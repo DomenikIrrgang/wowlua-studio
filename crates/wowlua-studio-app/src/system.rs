@@ -256,6 +256,35 @@ pub struct TermCell {
     pub dim: bool,
     /// The second half of a wide character: nothing to draw.
     pub spacer: bool,
+    /// In the selection.
+    pub selected: bool,
+}
+
+/// What a selection in a terminal takes: characters (a drag), words (a
+/// double click), lines (a triple click).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TermSelectKind {
+    Chars,
+    Words,
+    Lines,
+}
+
+/// A step of selecting in a terminal, at a row and column of its screen;
+/// `right` is the cell's right half.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TermSelect {
+    Start {
+        row: usize,
+        col: usize,
+        right: bool,
+        kind: TermSelectKind,
+    },
+    Extend {
+        row: usize,
+        col: usize,
+        right: bool,
+    },
+    Clear,
 }
 
 /// What a terminal shows now (S043).
@@ -397,6 +426,16 @@ pub trait System {
     fn terminal_scroll(&self, id: u64, lines: i32);
     fn terminal_screen(&self, id: u64) -> Option<TermScreen>;
     fn terminal_close(&self, id: u64);
+    /// Selects in the terminal: starts, extends or clears its selection.
+    fn terminal_select(&self, _id: u64, _select: TermSelect) {}
+    /// The terminal's selected text.
+    fn terminal_selection(&self, _id: u64) -> Option<String> {
+        None
+    }
+    /// The system clipboard's text (`ctrl shift v` in the terminal).
+    fn clipboard_text(&self) -> Option<String> {
+        None
+    }
     /// Work finished since the last call.
     fn poll(&self) -> Vec<Event>;
 }

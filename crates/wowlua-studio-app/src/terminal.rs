@@ -1,6 +1,9 @@
 //! The terminal panel (S043): the user's shell in the workspace's folder,
 //! as the host's terminal emulator keeps its screen. Keys go to the shell
-//! as a terminal sends them; the wheel scrolls back.
+//! as a terminal sends them; the wheel scrolls back. Text is selected as
+//! in a terminal app: a drag, a double click for a word, a triple click
+//! for a line; `cmd c` (`ctrl shift c`) copies, `cmd v` (`ctrl shift v`)
+//! pastes.
 
 use std::path::Path;
 
@@ -11,7 +14,7 @@ use egui::{
 };
 use wowlua_studio_ui::{Face, Palette, Theme, forms, palette, theme};
 
-use crate::system::{System, TermCell, TermColor};
+use crate::system::{System, TermCell, TermColor, TermSelect, TermSelectKind};
 
 const LINE_H: f32 = 20.0;
 const PAD_X: f32 = 14.0;
@@ -24,6 +27,8 @@ pub struct TerminalState {
     error: Option<String>,
     /// The wheel's fraction of a line not scrolled yet.
     wheel: f32,
+    /// A drag is selecting.
+    selecting: bool,
 }
 
 impl TerminalState {
@@ -77,10 +82,12 @@ pub fn show(ui: &mut Ui, state: &mut TerminalState, system: &dyn System, cwd: &P
 
     // Focus: a click; the keys a terminal needs stay in it.
     let focus_id = Id::unique("wowlua-studio-terminal");
-    let response = ui.interact(rect, focus_id, Sense::click());
-    if response.clicked() {
+    let response = ui.interact(rect, focus_id, Sense::click_and_drag());
+    if response.clicked() || response.drag_started() {
         response.request_focus();
     }
+    let origin = Pos2::new(rect.left() + PAD_X, rect.top() + PAD_Y);
+    select(&response, state, system, id, &screen, origin, char_w, &ctx);
     let focused = response.has_focus();
     if focused {
         ctx.memory_mut(|m| {
@@ -96,6 +103,26 @@ pub fn show(ui: &mut Ui, state: &mut TerminalState, system: &dyn System, cwd: &P
         });
         let events = ctx.input(|i| i.events.clone());
         for event in events {
+            // Copy and paste: cmd c and cmd v on macOS; ctrl shift c and v
+            // elsewhere, ctrl c staying the shell's interrupt.
+            let shifted = |k: &Event, key: Key| {
+                matches!(k, Event::Key { key: kk, pressed: true, modifiers, .. }
+                    if *kk == key && !mac && modifiers.ctrl && modifiers.shift)
+            };
+            if (mac && matches!(event, Event::Copy)) || shifted(&event, Key::C) {
+                if let Some(text) = system.terminal_selection(id) {
+                    ctx.copy_text(text);
+                }
+                continue;
+            }
+            let event = if shifted(&event, Key::V) {
+                match system.clipboard_text() {
+                    Some(text) => Event::Paste(text),
+                    None => continue,
+                }
+            } else {
+                event
+            };
             let bytes: Option<Vec<u8>> = match event {
                 Event::Text(t) => Some(t.into_bytes()),
                 Event::Paste(t) => Some(if screen.bracketed_paste {
@@ -135,7 +162,6 @@ pub fn show(ui: &mut Ui, state: &mut TerminalState, system: &dyn System, cwd: &P
     // The screen.
     let dark = theme(&ctx) == Theme::Dark;
     let painter = ui.painter().with_clip_rect(rect);
-    let origin = Pos2::new(rect.left() + PAD_X, rect.top() + PAD_Y);
     for (r, row) in screen.rows.iter().enumerate() {
         let y = origin.y + r as f32 * LINE_H;
         // Backgrounds first, in runs.
@@ -235,8 +261,90 @@ pub fn show(ui: &mut Ui, state: &mut TerminalState, system: &dyn System, cwd: &P
     }
 }
 
-/// A cell's text and background colours (none: the panel's).
+/// Selecting with the pointer: a drag for characters, a double click for a
+/// word, a triple click for a line; a click clears. Dragging past the
+/// top or the bottom scrolls.
+#[allow(clippy::too_many_arguments)]
+fn select(
+    response: &egui::Response,
+    state: &mut TerminalState,
+    system: &dyn System,
+    id: u64,
+    screen: &crate::system::TermScreen,
+    origin: Pos2,
+    char_w: f32,
+    ctx: &egui::Context,
+) {
+    let rows = screen.rows.len().max(1);
+    let cols = screen.rows.first().map_or(1, Vec::len).max(1);
+    let cell_at = |pos: Pos2| {
+        let x = ((pos.x - origin.x) / char_w).max(0.0);
+        let row = (((pos.y - origin.y) / LINE_H).floor().max(0.0) as usize).min(rows - 1);
+        let col = (x.floor() as usize).min(cols - 1);
+        (row, col, x.fract() > 0.5)
+    };
+    let start = |pos: Pos2, kind| {
+        let (row, col, right) = cell_at(pos);
+        system.terminal_select(
+            id,
+            TermSelect::Start {
+                row,
+                col,
+                right,
+                kind,
+            },
+        );
+    };
+    let pointer = response.interact_pointer_pos();
+    if response.triple_clicked()
+        && let Some(pos) = pointer
+    {
+        start(pos, TermSelectKind::Lines);
+    } else if response.double_clicked()
+        && let Some(pos) = pointer
+    {
+        start(pos, TermSelectKind::Words);
+    } else if response.clicked() {
+        system.terminal_select(id, TermSelect::Clear);
+    }
+    if response.drag_started()
+        && let Some(from) = ctx.input(|i| i.pointer.press_origin())
+    {
+        start(from, TermSelectKind::Chars);
+        state.selecting = true;
+    }
+    if response.dragged()
+        && state.selecting
+        && let Some(pos) = pointer
+    {
+        let rect = response.rect;
+        if pos.y < rect.top() {
+            system.terminal_scroll(id, 1);
+            ctx.request_repaint();
+        } else if pos.y > rect.bottom() {
+            system.terminal_scroll(id, -1);
+            ctx.request_repaint();
+        }
+        let (row, col, right) = cell_at(pos);
+        system.terminal_select(id, TermSelect::Extend { row, col, right });
+    }
+    if response.drag_stopped() {
+        state.selecting = false;
+    }
+}
+
+/// A cell's text and background colours (none: the panel's); a selected
+/// cell's background is the selection's.
 fn colors(cell: &TermCell, p: &Palette, dark: bool) -> (Color32, Option<Color32>) {
+    let (fg, bg) = cell_colors(cell, p, dark);
+    if cell.selected {
+        (fg, Some(p.amber_soft))
+    } else {
+        (fg, bg)
+    }
+}
+
+fn cell_colors(cell: &TermCell, p: &Palette, dark: bool) -> (Color32, Option<Color32>) {
     let fg = match cell.fg {
         TermColor::Default => p.ink,
         c => color(c, p, dark),

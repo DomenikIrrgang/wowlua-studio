@@ -11,13 +11,15 @@ use std::sync::{Arc, Mutex};
 
 use alacritty_terminal::event::{Event as TermEvent, EventListener};
 use alacritty_terminal::grid::{Dimensions, Scroll};
+use alacritty_terminal::index::{Column, Line, Point, Side};
+use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::test::TermSize;
 use alacritty_terminal::term::{Config, Term, TermMode};
 use alacritty_terminal::vte::ansi::{Color, NamedColor, Processor};
 use eframe::egui;
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
-use wowlua_studio_app::system::{TermCell, TermColor, TermScreen};
+use wowlua_studio_app::system::{TermCell, TermColor, TermScreen, TermSelect, TermSelectKind};
 
 /// Where the terminal's answers to programs go: back to the shell.
 #[derive(Clone)]
@@ -171,6 +173,52 @@ impl Terminals {
         }
     }
 
+    /// Starts, extends or clears the selection: a cell of the screen, as
+    /// far back as it is scrolled.
+    pub fn select(&self, id: u64, select: TermSelect) {
+        let sessions = self.sessions.borrow();
+        let Some(s) = sessions.get(&id) else {
+            return;
+        };
+        let Ok(mut t) = s.term.lock() else {
+            return;
+        };
+        let offset = t.grid().display_offset() as i32;
+        let last = t.columns().saturating_sub(1);
+        let point =
+            |row: usize, col: usize| Point::new(Line(row as i32 - offset), Column(col.min(last)));
+        let side = |right: bool| if right { Side::Right } else { Side::Left };
+        match select {
+            TermSelect::Start {
+                row,
+                col,
+                right,
+                kind,
+            } => {
+                let ty = match kind {
+                    TermSelectKind::Chars => SelectionType::Simple,
+                    TermSelectKind::Words => SelectionType::Semantic,
+                    TermSelectKind::Lines => SelectionType::Lines,
+                };
+                t.selection = Some(Selection::new(ty, point(row, col), side(right)));
+            }
+            TermSelect::Extend { row, col, right } => {
+                let at = point(row, col);
+                if let Some(selection) = &mut t.selection {
+                    selection.update(at, side(right));
+                }
+            }
+            TermSelect::Clear => t.selection = None,
+        }
+    }
+
+    /// The selected text.
+    pub fn selection(&self, id: u64) -> Option<String> {
+        let sessions = self.sessions.borrow();
+        let t = sessions.get(&id)?.term.lock().ok()?;
+        t.selection_to_string().filter(|s| !s.is_empty())
+    }
+
     pub fn screen(&self, id: u64) -> Option<TermScreen> {
         let sessions = self.sessions.borrow();
         let s = sessions.get(&id)?;
@@ -198,6 +246,7 @@ impl Terminals {
             cursor: None,
         };
         let colors = content.colors;
+        let selection = content.selection;
         let color = |c: Color| -> TermColor {
             match c {
                 Color::Spec(rgb) => TermColor::Rgb([rgb.r, rgb.g, rgb.b]),
@@ -252,6 +301,7 @@ impl Terminals {
                 inverse: f.contains(Flags::INVERSE),
                 dim: f.contains(Flags::DIM),
                 spacer: f.contains(Flags::WIDE_CHAR_SPACER),
+                selected: selection.is_some_and(|s| s.contains(cell.point)),
             };
         }
         let cursor = content.cursor;
@@ -279,5 +329,97 @@ impl Drop for Terminals {
         for (_, mut s) in self.sessions.borrow_mut().drain() {
             let _ = s.child.kill();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The row and column where `text` shows on the screen, its last
+    /// showing (the command's output, after the line typed).
+    fn find(screen: &TermScreen, text: &str) -> Option<(usize, usize)> {
+        screen.rows.iter().enumerate().rev().find_map(|(r, row)| {
+            let line: String = row.iter().map(|c| c.c).collect();
+            let b = line.find(text)?;
+            Some((r, line[..b].chars().count()))
+        })
+    }
+
+    #[test]
+    fn a_word_and_a_line_are_selected_and_copied() {
+        let terminals = Terminals::default();
+        let dir = std::env::temp_dir();
+        let id = terminals
+            .open(&dir, 80, 24, &egui::Context::default())
+            .expect("a shell");
+        terminals.input(id, b"echo hello-select world\r");
+        // The output, once the shell has written it.
+        let mut at = None;
+        for _ in 0..100 {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            let screen = terminals.screen(id).expect("a screen");
+            let (Some(typed), Some(out)) = (
+                find(&screen, "echo hello"),
+                find(&screen, "hello-select world"),
+            ) else {
+                continue;
+            };
+            if out.0 > typed.0 {
+                at = Some(out);
+                break;
+            }
+        }
+        let (row, col) = at.expect("the echo's output");
+        terminals.select(
+            id,
+            TermSelect::Start {
+                row,
+                col: col + 2,
+                right: false,
+                kind: TermSelectKind::Words,
+            },
+        );
+        assert_eq!(terminals.selection(id).as_deref(), Some("hello-select"));
+        let screen = terminals.screen(id).unwrap();
+        assert!(screen.rows[row][col].selected && !screen.rows[row][col + 13].selected);
+        terminals.select(
+            id,
+            TermSelect::Start {
+                row,
+                col: 0,
+                right: false,
+                kind: TermSelectKind::Lines,
+            },
+        );
+        assert_eq!(
+            terminals
+                .selection(id)
+                .map(|s| s.trim_end().to_owned())
+                .as_deref(),
+            Some("hello-select world")
+        );
+        // Characters: from `s` of select to the space.
+        terminals.select(
+            id,
+            TermSelect::Start {
+                row,
+                col: col + 6,
+                right: false,
+                kind: TermSelectKind::Chars,
+            },
+        );
+        terminals.select(
+            id,
+            TermSelect::Extend {
+                row,
+                col: col + 11,
+                right: true,
+            },
+        );
+        assert_eq!(terminals.selection(id).as_deref(), Some("select"));
+        terminals.select(id, TermSelect::Clear);
+        assert_eq!(terminals.selection(id), None);
+        terminals.close(id);
     }
 }

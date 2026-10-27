@@ -143,8 +143,9 @@ server's semantic tokens, folding, inlay hints, quick fixes, lenses and
 the checking notification. The frame budget holds with a 4000-line file
 open: 0.09 ms median, 0.25 ms at the 99th percentile; a line of megabytes
 is laid out only where it is seen. The find bar (S051): find and replace
-in the file, every match marked. Not yet: selecting
-and copying in the terminal; checked by hand on macOS only.
+in the file, every match marked. The terminal selects as a terminal app
+does (a drag, words, lines) and copies and pastes. Not yet: checked by
+hand on macOS only.
 
 ## M4: Tests and coverage
 

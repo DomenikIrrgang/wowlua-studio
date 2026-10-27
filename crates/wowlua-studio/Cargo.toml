@@ -10,6 +10,9 @@ authors.workspace = true
 
 [dependencies]
 alacritty_terminal = "0.26"
+# The clipboard eframe reads with (through egui-winit), for `ctrl shift v`
+# in the terminal.
+arboard = { version = "3.7", default-features = false }
 dirs = "7.0"
 eframe.workspace = true
 ignore = "0.4"

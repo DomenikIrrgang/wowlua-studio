@@ -19,7 +19,7 @@ All notable changes to wowlua studio. Each minor version closes a milestone of t
 - The language server inside Studio: problems underlined and in the problems panel, hover, completion, a call's parameters, go to definition (`f12`, `cmd` + click: holding `cmd` underlines what it goes to), references (`shift f12`), rename (`f2`, its changes shown to check first), the outline, quick fixes (`cmd .`, `ctrl .` on Windows and Linux).
 - **Search**: text across the workspace, with case, whole word, regular expressions and replace.
 - **Find in the file**: `cmd f` (`ctrl f`) opens a bar over the editor, `cmd alt f` (`ctrl h`) with replace. Every match is marked in the text and on the scrollbar; `enter` and `cmd g` (`F3`) go to the next, replace all is one undo step, and regular expressions replace with their groups (`$1`).
-- **Terminal**: your shell in the workspace's folder, in the bottom panel.
+- **Terminal**: your shell in the workspace's folder, in the bottom panel. Drag to select, double click a word, triple click a line; `cmd c` and `cmd v` copy and paste (`ctrl shift c` and `ctrl shift v` on Windows and Linux, where `ctrl c` stays the shell's).
 - `wowlua.json` and world profiles complete their keys and values and explain them on hover.
 - Files changed outside Studio reload; with unsaved edits a banner offers compare, keep mine or take theirs. A file deleted outside closes, and a notification can restore it.
 - **Notifications**: a toast over the status bar, then the tray at its end.
