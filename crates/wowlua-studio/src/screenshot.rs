@@ -2,7 +2,8 @@
 //! person at the screen: `WOWLUA_STUDIO_SCREENSHOT=out.png` draws a few
 //! frames, saves the window as a PNG and quits.
 //! `WOWLUA_STUDIO_SCREENSHOT_RUN` lists commands to run first, separated
-//! by `;`: `page:debug`, `theme:light`, `palette`, `drag:watch`.
+//! by `;`: `open:<folder>`, `page:debug`, `theme:light`, `palette`,
+//! `about`, `new`, `adopt`.
 
 use std::{
     path::PathBuf,
@@ -24,6 +25,10 @@ impl Screenshot {
         let path = PathBuf::from(std::env::var_os("WOWLUA_STUDIO_SCREENSHOT")?);
         let run = std::env::var("WOWLUA_STUDIO_SCREENSHOT_RUN").unwrap_or_default();
         for step in run.split(';').map(str::trim).filter(|s| !s.is_empty()) {
+            if let Some(folder) = step.strip_prefix("open:") {
+                studio.open(std::path::Path::new(folder));
+                continue;
+            }
             let command = match step.split_once(':') {
                 Some(("page", name)) => Page::ALL
                     .into_iter()
@@ -32,6 +37,8 @@ impl Screenshot {
                 Some(("theme", name)) => Theme::from_name(name).map(Command::SetTheme),
                 None if step == "palette" => Some(Command::OpenPalette),
                 None if step == "about" => Some(Command::About),
+                None if step == "new" => Some(Command::NewAddon),
+                None if step == "adopt" => Some(Command::AdoptAddon),
                 _ => None,
             };
             match command {
@@ -49,7 +56,8 @@ impl Screenshot {
     pub fn step(&mut self, ctx: &egui::Context) {
         self.frame += 1;
         ctx.request_repaint();
-        if self.frame == 5 && self.image.is_none() {
+        // Opening a folder takes a moment: the shot waits for it.
+        if self.frame == 30 && self.image.is_none() {
             let (send, receive) = mpsc::channel();
             self.image = Some(receive);
             let callback = egui::ScreenshotCallback::new(move |image| {

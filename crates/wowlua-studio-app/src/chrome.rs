@@ -21,13 +21,24 @@ const TRAFFIC_LIGHTS_W: f32 = 76.0;
 /// Below this width the menus and the search button hide (`st-hide-md`).
 const NARROW: f32 = 960.0;
 
+/// The title bar's chip: the open workspace.
+pub struct Chip<'a> {
+    pub name: &'a str,
+    /// The Git branch checked out.
+    pub branch: Option<&'a str>,
+    /// Its folder, for the tooltip.
+    pub folder: String,
+}
+
 /// The title bar: the app, the menus (not on macOS: its menu bar has
-/// them), the workspace, search, and the window's buttons.
+/// them), the workspace, search, and the window's buttons. The start page
+/// (no workspace) has neither the chip nor search.
 pub fn title_bar(
     ui: &mut Ui,
     rect: Rect,
     platform: Platform,
     entries: &[Entry],
+    chip: Option<Chip<'_>>,
     commands: &mut Vec<Command>,
 ) {
     let ctx = ui.ctx().clone();
@@ -111,31 +122,51 @@ pub fn title_bar(
         x += 6.0;
     }
 
-    // The workspace: none until M2 opens folders.
-    let chip_text = widgets::galley(ui, "no folder open", Face::Plex.at(12.0), p.ink_muted, 0.0);
-    let chip = Rect::from_min_size(
-        Pos2::new(x, cy - 13.0),
-        Vec2::new(chip_text.size().x + 16.0 + 20.0, 26.0),
-    );
-    painter.rect_filled(chip, CornerRadius::ZERO, p.bg_100);
-    painter.rect_stroke(
-        chip,
-        CornerRadius::ZERO,
-        Stroke::new(1.0, p.line),
-        StrokeKind::Inside,
-    );
-    icons::paint(
-        &painter,
-        Rect::from_min_size(Pos2::new(chip.left() + 8.0, cy - 7.0), Vec2::splat(14.0)),
-        Icon::Folder,
-        p.ink_muted,
-    );
-    painter.galley(
-        Pos2::new(chip.left() + 28.0, cy - chip_text.size().y / 2.0),
-        chip_text,
-        p.ink_muted,
-    );
-    x = chip.right() + 8.0;
+    // The workspace and its branch.
+    let has_chip = chip.is_some();
+    if let Some(chip) = chip.filter(|_| !narrow) {
+        let name = widgets::galley(ui, chip.name, Face::Plex.at(12.0), p.ink, 0.0);
+        let branch = chip.branch.map(|b| {
+            widgets::galley(
+                ui,
+                &format!(" · {b}"),
+                Face::Plex.at(12.0),
+                p.ink_muted,
+                0.0,
+            )
+        });
+        let text_w = name.size().x + branch.as_ref().map_or(0.0, |b| b.size().x);
+        let r = Rect::from_min_size(
+            Pos2::new(x, cy - 13.0),
+            Vec2::new(text_w + 16.0 + 20.0, 26.0),
+        );
+        painter.rect_filled(r, CornerRadius::ZERO, p.bg_100);
+        painter.rect_stroke(
+            r,
+            CornerRadius::ZERO,
+            Stroke::new(1.0, p.line),
+            StrokeKind::Inside,
+        );
+        icons::paint(
+            &painter,
+            Rect::from_min_size(Pos2::new(r.left() + 8.0, cy - 7.0), Vec2::splat(14.0)),
+            Icon::Folder,
+            p.ink_muted,
+        );
+        let name_x = r.left() + 28.0;
+        let name_w = name.size().x;
+        painter.galley(Pos2::new(name_x, cy - name.size().y / 2.0), name, p.ink);
+        if let Some(b) = branch {
+            painter.galley(
+                Pos2::new(name_x + name_w, cy - b.size().y / 2.0),
+                b,
+                p.ink_muted,
+            );
+        }
+        ui.interact(r, Id::unique("wowlua-studio-chip"), Sense::hover())
+            .on_hover_text(format!("a folder: {}", chip.folder));
+        x = r.right() + 8.0;
+    }
 
     // The window's buttons (macOS draws its own).
     let buttons_w = if mac { 0.0 } else { 3.0 * 44.0 };
@@ -151,7 +182,7 @@ pub fn title_bar(
     }
 
     // Search: up to 420 px, centred in the window where it fits.
-    if !narrow {
+    if !narrow && has_chip {
         let room = (right - 12.0) - x;
         let w = room.min(420.0);
         if w >= 200.0 {
@@ -371,9 +402,18 @@ fn rail_item(ui: &mut Ui, r: Rect, page: Page, current: Page, commands: &mut Vec
     }
 }
 
+/// What the status bar says about the session.
+pub struct Session<'a> {
+    pub text: &'a str,
+    /// Said as a warning (`checks off`).
+    pub warning: bool,
+    /// At the right: the flavor, the client.
+    pub right: &'a [String],
+}
+
 /// The status bar: wowlua's version and the session. The theme is a
 /// setting, not here (S021).
-pub fn status_bar(ui: &mut Ui, rect: Rect, wowlua_version: &str) {
+pub fn status_bar(ui: &mut Ui, rect: Rect, wowlua_version: &str, session: &Session<'_>) {
     let p = palette(ui.ctx());
     let painter = ui.painter().clone();
     painter.rect_filled(rect, CornerRadius::ZERO, p.bg_200);
@@ -394,10 +434,28 @@ pub fn status_bar(ui: &mut Ui, rect: Rect, wowlua_version: &str) {
     painter.text(
         Pos2::new(x, cy),
         Align2::LEFT_CENTER,
-        "no folder open",
-        font,
-        p.ink_muted,
+        session.text,
+        font.clone(),
+        if session.warning {
+            p.warning
+        } else {
+            p.ink_muted
+        },
     );
+    if rect.width() < NARROW {
+        return;
+    }
+    let mut right = rect.right() - 10.0;
+    for item in session.right.iter().rev() {
+        let r = painter.text(
+            Pos2::new(right, cy),
+            Align2::RIGHT_CENTER,
+            item,
+            font.clone(),
+            p.ink_muted,
+        );
+        right = r.left() - 14.0;
+    }
 }
 
 /// Resizing a window without the system's frame: 5 px edges, 10 px

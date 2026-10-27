@@ -89,6 +89,20 @@ icons! {
     Input = "input", "M3.25 2.25v9l2.5-2.5 2 4 1.5-.75-2-4h3.5z";
     ProfileDoc = "profile-doc", "M3.75 1.75h5.5l3 3v9.5h-8.5z M9.25 1.75v3h3 M5.75 11.5v-2l1-1h2.5l1 1v2 M7 6.25h2v1.5H7z";
     Pin = "pin", "M5.75 1.75h4.5 M6.75 1.75v4.5l-2 2.5h6.5l-2-2.5v-4.5 M8 8.75v5.5";
+    // File types (the explorer); the manifest is `config`, the lockfile
+    // `token`, a world profile `profile-doc`.
+    WowluaFile = "wowlua", "M3.75 1.75h5.5l3 3v9.5h-8.5z M9.25 1.75v3h3 M9.75 7l-1.5 1.5v2l1.5 1.5h-3l-1.5-1.5v-2l1.5-1.5z";
+    TestFile = "test-file", "M3.75 1.75h5.5l3 3v9.5h-8.5z M9.25 1.75v3h3 M5.5 10l1.75 1.75 3.25-3.25";
+    TypesFile = "types", "M3.75 1.75h5.5l3 3v9.5h-8.5z M9.25 1.75v3h3 M5.75 7.75h4.5 M8 7.75v4.5";
+    LuaFile = "lua", "M3.75 1.75h5.5l3 3v9.5h-8.5z M9.25 1.75v3h3 M5.75 7.25v4.5h3.5";
+    XmlFile = "xml", "M3.75 1.75h5.5l3 3v9.5h-8.5z M9.25 1.75v3h3 M6.25 7.75l-1.5 1.75 1.5 1.75 M9.75 7.75l1.5 1.75-1.5 1.75";
+    JsonFile = "json", "M3.75 1.75h5.5l3 3v9.5h-8.5z M9.25 1.75v3h3 M6.5 7.25h-1v4.5h1 M9.5 7.25h1v4.5h-1";
+    SnapFile = "snap", "M3.75 1.75h5.5l3 3v9.5h-8.5z M9.25 1.75v3h3 M5.75 8h4.5v3.5h-4.5z";
+    MarkdownFile = "markdown", "M3.75 1.75h5.5l3 3v9.5h-8.5z M9.25 1.75v3h3 M5.75 8h4.5 M5.75 10.5h3";
+    Image = "image", "M1.75 2.75h12.5v10.5H1.75z M3.75 11.25l3-3.5 2 2 1.5-1.5 2 3 M10.25 5.25h1.5v1.5h-1.5z";
+    Audio = "audio", "M3.75 1.75h5.5l3 3v9.5h-8.5z M9.25 1.75v3h3 M5.25 10.75h1.5v1.5h-1.5z M6.75 11.25v-4l3-1v3.5";
+    FontFile = "font", "M3.75 1.75h5.5l3 3v9.5h-8.5z M9.25 1.75v3h3 M5.75 12.25l2.25-5.5 2.25 5.5 M6.5 10.5h3";
+    FolderOpen = "folder-open", "M1.75 13.25V3.25h4.5l1.5 1.5h5v2 M1.75 13.25l2-6.5h10.5l-2 6.5z";
     // The window's chrome (the title bar and panels boards)
     Grip = "grip", "M5.5 3.5h1 M9.5 3.5h1 M5.5 8h1 M9.5 8h1 M5.5 12.5h1 M9.5 12.5h1";
     Add = "add", "M8 2.5v11 M2.5 8h11";
