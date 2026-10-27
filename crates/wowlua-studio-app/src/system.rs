@@ -232,6 +232,9 @@ pub trait System {
     /// The lines a wowlua or Lua file's text folds: first and last, the
     /// last staying in sight.
     fn folding(&self, text: &str) -> Vec<(usize, usize)>;
+    /// The JSON schema wowlua makes of `wowlua.json` (`world`: of a world
+    /// profile), as text (S046).
+    fn schema(&self, world: bool) -> Option<String>;
     /// Opens the workspace around `path` (→ [`Event::Opened`]).
     fn open(&self, path: &Path);
     /// Watches the workspace's files (→ [`Event::FilesChanged`]); `None`
@@ -305,6 +308,9 @@ impl System for NoSystem {
     }
     fn folding(&self, _: &str) -> Vec<(usize, usize)> {
         Vec::new()
+    }
+    fn schema(&self, _: bool) -> Option<String> {
+        None
     }
     fn open(&self, _: &Path) {}
     fn watch(&self, _: Option<&Path>) {}

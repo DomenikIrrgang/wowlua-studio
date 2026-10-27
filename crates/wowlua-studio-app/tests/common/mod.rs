@@ -124,6 +124,9 @@ impl System for Fake {
     fn folding(&self, _: &str) -> Vec<(usize, usize)> {
         Vec::new()
     }
+    fn schema(&self, _: bool) -> Option<String> {
+        None
+    }
     fn canonical(&self, path: &Path) -> PathBuf {
         path.to_path_buf()
     }

@@ -97,6 +97,8 @@ pub struct Studio {
     lsp: lsp::Lsp,
     /// The search panel: references, a rename's changes, text search.
     search: search::SearchState,
+    /// The schemas of `wowlua.json` and world profiles, once read (S046).
+    schemas: std::collections::HashMap<editor::json::Schema, serde_json::Value>,
     /// Background jobs (S044); the checks running, by package.
     jobs: jobs::Jobs,
     checks: std::collections::HashMap<PathBuf, u64>,
@@ -173,6 +175,7 @@ impl Studio {
             editors: Editors::default(),
             lsp: lsp::Lsp::default(),
             search: search::SearchState::default(),
+            schemas: std::collections::HashMap::new(),
             jobs: jobs::Jobs::default(),
             checks: std::collections::HashMap::new(),
             outline: None,
@@ -425,10 +428,12 @@ impl Studio {
                 }
             }
             Panel::Editor => {
-                let active = editors.active().map(|t| t.doc.path.clone());
-                let diagnostics = active
-                    .as_deref()
-                    .map_or(&[][..], |p| lsp_state.diagnostics_of(p));
+                // By the server's name of the file: a manifest's problems
+                // too, though the server does not have it open.
+                let diagnostics = editors
+                    .active()
+                    .and_then(|t| lsp_state.diagnostics.get(&t.canonical))
+                    .map_or(&[][..], Vec::as_slice);
                 let cx = editor::view::Cx {
                     system,
                     workspace,
@@ -509,6 +514,20 @@ impl Studio {
     /// What the editor asked for.
     fn editor_action(&mut self, action: editor::view::Action, ctx: &Context) {
         use editor::view::Action as A;
+        // A JSON file with a schema answers from the schema (S046).
+        if let Some(kind) = self
+            .editors
+            .active()
+            .and_then(|t| editor::json::schema_of(&t.doc.path))
+        {
+            if matches!(action, A::Complete(_) | A::Hover(_)) {
+                self.json_action(kind, action);
+                return;
+            }
+            if !matches!(action, A::Save(_) | A::Close(_)) {
+                return;
+            }
+        }
         let system = &*self.host.system;
         let Some(tab) = self.editors.active() else {
             return;
@@ -539,6 +558,72 @@ impl Studio {
                 }
             }
             A::ApplyFix(fix) => self.apply_edits(fix.edits, ctx),
+        }
+    }
+
+    /// Completion and hover in a JSON file, from its schema.
+    fn json_action(&mut self, kind: editor::json::Schema, action: editor::view::Action) {
+        use editor::view::Action as A;
+        if !self.schemas.contains_key(&kind) {
+            let world = kind == editor::json::Schema::WorldProfile;
+            if let Some(schema) = self
+                .host
+                .system
+                .schema(world)
+                .and_then(|t| serde_json::from_str(&t).ok())
+            {
+                self.schemas.insert(kind, schema);
+            }
+        }
+        let (Some(schema), Some(tab)) = (self.schemas.get(&kind), self.editors.active_mut()) else {
+            return;
+        };
+        let text = tab.doc.text();
+        // Characters to the byte offset in the whole text.
+        let offset_of = |doc: &editor::Document, at: editor::Pos| -> usize {
+            (0..at.line).map(|l| doc.line(l).len() + 1).sum::<usize>()
+                + editor::doc::byte(doc.line(at.line), at.col)
+        };
+        match action {
+            A::Complete(at) => {
+                let offset = offset_of(&tab.doc, at);
+                let place = editor::json::place(&text, offset);
+                let items: Vec<lsp::Item> = editor::json::suggestions(schema, &place)
+                    .into_iter()
+                    .map(|s| {
+                        // From the quote typed: the suggestion has its own.
+                        let line_start: usize =
+                            (0..at.line).map(|l| tab.doc.line(l).len() + 1).sum();
+                        let start_col = tab.doc.line(at.line)[..place
+                            .start
+                            .saturating_sub(line_start)
+                            .min(tab.doc.line(at.line).len())]
+                            .chars()
+                            .count();
+                        let start = lsp::to_wire(&tab.doc, editor::Pos::new(at.line, start_col));
+                        let end = lsp::to_wire(&tab.doc, at);
+                        lsp::Item {
+                            label: s.label.trim_matches('"').to_owned(),
+                            detail: s.detail,
+                            kind: if place.on_key { 10 } else { 12 },
+                            insert: s.insert,
+                            range: Some((start, end)),
+                        }
+                    })
+                    .collect();
+                tab.completion = (!items.is_empty()).then_some(editor::Completion {
+                    at,
+                    items,
+                    selected: 0,
+                });
+            }
+            A::Hover(at) => {
+                let offset = offset_of(&tab.doc, at);
+                if let Some(text) = editor::json::explain(schema, &text, offset) {
+                    tab.hover = Some((at, text));
+                }
+            }
+            _ => {}
         }
     }
 

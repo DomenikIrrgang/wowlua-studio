@@ -5,6 +5,7 @@
 
 pub mod diff;
 pub mod doc;
+pub mod json;
 pub mod view;
 
 use std::path::{Path, PathBuf};
@@ -34,6 +35,8 @@ pub struct Tab {
     /// Opened to look at (from the search panel): the next preview
     /// replaces it, an edit keeps it.
     pub preview: bool,
+    /// The path as the language server names it (links resolved).
+    pub canonical: PathBuf,
     /// The language server's hover where the pointer rests.
     pub hover: Option<(Pos, String)>,
     /// Completion suggestions at the caret.
@@ -115,8 +118,9 @@ impl Editors {
             return Ok(());
         }
         let text = system.read_file(path)?;
-        self.tabs
-            .push(Tab::new(Document::new(path.to_path_buf(), &text)));
+        let mut tab = Tab::new(Document::new(path.to_path_buf(), &text));
+        tab.canonical = system.canonical(path);
+        self.tabs.push(tab);
         self.active = self.tabs.len() - 1;
         self.focus = true;
         Ok(())
@@ -131,6 +135,7 @@ impl Editors {
         let text = system.read_file(path)?;
         let mut tab = Tab::new(Document::new(path.to_path_buf(), &text));
         tab.preview = true;
+        tab.canonical = system.canonical(path);
         match self
             .tabs
             .iter()
@@ -240,6 +245,7 @@ impl Tab {
             clash: None,
             reveal: true,
             preview: false,
+            canonical: PathBuf::new(),
             hover: None,
             completion: None,
             signature: None,
@@ -273,6 +279,8 @@ impl Tab {
         if self.highlights.as_ref().is_none_or(|(v, _)| *v != version) {
             let lines = if highlighted(&self.doc.path) {
                 per_line(&self.doc, &system.highlight(&self.doc.text()))
+            } else if json::is_json(&self.doc.path) {
+                per_line(&self.doc, &json::highlight(&self.doc.text()))
             } else {
                 Vec::new()
             };

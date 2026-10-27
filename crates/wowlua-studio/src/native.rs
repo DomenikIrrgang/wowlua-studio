@@ -143,6 +143,14 @@ impl System for NativeSystem {
         out
     }
 
+    fn schema(&self, world: bool) -> Option<String> {
+        Some(if world {
+            wowlua_manifest::world::schema_json()
+        } else {
+            wowlua_manifest::schema_json()
+        })
+    }
+
     fn folding(&self, text: &str) -> Vec<(usize, usize)> {
         wowlua_lsp::editor::folding_ranges(text)
             .iter()
@@ -949,6 +957,28 @@ mod tests {
             new_lines(section),
             ["Test runner: wowlua test runs.", "Two."]
         );
+    }
+
+    #[test]
+    fn wowlua_s_manifest_schema_completes_the_package_s_keys() {
+        use wowlua_studio_app::editor::json;
+        let schema: serde_json::Value =
+            serde_json::from_str(&wowlua_manifest::schema_json()).unwrap();
+        let text = "{\n  \"";
+        let place = json::place(text, text.len());
+        let keys: Vec<String> = json::suggestions(&schema, &place)
+            .into_iter()
+            .map(|s| s.label)
+            .collect();
+        assert!(keys.contains(&"package".to_owned()), "{keys:?}");
+        assert!(keys.contains(&"flavors".to_owned()), "{keys:?}");
+        let text = "{ \"package\": { \"";
+        let place = json::place(text, text.len());
+        let keys: Vec<String> = json::suggestions(&schema, &place)
+            .into_iter()
+            .map(|s| s.label)
+            .collect();
+        assert!(keys.contains(&"name".to_owned()), "{keys:?}");
     }
 
     #[test]

@@ -1709,6 +1709,11 @@ fn typed(tab: &mut Tab, text: &str, actions: &mut Vec<Action>) {
     };
     let head = tab.doc.selection.head;
     match c {
+        // A key or a string value of a JSON file with a schema.
+        '"' if super::json::schema_of(&tab.doc.path).is_some() => {
+            tab.completion = None;
+            actions.push(Action::Complete(head));
+        }
         '.' | ':' => {
             tab.completion = None;
             actions.push(Action::Complete(head));
