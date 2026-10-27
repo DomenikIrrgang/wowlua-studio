@@ -247,6 +247,12 @@ impl Studio {
         self.queued_find = Some(query.to_owned());
     }
 
+    /// Where the active editor's hover is shown for: a line and a column.
+    pub fn hovered(&self) -> Option<(usize, usize)> {
+        let hover = self.editors.active()?.hover.as_ref()?;
+        Some((hover.at.line, hover.at.col))
+    }
+
     /// Opens the workspace around `path` in this window.
     pub fn open(&mut self, path: &Path) {
         self.start.opening = Some(path.to_path_buf());

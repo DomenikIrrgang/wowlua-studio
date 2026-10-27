@@ -172,6 +172,20 @@ impl System for Fake {
         path.to_path_buf()
     }
     fn lsp_send(&self, message: serde_json::Value) {
+        // A hover answers at once: a long one, to scroll.
+        if message["method"] == "textDocument/hover" {
+            let value = format!(
+                "```wowlua\nx: number\n```\n\n{}",
+                "A line of the doc.\n\n".repeat(60)
+            );
+            self.events
+                .borrow_mut()
+                .push(system::Event::Lsp(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": message["id"],
+                    "result": { "contents": { "kind": "markdown", "value": value } },
+                })));
+        }
         self.sent.0.borrow_mut().push(message);
     }
     fn lsp_files(&self, _: Vec<(PathBuf, system::FileChange)>) {}

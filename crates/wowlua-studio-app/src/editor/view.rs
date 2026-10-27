@@ -37,6 +37,11 @@ const TAB_STOP: usize = 4;
 const FONT_SIZE: f32 = 13.0;
 /// How long the pointer rests before the hover is asked for.
 const HOVER_AFTER: f64 = 0.45;
+/// How long the hover stays once the pointer left its place: time to move
+/// onto it, to scroll or select in it.
+const HOVER_LEAVE: f64 = 0.4;
+/// The hover's height at most: half the window's, at most this.
+const HOVER_MAX_H: f32 = 420.0;
 
 /// What the editor asks Studio to do.
 #[derive(Clone, Debug, PartialEq)]
@@ -1140,36 +1145,54 @@ fn code(
     let popup_hovered: bool = ctx
         .data(|d| d.get_temp(id.with("hover-pop")))
         .unwrap_or(false);
-    match hover_at {
-        Some((at, point)) => {
-            let rest: Option<(Pos, f64)> = ctx.data(|d| d.get_temp(id.with("rest")));
-            match rest {
-                Some((pos, since)) if pos == at => {
-                    let asked: Option<Pos> = ctx.data(|d| d.get_temp(id.with("asked")));
-                    if now - since >= HOVER_AFTER && asked != Some(at) {
-                        actions.push(Action::Hover(at));
-                        ctx.data_mut(|d| d.insert_temp(id.with("asked"), at));
-                    } else if now - since < HOVER_AFTER {
-                        ctx.request_repaint_after(std::time::Duration::from_secs_f64(
-                            HOVER_AFTER - (now - since),
-                        ));
-                    }
-                }
-                _ => {
-                    ctx.data_mut(|d| d.insert_temp(id.with("rest"), (at, now)));
-                    ctx.request_repaint_after(std::time::Duration::from_secs_f64(HOVER_AFTER));
-                    if !popup_hovered && tab.hover.as_ref().is_some_and(|h| h.at != at) {
-                        tab.hover = None;
-                    }
+    // The pointer left the hover's place: it stays a moment, to be
+    // reached; on it, it stays.
+    let left = tab
+        .hover
+        .as_ref()
+        .is_some_and(|h| hover_at.is_none_or(|(at, _)| h.at != at))
+        && (hover_at.is_some() || clear_hover);
+    if left && !popup_hovered {
+        let since: f64 = ctx.data(|d| d.get_temp(id.with("leave"))).unwrap_or(now);
+        ctx.data_mut(|d| d.insert_temp(id.with("leave"), since));
+        if now - since >= HOVER_LEAVE {
+            tab.hover = None;
+            ctx.data_mut(|d| {
+                d.remove::<f64>(id.with("leave"));
+                d.remove::<Pos>(id.with("asked"));
+            });
+        } else {
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(
+                HOVER_LEAVE - (now - since),
+            ));
+        }
+    } else {
+        ctx.data_mut(|d| d.remove::<f64>(id.with("leave")));
+    }
+    if let Some((at, point)) = hover_at {
+        let rest: Option<(Pos, f64)> = ctx.data(|d| d.get_temp(id.with("rest")));
+        match rest {
+            Some((pos, since)) if pos == at => {
+                let asked: Option<Pos> = ctx.data(|d| d.get_temp(id.with("asked")));
+                if now - since >= HOVER_AFTER && asked != Some(at) && !popup_hovered {
+                    actions.push(Action::Hover(at));
+                    // The popup stands where the pointer rested: it does
+                    // not follow the pointer on its way to it.
+                    ctx.data_mut(|d| {
+                        d.insert_temp(id.with("asked"), at);
+                        d.insert_temp(id.with("point"), point);
+                    });
+                } else if now - since < HOVER_AFTER {
+                    ctx.request_repaint_after(std::time::Duration::from_secs_f64(
+                        HOVER_AFTER - (now - since),
+                    ));
                 }
             }
-            ctx.data_mut(|d| d.insert_temp(id.with("point"), point));
+            _ => {
+                ctx.data_mut(|d| d.insert_temp(id.with("rest"), (at, now)));
+                ctx.request_repaint_after(std::time::Duration::from_secs_f64(HOVER_AFTER));
+            }
         }
-        None if clear_hover && !popup_hovered => {
-            tab.hover = None;
-            ctx.data_mut(|d| d.remove::<Pos>(id.with("asked")));
-        }
-        None => {}
     }
 
     // The caret: 2 px of amber, blinking while nothing is typed.
@@ -1329,57 +1352,67 @@ fn hover_popup(ctx: &egui::Context, id: Id, tab: &Tab, diagnostics: &[Diag], p: 
         Align2::LEFT_BOTTOM,
         560.0,
         |ui| {
-            ui.spacing_mut().item_spacing.y = 0.0;
-            for d in &here {
-                forms::padded(ui, 12, 8, |ui| {
-                    let (word, color) = if d.is_error() {
-                        ("error", p.error)
-                    } else {
-                        ("warning", p.warning)
-                    };
-                    let head = match &d.code {
-                        Some(code) => format!("{word}[{code}]"),
-                        None => word.to_owned(),
-                    };
-                    let mut lines = d.message.lines();
-                    let first = lines.next().unwrap_or("");
-                    let width = ui.available_width();
-                    let g = rich(
-                        ui,
-                        &[
-                            (&head, Face::PlexSemiBold.at(12.0), color),
-                            (&format!(": {first}"), Face::Plex.at(12.0), p.ink),
-                        ],
-                        width,
-                    );
-                    let (r, _) = ui.allocate_exact_size(g.size(), Sense::hover());
-                    ui.painter().galley(r.min, g, p.ink);
-                    for rest in lines {
-                        let (prefix, body) = match rest.strip_prefix("help: ") {
-                            Some(h) => ("= help: ", h),
-                            None => ("", rest),
-                        };
-                        let g = rich(
-                            ui,
-                            &[
-                                (prefix, Face::PlexSemiBold.at(12.0), p.note),
-                                (body, Face::Plex.at(12.0), p.ink_muted),
-                            ],
-                            width,
-                        );
-                        let (r, _) = ui.allocate_exact_size(g.size(), Sense::hover());
-                        ui.painter().galley(r.min, g, p.ink);
-                    }
-                });
-                separator(ui, p);
-            }
-            if !text.trim().is_empty() {
-                forms::padded(ui, 12, 8, |ui| markdown(ui, text, code, p));
-            }
+            // A long hover (a function's many overloads) scrolls in it.
+            let max_h = (ctx.content_rect().height() * 0.5).min(HOVER_MAX_H);
+            egui::ScrollArea::vertical()
+                .id_salt(("wowlua-studio-hover-scroll", at.line, at.col))
+                .max_height(max_h)
+                .show(ui, |ui| hover_body(ui, &here, text, code, p));
         },
     );
     let over = shown.response.contains_pointer();
     ctx.data_mut(|d| d.insert_temp(id.with("hover-pop"), over));
+}
+
+/// The hover's problems, then the server's text.
+fn hover_body(ui: &mut Ui, here: &[&Diag], text: &str, code: &[Highlight], p: &Palette) {
+    ui.spacing_mut().item_spacing.y = 0.0;
+    for d in here {
+        forms::padded(ui, 12, 8, |ui| {
+            let (word, color) = if d.is_error() {
+                ("error", p.error)
+            } else {
+                ("warning", p.warning)
+            };
+            let head = match &d.code {
+                Some(code) => format!("{word}[{code}]"),
+                None => word.to_owned(),
+            };
+            let mut lines = d.message.lines();
+            let first = lines.next().unwrap_or("");
+            let width = ui.available_width();
+            let g = rich(
+                ui,
+                &[
+                    (&head, Face::PlexSemiBold.at(12.0), color),
+                    (&format!(": {first}"), Face::Plex.at(12.0), p.ink),
+                ],
+                width,
+            );
+            let (r, _) = ui.allocate_exact_size(g.size(), Sense::hover());
+            ui.painter().galley(r.min, g, p.ink);
+            for rest in lines {
+                let (prefix, body) = match rest.strip_prefix("help: ") {
+                    Some(h) => ("= help: ", h),
+                    None => ("", rest),
+                };
+                let g = rich(
+                    ui,
+                    &[
+                        (prefix, Face::PlexSemiBold.at(12.0), p.note),
+                        (body, Face::Plex.at(12.0), p.ink_muted),
+                    ],
+                    width,
+                );
+                let (r, _) = ui.allocate_exact_size(g.size(), Sense::hover());
+                ui.painter().galley(r.min, g, p.ink);
+            }
+        });
+        separator(ui, p);
+    }
+    if !text.trim().is_empty() {
+        forms::padded(ui, 12, 8, |ui| markdown(ui, text, code, p));
+    }
 }
 
 fn separator(ui: &mut Ui, p: &Palette) {
