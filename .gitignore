@@ -1,0 +1,17 @@
+# Rust / Cargo
+/target/
+**/*.rs.bk
+
+# A local wowlua checkout patched in (CLAUDE.md, decision S004)
+/.cargo/config.toml
+
+# Editors and OS
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# Claude Code worktrees of other sessions
+.claude/worktrees/
