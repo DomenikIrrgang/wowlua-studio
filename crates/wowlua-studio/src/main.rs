@@ -26,6 +26,9 @@ fn main() -> eframe::Result {
         .with_title("wowlua studio")
         .with_inner_size([1440.0, 900.0])
         .with_min_inner_size([800.0, 500.0]);
+    if let Some(icon) = app_icon() {
+        viewport = viewport.with_icon(icon);
+    }
     viewport = if PLATFORM == Platform::MacOs {
         // The traffic lights stay, over Studio's own title bar (S013).
         viewport
@@ -45,6 +48,27 @@ fn main() -> eframe::Result {
         options,
         Box::new(|cc| Ok(Box::new(App::new(&cc.egui_ctx)))),
     )
+}
+
+/// The app's icon (decision S020): the mark tile, in Apple's icon shape on
+/// macOS (`scripts/app-icon.py` makes both).
+fn app_icon() -> Option<egui::IconData> {
+    let bytes: &[u8] = if PLATFORM == Platform::MacOs {
+        include_bytes!("../assets/icon-macos.png")
+    } else {
+        include_bytes!("../assets/icon.png")
+    };
+    let mut reader = png::Decoder::new(std::io::Cursor::new(bytes))
+        .read_info()
+        .ok()?;
+    let mut rgba = vec![0; reader.output_buffer_size()?];
+    let info = reader.next_frame(&mut rgba).ok()?;
+    rgba.truncate(info.buffer_size());
+    Some(egui::IconData {
+        rgba,
+        width: info.width,
+        height: info.height,
+    })
 }
 
 struct App {

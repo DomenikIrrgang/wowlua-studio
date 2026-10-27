@@ -3,9 +3,9 @@
 
 use egui::{
     Align2, Color32, CornerRadius, CursorIcon, Id, Pos2, Rect, ResizeDirection, Sense, Stroke,
-    StrokeKind, Ui, UiBuilder, Vec2, ViewportCommand,
+    StrokeKind, Ui, Vec2, ViewportCommand,
 };
-use wowlua_studio_ui::{Face, Icon, Theme, icons, mark, palette, widgets};
+use wowlua_studio_ui::{Face, Icon, icons, mark, palette, widgets};
 
 use crate::{
     Platform,
@@ -230,19 +230,7 @@ fn search_button(ui: &mut Ui, r: Rect, platform: Platform) -> bool {
     } else {
         "ctrl"
     };
-    ui.scope_builder(
-        UiBuilder::new().max_rect(Rect::from_min_max(
-            Pos2::new(r.right() - 64.0, cy - 8.0),
-            Pos2::new(r.right() - 6.0, cy + 8.0),
-        )),
-        |ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-            ui.horizontal(|ui| {
-                widgets::kbd(ui, mod_word);
-                widgets::kbd(ui, "k");
-            });
-        },
-    );
+    widgets::paint_keys_right(ui, r.right() - 6.0, cy, &[mod_word, "k"]);
     resp.widget_info(|| {
         egui::WidgetInfo::labeled(
             egui::Role::Button,
@@ -382,14 +370,9 @@ fn rail_item(ui: &mut Ui, r: Rect, page: Page, current: Page, commands: &mut Vec
     }
 }
 
-/// The status bar: wowlua's version, the session, the theme.
-pub fn status_bar(
-    ui: &mut Ui,
-    rect: Rect,
-    wowlua_version: &str,
-    theme: Theme,
-    commands: &mut Vec<Command>,
-) {
+/// The status bar: wowlua's version and the session. The theme is a
+/// setting, not here (S021).
+pub fn status_bar(ui: &mut Ui, rect: Rect, wowlua_version: &str) {
     let p = palette(ui.ctx());
     let painter = ui.painter().clone();
     painter.rect_filled(rect, CornerRadius::ZERO, p.bg_200);
@@ -414,22 +397,6 @@ pub fn status_bar(
         font,
         p.ink_muted,
     );
-
-    let seg_w = 92.0;
-    let seg = Rect::from_min_size(
-        Pos2::new(rect.right() - 10.0 - seg_w, cy - 11.0),
-        Vec2::new(seg_w, 22.0),
-    );
-    ui.scope_builder(UiBuilder::new().max_rect(seg), |ui| {
-        let selected = usize::from(theme == Theme::Light);
-        if let Some(i) = widgets::seg(ui, "theme", &["dark", "light"], selected, false) {
-            commands.push(Command::SetTheme(if i == 0 {
-                Theme::Dark
-            } else {
-                Theme::Light
-            }));
-        }
-    });
 }
 
 /// Resizing a window without the system's frame: 5 px edges, 10 px

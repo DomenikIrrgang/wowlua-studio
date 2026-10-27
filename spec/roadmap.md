@@ -196,5 +196,7 @@ missing a part; the canvas is updated to match.
   the text after it (S018).
 - The menus: the title bar names them, nothing says what is in them
   (S019).
+- The status bar without the theme switch; the theme is a setting (S021).
+- The app icon: the mark tile, in Apple's shape on macOS (S020).
 - A dependencies view for the registry (S010, M10) and the in-game
   recordings as a profiler source (S011, M7).

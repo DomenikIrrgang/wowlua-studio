@@ -133,13 +133,7 @@ impl Studio {
 
         chrome::title_bar(ui, title, self.host.platform, &entries, &mut commands);
         chrome::rail(ui, rail, self.page, &mut commands);
-        chrome::status_bar(
-            ui,
-            status,
-            &self.host.wowlua_version,
-            self.settings.theme(),
-            &mut commands,
-        );
+        chrome::status_bar(ui, status, &self.host.wowlua_version);
 
         let layout = layout_for(&mut self.layouts, self.layout_page);
         let changed = dock::show(ui, area, layout, &mut self.dock, &mut dock::placeholder);

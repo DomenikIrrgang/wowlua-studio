@@ -232,10 +232,29 @@ pub fn button(
 
 /// A key cap: `ctrl`, `k`.
 pub fn kbd(ui: &mut Ui, key: &str) -> Response {
+    let size = Vec2::new(kbd_width(ui, key), 16.0);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
+    paint_kbd(ui, rect.left(), rect.center().y, key);
+    response
+}
+
+/// A key cap's width.
+pub fn kbd_width(ui: &Ui, key: &str) -> f32 {
+    galley(ui, key, Face::Plex.at(10.5), Color32::PLACEHOLDER, 0.0)
+        .size()
+        .x
+        + 8.0
+}
+
+/// Paints a key cap from `left`, centred on `center_y`, outside any
+/// layout; returns its rectangle.
+pub fn paint_kbd(ui: &Ui, left: f32, center_y: f32, key: &str) -> Rect {
     let p = palette(ui.ctx());
     let text = galley(ui, key, Face::Plex.at(10.5), p.ink, 0.0);
-    let size = Vec2::new(text.size().x + 8.0, 16.0);
-    let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
+    let rect = Rect::from_min_size(
+        Pos2::new(left, (center_y - 8.0).round()),
+        Vec2::new(text.size().x + 8.0, 16.0),
+    );
     let painter = ui.painter();
     painter.rect_filled(rect.translate(Vec2::Y), CornerRadius::same(2), p.key_edge);
     painter.rect_filled(rect, CornerRadius::same(2), p.bg_200);
@@ -246,7 +265,19 @@ pub fn kbd(ui: &mut Ui, key: &str) -> Response {
         StrokeKind::Inside,
     );
     painter.galley(rect.center() - text.size() / 2.0, text, p.ink);
-    response
+    rect
+}
+
+/// Paints a shortcut's key caps ending at `right`, centred on
+/// `center_y`; returns where they start.
+pub fn paint_keys_right(ui: &Ui, right: f32, center_y: f32, keys: &[impl AsRef<str>]) -> f32 {
+    let mut x = right;
+    for key in keys.iter().rev() {
+        let w = kbd_width(ui, key.as_ref());
+        paint_kbd(ui, x - w, center_y, key.as_ref());
+        x -= w + 4.0;
+    }
+    x + 4.0
 }
 
 /// A badge's look.

@@ -1,6 +1,8 @@
 //! macOS's menu bar (decision S013): the application menu, then Studio's
 //! menus from its commands.
 
+use std::sync::mpsc;
+
 use eframe::egui;
 use muda::{
     Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu,
@@ -12,6 +14,7 @@ pub struct MenuBar {
     // Kept alive: the system's menu bar refers to it.
     _menu: Menu,
     items: Vec<(MenuId, Command)>,
+    events: mpsc::Receiver<MenuEvent>,
 }
 
 impl MenuBar {
@@ -74,14 +77,24 @@ impl MenuBar {
 
         // A menu click wakes Studio up to run it.
         let ctx = ctx.clone();
-        MenuEvent::set_event_handler(Some(move |_| ctx.request_repaint()));
-        MenuBar { _menu: menu, items }
+        // With a handler set, muda sends nothing to its own receiver: the
+        // handler forwards the events to Studio's.
+        let (send, events) = mpsc::channel();
+        MenuEvent::set_event_handler(Some(move |event| {
+            let _ = send.send(event);
+            ctx.request_repaint();
+        }));
+        MenuBar {
+            _menu: menu,
+            items,
+            events,
+        }
     }
 
     /// The commands picked in the menu bar since the last frame.
     pub fn poll(&self) -> Vec<Command> {
         let mut out = Vec::new();
-        while let Ok(event) = MenuEvent::receiver().try_recv() {
+        while let Ok(event) = self.events.try_recv() {
             if let Some((_, command)) = self.items.iter().find(|(id, _)| id == event.id()) {
                 out.push(*command);
             }

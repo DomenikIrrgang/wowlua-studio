@@ -134,28 +134,40 @@ pub fn show(
 
             // The field: 52 px, the amber prompt, the query, esc.
             let (field, _) = ui.allocate_exact_size(Vec2::new(width, 52.0), Sense::hover());
-            painter.text(
-                Pos2::new(field.left() + 16.0, field.center().y),
-                Align2::LEFT_CENTER,
-                state.mode.sign(),
-                Face::PlexSemiBold.at(15.0),
-                p.amber_ink,
-            );
+            // The text and esc are centred in the field; the prompt sits on
+            // the text's own line, where the text field put it.
+            let cy = field.center().y;
+            let font = Face::Plex.at(15.0);
+            let row = ui.fonts_mut(|f| f.row_height(&font));
             let input_rect = Rect::from_min_max(
-                Pos2::new(field.left() + 36.0, field.top() + 14.0),
-                Pos2::new(field.right() - 56.0, field.bottom() - 14.0),
+                Pos2::new(field.left() + 36.0, cy - row / 2.0),
+                Pos2::new(field.right() - 56.0, cy + row / 2.0),
             );
             let was_empty = state.query.is_empty();
             let backspace = ui.input(|i| i.key_pressed(Key::Backspace));
             let mut input = ui.new_child(UiBuilder::new().max_rect(input_rect));
-            let edit = input.add(
-                TextEdit::singleline(&mut state.query)
-                    .frame(egui::Frame::NONE)
-                    .font(Face::Plex.at(15.0))
-                    .text_color(p.ink)
-                    .hint_text("file name, > command, # symbol, @ in this file, : line")
-                    .desired_width(input_rect.width()),
+            // The hint is laid out on its own: it takes the field's font
+            // only when given it.
+            let hint =
+                egui::RichText::new("file name, > command, # symbol, @ in this file, : line")
+                    .font(font.clone())
+                    .color(p.ink_faint);
+            let output = TextEdit::singleline(&mut state.query)
+                .frame(egui::Frame::NONE)
+                .margin(egui::Margin::ZERO)
+                .font(font)
+                .text_color(p.ink)
+                .hint_text(hint)
+                .desired_width(input_rect.width())
+                .show(&mut input);
+            painter.text(
+                Pos2::new(field.left() + 16.0, output.galley_pos.y),
+                Align2::LEFT_TOP,
+                state.mode.sign(),
+                Face::PlexSemiBold.at(15.0),
+                p.amber_ink,
             );
+            let edit = output.response.response;
             if state.focus {
                 edit.request_focus();
                 state.focus = false;
@@ -164,11 +176,7 @@ pub fn show(
                 state.edited(was_empty, backspace);
                 state.selected = 0;
             }
-            let mut esc_key = ui.new_child(UiBuilder::new().max_rect(Rect::from_min_max(
-                Pos2::new(field.right() - 44.0, field.center().y - 8.0),
-                Pos2::new(field.right() - 12.0, field.center().y + 8.0),
-            )));
-            widgets::kbd(&mut esc_key, "esc");
+            widgets::paint_keys_right(ui, field.right() - 12.0, cy, &["esc"]);
             painter.hline(
                 field.x_range(),
                 field.bottom() - 1.0,
@@ -411,23 +419,7 @@ fn result_row(
         p.ink_muted,
     );
     if let Some(key) = &entry.key {
-        let mut x = rect.right() - 12.0;
-        for word in key_words(key, platform).iter().rev() {
-            let g = widgets::galley(ui, word, Face::Plex.at(10.5), p.ink, 0.0);
-            let r = Rect::from_min_size(
-                Pos2::new(x - g.size().x - 8.0, y - 8.0),
-                Vec2::new(g.size().x + 8.0, 16.0),
-            );
-            ui.painter().rect_filled(r, CornerRadius::same(2), p.bg_200);
-            ui.painter().rect_stroke(
-                r,
-                CornerRadius::same(2),
-                Stroke::new(1.0, p.line_strong),
-                StrokeKind::Inside,
-            );
-            ui.painter().galley(r.center() - g.size() / 2.0, g, p.ink);
-            x = r.left() - 4.0;
-        }
+        widgets::paint_keys_right(ui, rect.right() - 12.0, y, &key_words(key, platform));
     }
     resp.clicked()
 }
