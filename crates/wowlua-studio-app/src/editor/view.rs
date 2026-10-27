@@ -1529,12 +1529,82 @@ fn markdown(ui: &mut Ui, text: &str, colours: &[Highlight], p: &Palette) {
             *end = at;
         } else if !line.trim().is_empty() && line.trim() != "---" {
             let plain = line.trim_end().replace("**", "").replace('`', "");
-            forms::paragraph(ui, plain.trim_start_matches("# "), 12.0, 18.0, p.ink);
+            linked_paragraph(ui, plain.trim_start_matches("# "), p);
         }
     }
     if let Some(block) = code {
         flush_code(ui, block);
     }
+}
+
+/// A web link of markdown (`[text](https://…)`): where it is in `line`
+/// (bytes), its text and its address. Other addresses stay text.
+fn links(line: &str) -> Vec<(std::ops::Range<usize>, &str, &str)> {
+    let mut out = Vec::new();
+    let mut at = 0;
+    while let Some(open) = line[at..].find('[').map(|i| at + i) {
+        let Some(close) = line[open..].find("](").map(|i| open + i) else {
+            break;
+        };
+        let Some(end) = line[close + 2..].find(')').map(|i| close + 2 + i) else {
+            break;
+        };
+        let url = &line[close + 2..end];
+        if url.starts_with("https://") || url.starts_with("http://") {
+            out.push((open..end + 1, &line[open + 1..close], url));
+        }
+        at = end + 1;
+    }
+    out
+}
+
+/// A paragraph of the hover's text, its links in the note colour and
+/// underlined: a click opens one in the browser.
+fn linked_paragraph(ui: &mut Ui, line: &str, p: &Palette) {
+    let found = links(line);
+    if found.is_empty() {
+        forms::paragraph(ui, line, 12.0, 18.0, p.ink);
+        return;
+    }
+    let text = TextFormat {
+        font_id: Face::Plex.at(12.0),
+        color: p.ink,
+        line_height: Some(18.0),
+        ..Default::default()
+    };
+    let link = TextFormat {
+        color: p.note,
+        underline: Stroke::new(1.0, p.note),
+        ..text.clone()
+    };
+    let mut job = LayoutJob::default();
+    job.wrap.max_width = ui.available_width();
+    // Each link's characters in the laid text, and its address.
+    let mut targets = Vec::new();
+    let (mut at, mut chars) = (0, 0);
+    for (range, label, url) in found {
+        let before = &line[at..range.start];
+        job.append(before, 0.0, text.clone());
+        chars += before.chars().count();
+        job.append(label, 0.0, link.clone());
+        let n = label.chars().count();
+        targets.push((chars..chars + n, url));
+        chars += n;
+        at = range.end;
+    }
+    job.append(&line[at..], 0.0, text);
+    let galley = ui.fonts_mut(|f| f.layout_job(job));
+    let (rect, response) = ui.allocate_exact_size(galley.size(), Sense::click());
+    if let Some(pos) = response.hover_pos() {
+        let i = galley.cursor_from_pos(pos - rect.min).index.0;
+        if let Some((_, url)) = targets.iter().find(|(r, _)| r.contains(&i)) {
+            ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+            if response.clicked() {
+                ui.ctx().open_url(egui::OpenUrl::new_tab(*url));
+            }
+        }
+    }
+    ui.painter().galley(rect.min, galley, p.ink);
 }
 
 /// The call's signature over the caret, the active parameter in amber.
@@ -2371,6 +2441,21 @@ mod tests {
 
     fn doc(text: &str) -> Document {
         Document::new(PathBuf::from("a.wowlua"), text)
+    }
+
+    #[test]
+    fn the_hover_s_web_links_are_found() {
+        let line = "See [warcraft.wiki.gg](https://warcraft.wiki.gg/wiki/API_CreateFrame) and [local](./a.md), a [b] alone.";
+        let found = links(line);
+        assert_eq!(found.len(), 1);
+        let (range, text, url) = &found[0];
+        assert_eq!(*text, "warcraft.wiki.gg");
+        assert_eq!(*url, "https://warcraft.wiki.gg/wiki/API_CreateFrame");
+        assert_eq!(
+            &line[range.clone()],
+            "[warcraft.wiki.gg](https://warcraft.wiki.gg/wiki/API_CreateFrame)"
+        );
+        assert!(links("a [b] c").is_empty());
     }
 
     #[test]
