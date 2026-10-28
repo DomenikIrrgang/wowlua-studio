@@ -96,6 +96,7 @@ pub struct SettingsState {
     pub view: View,
     pub query: String,
     pub deps: DepsState,
+    pub manifest: crate::manifest::ManifestState,
     info: Option<SettingsInfo>,
     asked: bool,
     updates: Option<UpdateCheck>,

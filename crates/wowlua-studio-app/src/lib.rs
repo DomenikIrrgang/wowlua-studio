@@ -16,6 +16,7 @@ pub mod game;
 pub mod jobs;
 pub mod keys;
 pub mod lsp;
+pub mod manifest;
 pub mod notify;
 pub mod pages;
 pub mod palette;
@@ -776,6 +777,7 @@ impl Studio {
         let ship_state = &mut self.ship;
         let mut ship_action = None;
         let settings_page = &mut self.settings_page;
+        let mut manifest_action = None;
         let platform = self.host.platform;
         settings_page.wowlua_version = self.host.wowlua_version.clone();
         let studio_settings = &mut self.settings;
@@ -966,7 +968,9 @@ impl Studio {
                     ship_action = Some(a);
                 }
             }
-            Panel::SettingsSections => settings::sections(ui, settings_page, &[]),
+            Panel::SettingsSections => {
+                settings::sections(ui, settings_page, &manifest::section_names())
+            }
             Panel::Settings => match settings_page.view {
                 settings::View::Studio(_) => {
                     if let Some(a) = settings::studio(
@@ -984,7 +988,45 @@ impl Studio {
                 settings::View::Dependencies => {
                     deps::show(ui, &mut settings_page.deps, workspace, system)
                 }
-                settings::View::Manifest(_) => {}
+                settings::View::Manifest(section) => {
+                    let version = settings_page.wowlua_version.clone();
+                    let (a, json) = manifest::show(
+                        ui,
+                        &mut settings_page.manifest,
+                        editors,
+                        workspace,
+                        system,
+                        section,
+                        &version,
+                    );
+                    if let Some(a) = a {
+                        manifest_action = Some(a);
+                    }
+                    // The json view: the manifest's document in the editor's
+                    // code, its checks the language server's.
+                    if let Some((rect, i)) = json {
+                        let diagnostics = lsp_state
+                            .diagnostics
+                            .get(&editors.tabs[i].canonical)
+                            .map_or(&[][..], Vec::as_slice);
+                        let cx = editor::view::Cx {
+                            system,
+                            workspace,
+                            mac,
+                            diagnostics,
+                            lenses: &[],
+                            tests_at: &[],
+                            coverage: None,
+                            breakpoints: &[],
+                            stopped: None,
+                            inline: &[],
+                        };
+                        let tab = &mut editors.tabs[i];
+                        ui.scope_builder(UiBuilder::new().max_rect(rect), |ui| {
+                            let _ = editor::view::single(ui, tab, &cx, i);
+                        });
+                    }
+                }
             },
             Panel::ProfileEditor => {
                 let live = world::session_profile(debug_state, world_state);
@@ -1064,6 +1106,25 @@ impl Studio {
         }
         if let Some(a) = settings_action {
             self.settings_action(a, ctx);
+        }
+        if let Some(a) = manifest_action {
+            match a {
+                manifest::Action::Save(path) => {
+                    if let Some(i) = self.editors.find(&path)
+                        && let Err(e) = self.editors.save(i, &*self.host.system)
+                    {
+                        let note = Notification::new(Kind::Error, "save", e);
+                        self.notify(note, ctx);
+                    }
+                }
+                manifest::Action::Go(manifest::Go::Dependencies) => {
+                    self.settings_page.view = settings::View::Dependencies;
+                    self.settings_page.deps.opened();
+                }
+                manifest::Action::Go(manifest::Go::Ship) => {
+                    self.queue(Command::ShowPage(Page::Ship))
+                }
+            }
         }
         world::flush_live(&mut self.world, &mut self.debug, &*self.host.system);
         self.pull_debug_settings(ctx);
