@@ -16,6 +16,8 @@ arboard = { version = "3.7", default-features = false }
 dirs = "7.0"
 eframe.workspace = true
 ignore = "0.4"
+# The local time a kept profile is named by (M7).
+jiff = "0.2"
 notify = "8.2"
 png = "0.18"
 portable-pty = "0.9"

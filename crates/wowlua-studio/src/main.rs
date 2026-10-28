@@ -10,6 +10,7 @@ mod lsp;
 #[cfg(target_os = "macos")]
 mod menu_bar;
 mod native;
+mod profiles;
 mod screenshot;
 mod store;
 mod terminal;

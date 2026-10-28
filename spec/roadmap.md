@@ -247,6 +247,30 @@ Artboard: profiler.
 - The in-game recordings of wowlua's dev window, found in the
   installation's SavedVariables (S011; the design adds this source first).
 
+Built 2026-10-28: recording the running session from the profiler's bar
+(wowlua's profiler on the session, its report's speedscope file kept in
+`.wowlua/profiles` named by the branch and the time); a test file or one
+test profiled from its lens, the tests page or a failure (each test file's
+profile kept, the first one shown); a speedscope file opened, another
+tool's read as the tree of its samples; the game's exported recordings
+from the installation's SavedVariables (each client folder and account,
+their locations in the source). The timeline: the newest 600 game frames
+(a game recording's seconds against its frame budget), a frame picked
+scopes the call tree and the flame graph to that frame. Views: functions by
+instructions, bytes, host time or calls with their share and, compared
+with another profile, the change; the call tree (the hottest path open);
+the flame graph (click to zoom); dispatches with their worst frame; a game
+recording's slow calls and hints. The function panel: its sums and per
+call, callers and callees, go to code, break on it (wowlua's breakpoint by
+definition, T495). wowlua's pull request #96 adds per-frame trees, the
+speedscope file that keeps the whole profile, the game's recordings in a
+library and breakpoints by definition (S057). The frame budget holds with
+3,000 functions, 20,000 nodes and 600 frame trees: 0.13 ms median. Not
+yet: functions named by the language server (a profile names them by
+where they are defined); a game recording's events and scripts beyond its
+dispatch roots, and its memory; the hints' explanations; checked by hand
+on macOS only; wowlua's pull request #96 is not released.
+
 ## M8: World profiles
 
 Artboard: world profiles.
@@ -307,7 +331,6 @@ change approved.
 
 Asked when their milestone starts; nothing here is decided yet.
 
-- Where launch configurations are kept (M6).
 - Installers and code signing per system (first release).
 - The GitHub app Studio signs in with, and who registers it (M12).
 - Whether "sign in with Claude" is possible for a third-party app (M14).
@@ -315,23 +338,7 @@ Asked when their milestone starts; nothing here is decided yet.
 ## Design changes owed
 
 Where Studio was decided to differ from the canvas, or the canvas is
-missing a part; the canvas is updated to match.
-
-- The start page's Blizzard's UI row: per flavor the installation has,
-  from wowlua's cache, with a download (S029).
-- The start page's installation row lists the installation's client
-  folders with their flavors; what's new is titled with the exact
-  version (S037).
-- The adopt form's folder has a `choose…` button (S039).
-- The frame stats in the status bar (S041).
-- The new-addon form's preview: `wowlua new`'s real output line
-  (`Created addon package in pull-timer`), `--check strict`, and the CI
-  workflow at `.github/workflows/ci.yml` (S036).
-- A recent workspace that can't be checked opens with `open` until the
-  editor (M3) can open its `wowlua.json`.
-- The debugger board's bar on two rows (the buttons; what runs and the
-  clock), the configuration form as a dialog over the page, the watch
-  panel's note that a watch calling a function runs it (S056).
+missing a part; the canvas is updated to match. None are owed now.
 
 Brought up to date on 2026-10-27: the panels board's presets
 for every page (S017), the palette's prompt (S018), the menus (S019), the
@@ -343,4 +350,9 @@ game (S011). On 2026-10-28: the tests board's explorer pinned by a
 function's lens, "the tests that call stateOf" with `show all` (S053). The game board's
 toolbar with the game's settings (window size, UI scale), the loading
 note reading the art once a Studio start, the frame tree's refresh
-(S055).
+(S055). On 2026-10-28 for M7: the start
+page's CI workflow path (S036), the debugger board's bar on two rows, the
+configuration as a dialog over the page and the watch panel's note (S056);
+the profile lenses and the tests page's "profile the selected test", the
+profiles kept in `.wowlua/profiles`, a game recording's timeline per second
+(S057).

@@ -144,6 +144,8 @@ fn to_debug(request: GameRequest) -> Request {
         GameRequest::World(script) => Request::World { script },
         GameRequest::FireEvent { event, args } => Request::FireEvent { event, args },
         GameRequest::SaveWorld => Request::SaveWorld,
+        GameRequest::ProfileStart => Request::ProfileStart,
+        GameRequest::ProfileStop => Request::ProfileStop,
         GameRequest::Input(input) => Request::Input {
             input: match input {
                 GameInput::Click { x, y, right } => protocol::Input::Click {

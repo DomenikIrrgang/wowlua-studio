@@ -79,6 +79,34 @@ pub(crate) fn first_error(session: &Session) -> Option<String> {
         })
 }
 
+/// After a profiled test file: its profile kept in the workspace (named by
+/// the branch and the file), sent on `kept`.
+fn keep_profiles(
+    root: &Path,
+    mapper: wowlua_test::ChunkMapper,
+    branch: Option<String>,
+    flavor: &str,
+    kept: std::sync::mpsc::Sender<(String, PathBuf)>,
+) -> Arc<wowlua_test::AfterTest> {
+    let (root, flavor) = (root.to_path_buf(), flavor.to_string());
+    let kept = std::sync::Mutex::new(kept);
+    Arc::new(move |vm: &mut wowlua_vm::Vm, rel: &str| {
+        let Some(p) = vm.stop_profiling() else { return };
+        let map = |chunk: &[u8]| mapper(&String::from_utf8_lossy(chunk));
+        let json = wowlua_debug::profile::speedscope(&p, &map, &format!("{rel} ({flavor})"));
+        let stem = rel.rsplit('/').next().unwrap_or(rel);
+        let name = match &branch {
+            Some(b) => format!("{b} {stem}"),
+            None => stem.to_string(),
+        };
+        if let Ok((path, _)) = crate::profiles::keep(&root, &name, &json)
+            && let Ok(kept) = kept.lock()
+        {
+            let _ = kept.send((rel.to_string(), path));
+        }
+    })
+}
+
 fn run(
     root: &Path,
     request: &TestRequest,
@@ -106,6 +134,13 @@ fn run(
         coverage: request.coverage,
         game_data: false,
     };
+    // Each test file profiled from its first line (S057).
+    let start_profile: &(dyn Fn(&mut wowlua_vm::Vm) + Sync) = &|vm: &mut wowlua_vm::Vm| {
+        let start = std::time::Instant::now();
+        vm.start_profiling(Box::new(move || start.elapsed().as_nanos() as u64));
+    };
+    let (profiled, profiles) = std::sync::mpsc::channel::<(String, PathBuf)>();
+    let branch = crate::native::repository_branch(root);
     let mut merged = Report::default();
     let mut settings = None;
     let mut out_dir: Option<PathBuf> = None;
@@ -186,10 +221,27 @@ fn run(
                 None
             };
             let camera = wowlua_test::camera::camera(project, build, flavor);
-            let mut suite =
-                runs::suite(project, build, flavor, blizzard_ui, switches, None, camera);
+            let instrument = request.profiler.then_some(start_profile);
+            let mut suite = runs::suite(
+                project,
+                build,
+                flavor,
+                blizzard_ui,
+                switches,
+                instrument,
+                camera,
+            );
             if let Some(profile) = &request.profile {
                 suite.profile = Some(profile.clone());
+            }
+            if request.profiler {
+                suite.after_file = Some(keep_profiles(
+                    root,
+                    wowlua_test::chunk_mapper(&suite),
+                    branch.clone(),
+                    flavor,
+                    profiled.clone(),
+                ));
             }
             let planned = build
                 .tests
@@ -210,6 +262,9 @@ fn run(
             let results = wowlua_test::run_with(&suite, &request.filters, threads, stop, &|r| {
                 tell(TestEvent::File(file_of(&package, r)))
             });
+            for (file, path) in profiles.try_iter() {
+                tell(TestEvent::Profiled { file, path });
+            }
             for result in &results {
                 if let Some(c) = &result.coverage {
                     merged.merge(c);

@@ -5,7 +5,9 @@
 //! by `;`: `open:<folder>`, `file:<file>`, `find:<query>`, `page:debug`, `theme:light`, `palette`,
 //! `about`, `new`, `adopt`, `stats`, `terminal`, `runtests`, `runcoverage`,
 //! `testtab:<tab>`, `coverage`, `gutter`, `rungame`, `gamepick:x,y`,
-//! `gamesize:WxH[@scale]`, `units`, `bp:file:line`, `debug`, `debugtest:file::test`.
+//! `gamesize:WxH[@scale]`, `units`, `bp:file:line`, `debug`, `debugtest:file::test`,
+//! `profile:<speedscope file>`, `profiletest:file::test`, `record:<seconds>`,
+//! `profview:<view>[@frame][#rank]`.
 
 use std::{
     path::PathBuf,
@@ -48,6 +50,43 @@ impl Screenshot {
                     None => (rest, None),
                 };
                 studio.debug_test_later(std::path::Path::new(file), test);
+                continue;
+            }
+            if let Some(file) = step.strip_prefix("profile:") {
+                studio.profile_later(std::path::Path::new(file));
+                continue;
+            }
+            if let Some(rest) = step.strip_prefix("profiletest:") {
+                let (file, test) = match rest.split_once("::") {
+                    Some((f, t)) => (f, Some(t)),
+                    None => (rest, None),
+                };
+                studio.profile_test_later(std::path::Path::new(file), test);
+                continue;
+            }
+            if let Some(seconds) = step.strip_prefix("record:").and_then(|s| s.parse().ok()) {
+                studio.record_later(seconds);
+                continue;
+            }
+            if let Some(rest) = step.strip_prefix("profview:") {
+                let (rest, rank) = match rest.split_once('#') {
+                    Some((r, n)) => (r, n.parse().ok()),
+                    None => (rest, None),
+                };
+                let (view, frame) = match rest.split_once('@') {
+                    Some((v, f)) => (v, f.parse().ok()),
+                    None => (rest, None),
+                };
+                use wowlua_studio_app::profiler::View;
+                let view = match view {
+                    "tree" => View::Tree,
+                    "flame" => View::Flame,
+                    "dispatches" => View::Dispatches,
+                    "slow" => View::Slow,
+                    "hints" => View::Hints,
+                    _ => View::Functions,
+                };
+                studio.profile_view(view, frame, rank);
                 continue;
             }
             if step == "debug" {

@@ -156,6 +156,13 @@ pub enum Event {
         session: u64,
         event: GameEvent,
     },
+    /// A profile read (S057).
+    Profile {
+        path: PathBuf,
+        result: Result<Profile, String>,
+    },
+    /// The game's recordings read.
+    GameRecordings(Result<Vec<GameRecordings>, String>),
 }
 
 /// What the game page asks a running session (S055): the debugger's UI
@@ -239,6 +246,11 @@ pub enum GameRequest {
     },
     /// The running world as a world profile's JSON.
     SaveWorld,
+    // The profiler's (S057).
+    /// Starts profiling the session (a fresh profile).
+    ProfileStart,
+    /// Stops it: wowlua's report, its `speedscope` the whole profile.
+    ProfileStop,
 }
 
 /// A line breakpoint (S056): its line from 1, and a condition, a hit
@@ -365,6 +377,9 @@ pub struct TestRequest {
     pub coverage: bool,
     pub update_snapshots: bool,
     pub profile: Option<String>,
+    /// Profile each test file: kept in the workspace's
+    /// `.wowlua/profiles` (S057).
+    pub profiler: bool,
 }
 
 /// What a test run tells as it goes.
@@ -376,6 +391,11 @@ pub enum TestEvent {
     Status(String),
     /// A test file's results.
     File(TestFile),
+    /// A test file's profile, kept at `path` (a profiling run).
+    Profiled {
+        file: String,
+        path: PathBuf,
+    },
     Done(TestDone),
 }
 
@@ -441,6 +461,67 @@ pub struct TestDone {
     /// Snapshots and screenshots written, updated, removed.
     pub snapshots: (usize, usize, usize),
     pub seconds: f64,
+}
+
+/// A profile (S057), as wowlua keeps it in a speedscope file: its
+/// functions and dispatches, the call tree with each node's calls and own
+/// costs (instructions, bytes allocated, host nanoseconds), and the game
+/// frames with the trees of the newest.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Profile {
+    pub name: String,
+    pub keys: Vec<ProfileKey>,
+    /// The tree, the root first; a parent before its children.
+    pub nodes: Vec<ProfileNode>,
+    pub frames: Vec<ProfileFrame>,
+}
+
+/// A function (its source and the line it is defined on) or a dispatch
+/// (its kind: `event`, `script`, `update`, `timer`, `frame`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ProfileKey {
+    pub name: String,
+    pub file: Option<String>,
+    pub line: u32,
+    pub kind: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ProfileNode {
+    pub key: u32,
+    pub parent: u32,
+    pub calls: u64,
+    /// Instructions, bytes allocated, host nanoseconds.
+    pub cost: [u64; 3],
+}
+
+/// A game frame: its cost, and the nodes that ran in it with their calls
+/// and costs there (empty when its tree was not kept).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ProfileFrame {
+    pub name: String,
+    pub cost: [u64; 3],
+    pub nodes: Vec<(u32, u64, [u64; 3])>,
+}
+
+/// A profile kept in the workspace (`.wowlua/profiles`): its file, its
+/// name and when it was written (Unix seconds).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SavedProfile {
+    pub path: PathBuf,
+    pub name: String,
+    pub modified: u64,
+}
+
+/// The recordings the dev window exported in the game: a client folder's
+/// account, its SavedVariables file, and each recording (wowlua's export
+/// format, its locations in the source).
+#[derive(Clone, Debug, PartialEq)]
+pub struct GameRecordings {
+    pub client: String,
+    pub account: String,
+    pub path: PathBuf,
+    pub recordings: Vec<serde_json::Value>,
 }
 
 /// Covered and all, of a kind.
@@ -680,6 +761,11 @@ pub trait System {
     fn exists(&self, path: &Path) -> bool;
     /// The system's folder picker; `None` when cancelled.
     fn pick_folder(&self, title: &str) -> Option<PathBuf>;
+    /// The system's file picker, files with these endings (a speedscope
+    /// file, S057).
+    fn pick_file(&self, _title: &str, _endings: &[&str]) -> Option<PathBuf> {
+        None
+    }
     /// The folder's files and folders, sorted; hidden ones and build output
     /// left out.
     fn list(&self, dir: &Path) -> Vec<Entry>;
@@ -816,6 +902,27 @@ pub trait System {
     }
     /// Asks the running session (→ [`GameEvent::Reply`] with `id`).
     fn game_request(&self, _id: u64, _request: GameRequest) {}
+    /// The profiles kept in the workspace, the newest first (S057).
+    fn profiles(&self, _root: &Path) -> Vec<SavedProfile> {
+        Vec::new()
+    }
+    /// Reads a speedscope file as a profile (wowlua's, or another tool's
+    /// as the tree of its samples; → [`Event::Profile`]).
+    fn profile_read(&self, _path: &Path) {}
+    /// Keeps a recorded profile (a session's report's `speedscope`) in the
+    /// workspace, named `name` and the time: its file and the profile.
+    fn profile_keep(
+        &self,
+        _root: &Path,
+        _name: &str,
+        _speedscope: &serde_json::Value,
+    ) -> Result<(PathBuf, Profile), String> {
+        Err("profiles cannot be kept here".into())
+    }
+    /// Reads the recordings exported in the game for the workspace's
+    /// addon, in the installation's SavedVariables (→
+    /// [`Event::GameRecordings`]).
+    fn game_recordings(&self, _root: &Path) {}
     /// Ends the running session.
     fn game_stop(&self) {}
     /// The running session's screen, drawn on the UI's GPU device.
