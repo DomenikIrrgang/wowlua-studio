@@ -38,7 +38,7 @@ pub fn start(
             });
         });
     if let Err(e) = spawned {
-        eprintln!("wowlua studio: cannot start the test run: {e}");
+        crate::log::line(&format!("cannot start the test run: {e}"));
     }
 }
 

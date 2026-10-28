@@ -44,6 +44,8 @@ pub struct NativeSystem {
     gamedata: std::sync::Arc<crate::gamedata::GameData>,
     /// The ship page's dev loop (S061).
     dev: RefCell<crate::ship::Dev>,
+    /// Set to stop a GitHub sign-in under way (S062).
+    github_stop: RefCell<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl NativeSystem {
@@ -66,6 +68,7 @@ impl NativeSystem {
             game_screen: RefCell::new(None),
             gamedata: std::sync::Arc::default(),
             dev: RefCell::default(),
+            github_stop: RefCell::default(),
         }
     }
 
@@ -246,7 +249,7 @@ impl System for NativeSystem {
         let watcher = watcher.and_then(|mut w| w.watch(root, RecursiveMode::Recursive).map(|()| w));
         match watcher {
             Ok(w) => *self.watcher.borrow_mut() = Some(w),
-            Err(e) => eprintln!("wowlua studio: cannot watch {}: {e}", root.display()),
+            Err(e) => crate::log::line(&format!("cannot watch {}: {e}", root.display())),
         }
     }
 
@@ -347,7 +350,7 @@ impl System for NativeSystem {
             command.arg(path);
         }
         if let Err(e) = command.spawn() {
-            eprintln!("wowlua studio: cannot open a new window: {e}");
+            crate::log::line(&format!("cannot open a new window: {e}"));
         }
     }
 
@@ -603,8 +606,59 @@ impl System for NativeSystem {
             "xdg-open"
         };
         if let Err(e) = Command::new(opener).arg(path).spawn() {
-            eprintln!("wowlua studio: cannot show {}: {e}", path.display());
+            crate::log::line(&format!("cannot show {}: {e}", path.display()));
         }
+    }
+
+    fn settings_info(&self) {
+        self.spawn(|| Event::Settings(crate::settings::info()));
+    }
+
+    fn log_file(&self) -> Option<PathBuf> {
+        crate::log::path()
+    }
+
+    fn clear_check_cache(&self) {
+        crate::settings::clear_check_cache();
+    }
+
+    fn clear_art_cache(&self) {
+        crate::settings::clear_art_cache();
+    }
+
+    fn check_updates(&self) {
+        self.spawn(|| Event::Updates(crate::settings::check_updates()));
+    }
+
+    fn refresh_ui(&self, flavor: &str) {
+        if let Err(e) = wowlua_test::forget_ui_source(flavor) {
+            crate::log::line(&e);
+        }
+        self.download_ui(flavor);
+    }
+
+    fn github_sign_in(&self, on: bool) {
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let old = std::mem::replace(&mut *self.github_stop.borrow_mut(), stop.clone());
+        old.store(true, std::sync::atomic::Ordering::Relaxed);
+        if !on {
+            crate::settings::github_sign_out();
+            return;
+        }
+        let send = std::sync::Mutex::new(self.send.clone());
+        let ctx = self.ctx.clone();
+        std::thread::spawn(move || {
+            crate::settings::github_sign_in(stop, |event| {
+                if let Ok(send) = send.lock() {
+                    let _ = send.send(Event::Github(event));
+                }
+                ctx.request_repaint();
+            });
+        });
+    }
+
+    fn claude_key(&self, key: Option<String>) {
+        crate::settings::claude_key(key.as_deref());
     }
 
     fn deps_read(&self, dir: &Path) {

@@ -96,7 +96,7 @@ fn spawn(name: &str, work: impl FnOnce() + Send + 'static) {
         .stack_size(64 << 20)
         .spawn(move || crate::tests::user_initiated(work));
     if let Err(e) = spawned {
-        eprintln!("wowlua studio: cannot start {name}: {e}");
+        crate::log::line(&format!("cannot start {name}: {e}"));
     }
 }
 
