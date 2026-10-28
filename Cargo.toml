@@ -34,24 +34,27 @@ wowlua-studio-app = { path = "crates/wowlua-studio-app" }
 # hosted in process, with the event log, the inspector and the units (M5).
 # The debugger page's pause, hit counts, stop details, clock, the world as a
 # profile and the frame hook at a stop (M6).
-# Until it is released: wowlua's main after pull request #98 (on 0.13.6).
+# Until it is released: wowlua's main after pull request #101 (on 0.13.6).
 # #96: the profiler's per-frame call trees, the speedscope file that keeps the
 # whole profile, the game's recordings in a library and function breakpoints
 # by definition (M7). #97: watches that only read, Blizzard's code stepped
 # into while a session runs, Blizzard's frames marked (before M8). #98: the
-# renderer writes through a staging belt (S059).
-wowlua-debug = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "98343794d27162bd116b0f84f6c2a063b11ce17b" }
-wowlua-diagnostics = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "98343794d27162bd116b0f84f6c2a063b11ce17b" }
-wowlua-engine = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "98343794d27162bd116b0f84f6c2a063b11ce17b" }
-wowlua-render = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "98343794d27162bd116b0f84f6c2a063b11ce17b" }
-wowlua-vm = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "98343794d27162bd116b0f84f6c2a063b11ce17b" }
-wowlua-driver = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "98343794d27162bd116b0f84f6c2a063b11ce17b" }
-wowlua-flavors = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "98343794d27162bd116b0f84f6c2a063b11ce17b" }
-wowlua-manifest = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "98343794d27162bd116b0f84f6c2a063b11ce17b" }
-wowlua-test = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "98343794d27162bd116b0f84f6c2a063b11ce17b" }
-wowlua-lsp = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "98343794d27162bd116b0f84f6c2a063b11ce17b" }
-wowlua-span = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "98343794d27162bd116b0f84f6c2a063b11ce17b" }
-wowlua-syntax = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "98343794d27162bd116b0f84f6c2a063b11ce17b" }
+# renderer writes through a staging belt (S059). #99: unit:update, /wl
+# snapshot and its library (M8). #100: camelot's client in _forever_. #101:
+# a profile's trained spells, its nameplates after the login (M8).
+wowlua-casc = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "20fe6292b76e82080558bd785cda035eaf206176" }
+wowlua-debug = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "20fe6292b76e82080558bd785cda035eaf206176" }
+wowlua-diagnostics = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "20fe6292b76e82080558bd785cda035eaf206176" }
+wowlua-engine = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "20fe6292b76e82080558bd785cda035eaf206176" }
+wowlua-render = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "20fe6292b76e82080558bd785cda035eaf206176" }
+wowlua-vm = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "20fe6292b76e82080558bd785cda035eaf206176" }
+wowlua-driver = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "20fe6292b76e82080558bd785cda035eaf206176" }
+wowlua-flavors = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "20fe6292b76e82080558bd785cda035eaf206176" }
+wowlua-manifest = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "20fe6292b76e82080558bd785cda035eaf206176" }
+wowlua-test = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "20fe6292b76e82080558bd785cda035eaf206176" }
+wowlua-lsp = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "20fe6292b76e82080558bd785cda035eaf206176" }
+wowlua-span = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "20fe6292b76e82080558bd785cda035eaf206176" }
+wowlua-syntax = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "20fe6292b76e82080558bd785cda035eaf206176" }
 
 [workspace.lints.rust]
 # Denied, not forbidden: one macOS module may allow it (decision S022).

@@ -51,7 +51,9 @@ roadmap until the canvas has it.
 
 `WOWLUA_STUDIO_SCREENSHOT=out.png` draws a few frames, saves the window as
 a PNG and quits; `WOWLUA_STUDIO_SCREENSHOT_RUN="open:<folder>;page:debug;theme:light;palette"`
-runs commands first (`new` and `adopt` show the start page's forms). `WOWLUA_STUDIO_DATA=<dir>` keeps settings and layouts
+runs commands first (`new` and `adopt` show the start page's forms;
+`world:<profile>[/<part>][@json]`, `spells:<query>` and
+`worldlive:<profile>|<path>=<json>|…` the world profiles page). `WOWLUA_STUDIO_DATA=<dir>` keeps settings and layouts
 there instead of the user's folder.
 
 ## wowlua

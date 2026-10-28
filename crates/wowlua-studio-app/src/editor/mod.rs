@@ -65,6 +65,9 @@ pub struct Tab {
     /// Opened to look at (from the search panel): the next preview
     /// replaces it, an edit keeps it.
     pub preview: bool,
+    /// Held by another page (a world profile's form, S060), not shown in
+    /// the tab bar until the file is opened.
+    pub hidden: bool,
     /// The path as the language server names it (links resolved).
     pub canonical: PathBuf,
     /// The language server's hover where the pointer rests.
@@ -137,12 +140,31 @@ pub struct Editors {
 }
 
 impl Editors {
+    /// The document of `path`, held without showing a tab when it is not
+    /// open: its index.
+    pub fn held(&mut self, path: &Path, system: &dyn System) -> Result<usize, String> {
+        if let Some(i) = self.find(path) {
+            return Ok(i);
+        }
+        let text = system.read_file(path)?;
+        let mut tab = Tab::new(Document::new(path.to_path_buf(), &text));
+        tab.hidden = true;
+        tab.canonical = system.canonical(path);
+        self.tabs.push(tab);
+        Ok(self.tabs.len() - 1)
+    }
+
+    /// Whether any tab is shown.
+    pub fn shown(&self) -> bool {
+        self.tabs.iter().any(|t| !t.hidden)
+    }
+
     pub fn active(&self) -> Option<&Tab> {
-        self.tabs.get(self.active)
+        self.tabs.get(self.active).filter(|t| !t.hidden)
     }
 
     pub fn active_mut(&mut self) -> Option<&mut Tab> {
-        self.tabs.get_mut(self.active)
+        self.tabs.get_mut(self.active).filter(|t| !t.hidden)
     }
 
     pub fn find(&self, path: &Path) -> Option<usize> {
@@ -152,6 +174,7 @@ impl Editors {
     /// Opens `path`, or shows it when it is open.
     pub fn open(&mut self, path: &Path, system: &dyn System) -> Result<(), String> {
         if let Some(i) = self.find(path) {
+            self.tabs[i].hidden = false;
             self.active = i;
             self.focus = true;
             return Ok(());
@@ -168,6 +191,7 @@ impl Editors {
     /// Opens `path` to look at: in the preview tab, which it replaces.
     pub fn preview(&mut self, path: &Path, system: &dyn System) -> Result<(), String> {
         if let Some(i) = self.find(path) {
+            self.tabs[i].hidden = false;
             self.active = i;
             return Ok(());
         }
@@ -285,6 +309,7 @@ impl Tab {
             clash: None,
             reveal: true,
             preview: false,
+            hidden: false,
             canonical: PathBuf::new(),
             hover: None,
             completion: None,

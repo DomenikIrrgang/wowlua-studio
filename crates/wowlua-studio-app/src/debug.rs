@@ -455,6 +455,12 @@ impl DebugState {
     }
 
     /// The request to send: a step, the clock, the world (the bar's).
+    /// Saves the running world as the profile `path` (its JSON, when
+    /// the session answers).
+    pub fn save_world(&mut self, system: &dyn System, path: PathBuf) {
+        self.ask(system, Asked::SaveWorld(path), GameRequest::SaveWorld);
+    }
+
     pub fn send(&mut self, system: &dyn System, request: GameRequest) {
         self.ask(system, Asked::Plain, request);
     }

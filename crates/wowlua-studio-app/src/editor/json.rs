@@ -256,7 +256,7 @@ pub fn place(text: &str, offset: usize) -> Place {
 }
 
 /// `node`, its `$ref` followed (`#/definitions/…`, `#/$defs/…`).
-fn resolve<'a>(root: &'a Json, node: &'a Json) -> &'a Json {
+pub(crate) fn resolve<'a>(root: &'a Json, node: &'a Json) -> &'a Json {
     let mut node = node;
     for _ in 0..16 {
         let Some(r) = node.get("$ref").and_then(Json::as_str) else {
@@ -275,7 +275,7 @@ fn resolve<'a>(root: &'a Json, node: &'a Json) -> &'a Json {
 
 /// The schemas a value may follow: `node` and those its `anyOf`, `oneOf`
 /// and `allOf` name.
-fn alternatives<'a>(root: &'a Json, node: &'a Json) -> Vec<&'a Json> {
+pub(crate) fn alternatives<'a>(root: &'a Json, node: &'a Json) -> Vec<&'a Json> {
     let node = resolve(root, node);
     let mut out = vec![node];
     for k in ["anyOf", "oneOf", "allOf"] {

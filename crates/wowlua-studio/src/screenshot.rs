@@ -7,7 +7,8 @@
 //! `testtab:<tab>`, `coverage`, `gutter`, `rungame`, `gamepick:x,y`,
 //! `gamesize:WxH[@scale]`, `units`, `bp:file:line`, `debug`, `debugtest:file::test`,
 //! `profile:<speedscope file>`, `profiletest:file::test`, `record:<seconds>`,
-//! `profview:<view>[@frame][#rank]`.
+//! `profview:<view>[@frame][#rank]`, `world:<profile>[/<part>][@json]`, `spells:<query>`,
+//! `worldlive:<profile>|<path>=<json>|…`.
 
 use std::{
     path::PathBuf,
@@ -123,6 +124,32 @@ impl Screenshot {
                 .and_then(|(x, y)| Some((x.parse().ok()?, y.parse().ok()?)))
             {
                 studio.game_pick(x, y);
+                continue;
+            }
+            if let Some(rest) = step.strip_prefix("worldlive:") {
+                let mut parts = rest.split('|');
+                let profile = parts.next().unwrap_or_default();
+                let edits = parts
+                    .filter_map(|e| e.split_once('='))
+                    .map(|(p, v)| (p.to_owned(), v.to_owned()))
+                    .collect();
+                studio.world_live_later(profile, edits);
+                continue;
+            }
+            if let Some(query) = step.strip_prefix("spells:") {
+                studio.world_search(query);
+                continue;
+            }
+            if let Some(rest) = step.strip_prefix("world:") {
+                let (rest, json) = match rest.strip_suffix("@json") {
+                    Some(r) => (r, true),
+                    None => (rest, false),
+                };
+                let (profile, part) = match rest.split_once('/') {
+                    Some((p, part)) => (p, Some(part)),
+                    None => (rest, None),
+                };
+                studio.world_show(profile, part, json);
                 continue;
             }
             if step == "runtests" || step == "runcoverage" {

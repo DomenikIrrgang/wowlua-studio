@@ -293,6 +293,26 @@ Artboard: world profiles.
 - Editing a unit in the live world (moved from M6, S058): the profile
   editor's units, applied to the running session.
 
+Built (S060): the profiles and their 22 parts (wowlua's schema); a form for
+each over the file's JSON, the same document as the json view and an editor
+tab, a form's edit changing only its value's text; the designed forms
+(character, group and units, auras, spells, action bars, equipment, bags,
+SavedVariables) and one built from the schema for the others; the checks as
+you type (E4400, E4401 with a fix for a misspelt part, E4402 from the
+language server); the installation's art (class icons from the class sheet,
+spell and item icons) and spells; the spells part's class spells to check as
+trained (wowlua's `trained`, T500: the client's tables, learned from a
+trainer or by level); the live world (each edit a `mock` request to a
+session started in the profile: wowlua's `unit:update`, T497; what was
+applied), a snapshot from the game (wowlua's `/wl snapshot`, T498) and
+SavedVariables imported; where a profile is used, its tests run, a session
+started in it. With wowlua's fixes found on the way: camelot's client in
+`_forever_` (T499) and a profile's nameplates after the login. The frame
+budget holds with 40 units and 120 class spells: 0.43 ms median. Not yet:
+completion and hover in the json view (typing, selection and undo work);
+the spellbook's frames from `trained` (wowlua answers them from a recorded
+spellbook); checked by hand on macOS only.
+
 ## M9: Ship
 
 Artboard: ship.
@@ -359,6 +379,9 @@ and tests it on Windows and Linux (S058). On each, with SuuUI's workspace:
    breakpoint off; `/reload`.
 7. **M7**: record the session and stop; pick a spike; profile a test from
    its lens; open a speedscope file.
+8. **M8**: open a profile, edit a unit in its form and see the json view
+   follow; the class and spell icons from the installation; start a session
+   in the profile and change a unit's distance live; import a snapshot.
 
 ## Open questions
 
