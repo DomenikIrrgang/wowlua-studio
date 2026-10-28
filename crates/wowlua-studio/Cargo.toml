@@ -46,6 +46,10 @@ wowlua-syntax.workspace = true
 # The test runner with the renderer's camera, for screenshot tests (M4).
 wowlua-test = { workspace = true, features = ["native", "camera"] }
 
+[dev-dependencies]
+# The ship page's tests: repositories in temporary folders (M9).
+tempfile = "3"
+
 # The system menu bar and the window buttons in Studio's bar (S013, S022);
 # a test run kept from App Nap (S054).
 [target.'cfg(target_os = "macos")'.dependencies]

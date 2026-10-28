@@ -15,8 +15,8 @@ use wowlua_driver::scaffold::{InitRequest, NewRequest};
 use wowlua_manifest::model::{CheckMode, PackageKind};
 use wowlua_studio_app::system::{
     Adopt, AdoptPreview, ClientFolder, Entry, Event, FileChange, Found, FoundIn, Highlight, Hit,
-    Installation, MOST_FOUND, Member, NewAddon, Opened, PackageNames, Search, Syntax, System,
-    UiState, Workspace,
+    Installation, MOST_FOUND, Member, NewAddon, Opened, PackageNames, Search, ShipEvent, Syntax,
+    System, UiState, Workspace,
 };
 
 /// Folders the explorer and the watcher leave out: build output and the
@@ -42,10 +42,16 @@ pub struct NativeSystem {
     game_screen: RefCell<Option<crate::game::Screen>>,
     /// The installation's art and spells (the world profiles', S060).
     gamedata: std::sync::Arc<crate::gamedata::GameData>,
+    /// The ship page's dev loop (S061).
+    dev: RefCell<crate::ship::Dev>,
 }
 
 impl NativeSystem {
     pub fn new(ctx: &egui::Context) -> Self {
+        // Someone is in front of Studio to answer the OS credential store's
+        // dialogs: the ship page reads and saves `wowlua login`'s tokens
+        // (wowlua T501, S061).
+        wowlua_driver::credentials::allow_dialogs();
         let (send, events) = channel();
         NativeSystem {
             send,
@@ -59,6 +65,7 @@ impl NativeSystem {
             game_frames: RefCell::default(),
             game_screen: RefCell::new(None),
             gamedata: std::sync::Arc::default(),
+            dev: RefCell::default(),
         }
     }
 
@@ -76,6 +83,21 @@ impl NativeSystem {
             let _ = send.send(work());
             ctx.request_repaint();
         });
+    }
+
+    /// Where a job of the ship page tells its news: each wakes Studio up.
+    fn ship_tell<E: Send + 'static>(
+        &self,
+        wrap: impl Fn(E) -> ShipEvent + Send + Sync + 'static,
+    ) -> crate::ship::Tell<E> {
+        let send = std::sync::Mutex::new(self.send.clone());
+        let ctx = self.ctx.clone();
+        std::sync::Arc::new(move |e| {
+            if let Ok(send) = send.lock() {
+                let _ = send.send(Event::Ship(wrap(e)));
+            }
+            ctx.request_repaint();
+        })
     }
 
     fn post(&self, event: Event) {
@@ -233,7 +255,7 @@ impl System for NativeSystem {
     }
 
     fn set_installation(&self, path: &Path) {
-        if let Err(e) = write_wow_path(path) {
+        if let Err(e) = wowlua_driver::install::set_wow_path(path) {
             self.post(Event::Installation(Installation {
                 problem: Some(format!(
                     "could not keep the installation in wowlua's config: {e}"
@@ -572,6 +594,61 @@ impl System for NativeSystem {
         crate::world::saved_variables(path)
     }
 
+    fn reveal(&self, path: &Path) {
+        let opener = if cfg!(target_os = "macos") {
+            "open"
+        } else if cfg!(windows) {
+            "explorer"
+        } else {
+            "xdg-open"
+        };
+        if let Err(e) = Command::new(opener).arg(path).spawn() {
+            eprintln!("wowlua studio: cannot show {}: {e}", path.display());
+        }
+    }
+
+    fn ship_read(&self, root: &Path) {
+        let root = root.to_path_buf();
+        self.spawn(move || Event::Ship(ShipEvent::Read(Box::new(crate::ship::read(&root)))));
+    }
+
+    fn ship_tokens(&self, targets: Vec<wowlua_studio_app::system::ShipTarget>) {
+        self.spawn(move || Event::Ship(ShipEvent::Tokens(crate::ship::tokens(&targets))));
+    }
+
+    fn ship_token(&self, kind: &str, token: Option<String>) {
+        let kind = kind.to_owned();
+        self.spawn(move || {
+            let result = crate::ship::token(&kind, token.as_deref());
+            Event::Ship(ShipEvent::TokenSaved { kind, result })
+        });
+    }
+
+    fn ship_build(&self, root: &Path, job: u64, build: wowlua_studio_app::system::ShipBuild) {
+        let tell = self.ship_tell(move |event| ShipEvent::Build { job, event });
+        crate::ship::build(root.to_path_buf(), build, tell);
+    }
+
+    fn ship_dev(&self, root: &Path, dev: Option<wowlua_studio_app::system::ShipInstall>) {
+        match dev {
+            Some(how) => {
+                let tell = self.ship_tell(ShipEvent::Dev);
+                self.dev.borrow_mut().start(root.to_path_buf(), how, tell);
+            }
+            None => self.dev.borrow_mut().stop(),
+        }
+    }
+
+    fn ship_publish(&self, root: &Path, job: u64, publish: wowlua_studio_app::system::ShipPublish) {
+        let tell = self.ship_tell(move |event| ShipEvent::Publish { job, event });
+        crate::ship::publish(root.to_path_buf(), publish, tell);
+    }
+
+    fn ship_tag(&self, root: &Path, tag: wowlua_studio_app::system::TagPush) {
+        let root = root.to_path_buf();
+        self.spawn(move || Event::Ship(ShipEvent::Tagged(crate::ship::tag_and_push(&root, &tag))));
+    }
+
     fn game_screen(&self) -> Option<wowlua_studio_app::system::GameScreen> {
         let frames = self.game_frames.borrow().clone();
         self.game_screen.borrow_mut().as_mut()?.show(&frames)
@@ -854,33 +931,6 @@ fn installation() -> Installation {
             }),
         },
     }
-}
-
-/// Keeps the installation in `wow.path` of wowlua's config (S028), leaving
-/// the rest of the file as it is.
-fn write_wow_path(path: &Path) -> std::io::Result<()> {
-    let home = wowlua_driver::install::wowlua_home()
-        .ok_or_else(|| std::io::Error::other("no home folder for wowlua's config"))?;
-    let file = home.join("config.json");
-    let mut config: serde_json::Value = std::fs::read_to_string(&file)
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or_else(|| serde_json::json!({}));
-    let object = config
-        .as_object_mut()
-        .ok_or_else(|| std::io::Error::other("~/.wowlua/config.json is not a JSON object"))?;
-    let wow = object.entry("wow").or_insert_with(|| serde_json::json!({}));
-    let wow = wow
-        .as_object_mut()
-        .ok_or_else(|| std::io::Error::other("`wow` in ~/.wowlua/config.json is not an object"))?;
-    wow.insert(
-        "path".into(),
-        serde_json::Value::String(path.to_string_lossy().into_owned()),
-    );
-    std::fs::create_dir_all(&home)?;
-    let mut text = serde_json::to_string_pretty(&config).map_err(std::io::Error::other)?;
-    text.push('\n');
-    std::fs::write(&file, text)
 }
 
 fn new_addon(request: &NewAddon) -> Result<PathBuf, String> {

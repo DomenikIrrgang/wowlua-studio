@@ -168,6 +168,7 @@ fn parse(kind: &Kind, text: &str) -> Result<Option<Json>, ()> {
                 .collect(),
         ),
         Kind::Json => serde_json::from_str(t).map_err(|_| ())?,
+        Kind::Choice(_) => Json::String(t.to_string()),
     }))
 }
 
@@ -190,6 +191,20 @@ fn input(
 
 /// A field without its label.
 fn field(ui: &mut Ui, cx: &mut Cx<'_>, path: Vec<Key>, kind: Kind, width: f32, hint: &str) {
+    if let Kind::Choice(values) = &kind {
+        let now = shown(at(cx.root, &path));
+        let mut list: Vec<String> = vec!["(none)".into()];
+        list.extend(values.iter().cloned());
+        if !now.is_empty() && !list.contains(&now) {
+            list.push(now.clone());
+        }
+        let mut index = list.iter().position(|o| o == &now).unwrap_or(0);
+        let opts: Vec<(&str, bool)> = list.iter().map(|o| (o.as_str(), true)).collect();
+        if forms::select(ui, &path_of(&path), &opts, &mut index, width) {
+            cx.set(path, (index > 0).then(|| Json::String(list[index].clone())));
+        }
+        return;
+    }
     if kind == Kind::Bool {
         let mut on = at(cx.root, &path).and_then(Json::as_bool).unwrap_or(false);
         if forms::checkbox(ui, &mut on, "", None) {

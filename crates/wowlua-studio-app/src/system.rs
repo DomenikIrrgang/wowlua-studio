@@ -175,6 +175,8 @@ pub enum Event {
     Spells(String, Vec<SpellRow>),
     /// A class's spells from the client: the class, its spells.
     ClassSpells(String, Vec<ClassSpell>),
+    /// The ship page's news (S061).
+    Ship(ShipEvent),
 }
 
 /// What the game page asks a running session (S055): the debugger's UI
@@ -578,6 +580,327 @@ pub struct ClassSpell {
     pub level: u32,
     pub line: String,
     pub icon: Option<u32>,
+}
+
+/// A build profile: a built-in one (`dev`, `release`, `test`) or the
+/// manifest's (S061).
+#[derive(Clone, Debug, PartialEq)]
+pub struct BuildProfile {
+    pub name: String,
+    pub builtin: bool,
+    /// Its `inherits` chain, base first, itself last.
+    pub chain: Vec<String>,
+    /// Every setting as wowlua resolves it, by `wowlua.json`'s keys.
+    pub effective: serde_json::Value,
+    /// Why it does not resolve.
+    pub problem: Option<String>,
+}
+
+/// The package's AddOn folder in a client folder of the installation.
+#[derive(Clone, Debug, PartialEq)]
+pub struct InstallFolder {
+    /// The client folder (`_retail_`).
+    pub client: String,
+    pub path: PathBuf,
+    pub state: InstallState,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum InstallState {
+    Absent,
+    /// A link to a build folder.
+    Linked(PathBuf),
+    /// Copied by wowlua: what changed since (none: no record, an older
+    /// wowlua's install).
+    Copied(Option<Vec<InstallChange>>),
+    /// A folder wowlua did not install (E4331 unless replaced anyway).
+    Foreign,
+}
+
+/// A file of an installed folder that is not what wowlua copied (wowlua
+/// T502).
+#[derive(Clone, Debug, PartialEq)]
+pub struct InstallChange {
+    /// Its path in the AddOn folder, with `/`.
+    pub path: String,
+    pub kind: ChangeKind,
+    /// When it was last written (ms since the epoch), while it is there.
+    pub modified: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ChangeKind {
+    Changed { was: u64, now: u64 },
+    Added { size: u64 },
+    Removed,
+}
+
+/// A profile's build output (`dist/<profile>/<Addon>`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct BuiltOutput {
+    pub profile: String,
+    pub dir: PathBuf,
+    /// Its files with their sizes, by path with `/`.
+    pub files: Vec<(String, u64)>,
+    /// When it was written (ms since the epoch).
+    pub modified: Option<u64>,
+}
+
+/// A publish target of the manifest.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ShipTarget {
+    pub name: String,
+    /// `curseforge`, `wago`, `wowinterface`, `github` or `registry`: the
+    /// token's kind (`wowlua login <kind>`).
+    pub kind: String,
+    pub project: String,
+    /// The build profile it gets.
+    pub profile: String,
+    /// The environment variable of its token, when the manifest names one.
+    pub token_env: Option<String>,
+    pub enabled: bool,
+}
+
+/// What the ship page shows of the package (→ [`ShipEvent::Read`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ShipFacts {
+    /// A workspace without a package of its own: its addons (name and
+    /// folder) to pick one from; the other facts are empty.
+    pub members: Vec<(String, PathBuf)>,
+    /// The AddOn folder's name.
+    pub addon: String,
+    pub version: String,
+    pub manifest: PathBuf,
+    /// The build output folder (`build.out`).
+    pub out: PathBuf,
+    pub profiles: Vec<BuildProfile>,
+    pub outputs: Vec<BuiltOutput>,
+    pub installs: Vec<InstallFolder>,
+    /// Why the installation's folders are not known.
+    pub install_problem: Option<String>,
+    pub targets: Vec<ShipTarget>,
+    /// `release`, `beta` or `alpha`, from the version.
+    pub release: String,
+    /// The repository's root, its branch and the remote it pushes to.
+    pub repo: Option<PathBuf>,
+    pub branch: Option<String>,
+    pub remote: Option<String>,
+    /// The working tree has no changes (a publish needs a clean tree).
+    pub clean: bool,
+    /// The tag this version gets (`v1.2.0`, or `1.2.0` where the
+    /// repository's tags have no `v`), and whether it exists: on `HEAD`
+    /// (`true`) or another commit.
+    pub tag: String,
+    pub tag_at_head: Option<bool>,
+    /// The changelog file and this version's section in it.
+    pub changelog: Option<(PathBuf, String)>,
+    /// The CI workflow that runs `wowlua publish`, when there is one.
+    pub ci: Option<String>,
+}
+
+/// A publish token's state (wowlua's credentials, decision T501).
+#[derive(Clone, Debug, PartialEq)]
+pub enum TokenState {
+    Saved,
+    Missing,
+    /// From this environment variable.
+    FromEnv(String),
+    /// The credential store could not be read.
+    Unreadable(String),
+}
+
+/// A step of a build (wowlua's `build::Step`, T503), or the install after.
+#[derive(Clone, Debug, PartialEq)]
+pub enum BuildStep {
+    Read {
+        files: usize,
+    },
+    Parsed {
+        done: usize,
+        of: usize,
+    },
+    Linted {
+        done: usize,
+        of: usize,
+    },
+    Checking {
+        flavor: Option<String>,
+        index: usize,
+        count: usize,
+    },
+    Bundling,
+    Writing,
+    Installing,
+}
+
+/// A diagnostic of a build or publish, where it points.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ShipDiagnostic {
+    /// `error`, `warning`, `note` or `help`.
+    pub severity: String,
+    pub code: Option<String>,
+    pub message: String,
+    pub path: Option<PathBuf>,
+    /// 1-based, where it points.
+    pub line: Option<u32>,
+    pub column: Option<u32>,
+}
+
+/// What to build.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ShipBuild {
+    pub profile: String,
+    /// Install it afterwards.
+    pub install: Option<ShipInstall>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ShipInstall {
+    /// Link the AddOn folder to the build folder instead of copying.
+    pub link: bool,
+    /// Replace a folder wowlua did not install.
+    pub force: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct BuildDone {
+    pub ok: bool,
+    pub profile: String,
+    pub dir: Option<PathBuf>,
+    pub ms: u64,
+    pub diagnostics: Vec<ShipDiagnostic>,
+    /// The AddOn folders written into the installation.
+    pub installed: Vec<PathBuf>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum BuildEvent {
+    Step(BuildStep),
+    Done(BuildDone),
+}
+
+/// A build of the dev loop (`wowlua dev`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct DevBuild {
+    /// When it started (ms since the epoch), and its local time
+    /// (`10:58:12`).
+    pub at: u64,
+    pub clock: String,
+    /// The changed files that started it (package-relative), none for the
+    /// first build.
+    pub changed: Vec<String>,
+    pub ok: bool,
+    pub ms: u64,
+    pub diagnostics: Vec<ShipDiagnostic>,
+    /// The AddOn folders it wrote into the installation.
+    pub synced: Vec<PathBuf>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum DevEvent {
+    /// Watching the packages (their names).
+    Watching(Vec<String>),
+    Building(Vec<String>),
+    Built(DevBuild),
+    /// The loop ended (why, when it could not go on).
+    Stopped(Option<String>),
+}
+
+/// What to publish (`wowlua publish`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ShipPublish {
+    pub dry_run: bool,
+    /// The targets, by name (none: every enabled one).
+    pub targets: Vec<String>,
+    /// Run the tests first.
+    pub tests: bool,
+    /// The version's tag (`wowlua publish --tag`): made locally once the
+    /// tests pass, when it does not exist.
+    pub tag: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PublishOutcome {
+    pub target: String,
+    pub file: String,
+    pub ok: bool,
+    pub skipped: bool,
+    pub message: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PublishDone {
+    pub ok: bool,
+    pub dry_run: bool,
+    pub outcomes: Vec<PublishOutcome>,
+    pub notes: Vec<String>,
+    pub diagnostics: Vec<ShipDiagnostic>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum PublishEvent {
+    /// A step, as `wowlua publish` says it (`Packaged`, `Reading`, …).
+    Line {
+        label: String,
+        text: String,
+    },
+    Done(PublishDone),
+}
+
+/// Tag a version and push it (S061: after the user confirms).
+#[derive(Clone, Debug, PartialEq)]
+pub struct TagPush {
+    pub tag: String,
+    pub message: String,
+    pub remote: String,
+    pub branch: String,
+}
+
+impl TagPush {
+    /// The commands, as the confirm shows them and Studio runs them.
+    pub fn commands(&self) -> Vec<Vec<String>> {
+        vec![
+            vec![
+                "git".into(),
+                "tag".into(),
+                "-a".into(),
+                self.tag.clone(),
+                "-m".into(),
+                self.message.clone(),
+            ],
+            vec![
+                "git".into(),
+                "push".into(),
+                self.remote.clone(),
+                self.branch.clone(),
+                self.tag.clone(),
+            ],
+        ]
+    }
+}
+
+/// The ship page's news (S061).
+#[derive(Clone, Debug, PartialEq)]
+pub enum ShipEvent {
+    Read(Box<Result<ShipFacts, String>>),
+    /// Each target's token's state, by the target's name.
+    Tokens(Vec<(String, TokenState)>),
+    /// A token saved (where) or removed, or why not.
+    TokenSaved {
+        kind: String,
+        result: Result<String, String>,
+    },
+    Build {
+        job: u64,
+        event: BuildEvent,
+    },
+    Dev(DevEvent),
+    Publish {
+        job: u64,
+        event: PublishEvent,
+    },
+    /// Tagged and pushed (git's output), or why not.
+    Tagged(Result<String, String>),
 }
 
 /// A world profile of the package (`tests/profiles/<name>.json`).
@@ -1056,6 +1379,23 @@ pub trait System {
     fn game_screen(&self) -> Option<GameScreen> {
         None
     }
+    /// What the ship page shows of the package (→ [`ShipEvent::Read`]).
+    fn ship_read(&self, _root: &Path) {}
+    /// The targets' tokens' states (→ [`ShipEvent::Tokens`]): the OS
+    /// credential store may ask the user first.
+    fn ship_tokens(&self, _targets: Vec<ShipTarget>) {}
+    /// Saves a token, or removes it (→ [`ShipEvent::TokenSaved`]).
+    fn ship_token(&self, _kind: &str, _token: Option<String>) {}
+    /// Builds a profile, and installs it (→ [`ShipEvent::Build`]).
+    fn ship_build(&self, _root: &Path, _job: u64, _build: ShipBuild) {}
+    /// Starts the dev loop, or stops it (→ [`ShipEvent::Dev`]).
+    fn ship_dev(&self, _root: &Path, _dev: Option<ShipInstall>) {}
+    /// Publishes, or a dry run (→ [`ShipEvent::Publish`]).
+    fn ship_publish(&self, _root: &Path, _job: u64, _publish: ShipPublish) {}
+    /// Tags the version and pushes it (→ [`ShipEvent::Tagged`]).
+    fn ship_tag(&self, _root: &Path, _tag: TagPush) {}
+    /// Shows a folder in the system's file manager.
+    fn reveal(&self, _path: &Path) {}
     /// Work finished since the last call.
     fn poll(&self) -> Vec<Event>;
 }

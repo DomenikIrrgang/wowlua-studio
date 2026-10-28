@@ -320,6 +320,25 @@ Artboard: ship.
 - Build profiles, install into `Interface/AddOns` (copied or linked), the
   `wowlua dev` loop, publishing with its dry run and changelog.
 
+Built (S061): the page works on the workspace's root package (a workspace
+without one picks an addon), in Studio's process through wowlua's library.
+The build profiles, built in and the manifest's, with what each inherits:
+the designed settings and a form from wowlua's schema for the others, an
+edit rewriting only that value in `wowlua.json`, inherited values shown as
+such. A build with its progress (wowlua's `build::Step`, T503), its output
+folder, the sizes of each profile's output and the compiler's output, the
+first errors linked to their source. The installation, changed with a
+folder picked and kept as `wow.path`; where the addon is installed in each
+client and what something else changed there since (wowlua's install
+record, T502), confirmed before an install replaces it. The dev loop over
+the disk's changes, copied or linked, with its log. Publishing: the checks
+(a clean tree, a new version, the changelog's section, the tests, the tag),
+the targets with their tokens read when the tab opens and saved or removed
+in the OS credential store (`wowlua login`'s, T501), a dry run, a publish
+confirmed against a fresh dry run, the version tagged and pushed after a
+confirm showing the commands. The frame budget holds with SuuUI's size:
+0.09 ms median, 0.17 ms p99. Not yet: checked by hand on macOS only.
+
 ## M10: Settings and dependencies
 
 Artboards: settings, wowlua.json.
@@ -382,6 +401,10 @@ and tests it on Windows and Linux (S058). On each, with SuuUI's workspace:
 8. **M8**: open a profile, edit a unit in its form and see the json view
    follow; the class and spell icons from the installation; start a session
    in the profile and change a unit's distance live; import a snapshot.
+9. **M9**: build release and see its progress; change the installation;
+   install release, edit a file in the installed folder and see the
+   warning; the dev loop with a save (copied and linked); save a publish
+   token and see it in `wowlua login`'s store; a dry run.
 
 ## Open questions
 
