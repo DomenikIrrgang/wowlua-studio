@@ -228,16 +228,15 @@ selected frame, slash commands, history); the live world (units with
 threat, targeting, Lua with `wowlua:mock`, events fired, the world saved
 as a world profile); the recent sessions and the last one's summary
 (time, frames, stops, log lines, errors); debug lenses over tests,
-"debug this test", the inspector's "break on its scripts". wowlua's pull
-request #94 adds pausing a running session, hit counts, stop details,
+"debug this test", the inspector's "break on its scripts". wowlua 0.13.5
+adds pausing a running session, hit counts, stop details,
 the clock switched while running, the world as a profile and the frame
 hook at a stop. The frame budget holds with 2,000 console lines and 300
 breakpoints: 0.07 ms median. Not yet: inline values in the editor; the
 call stack's switches (dispatch frames, Blizzard's code) beyond the
 configuration's; watches without side effects; the start's checklist;
 editing a unit in the live world; turning a breakpoint off without
-removing it; checked by hand on macOS only; wowlua's pull request #94 is
-not released.
+removing it; checked by hand on macOS only.
 
 ## M7: Profiler
 
