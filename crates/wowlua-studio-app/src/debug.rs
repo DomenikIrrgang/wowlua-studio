@@ -1270,101 +1270,137 @@ pub fn breakpoints(
     let mut action = None;
     let mut remove: Option<(PathBuf, u32)> = None;
     let mut remove_fn = None;
+    // The rows, painted (only those seen): a breakpoint each.
+    struct BpRow {
+        file: Option<PathBuf>,
+        line: u32,
+        text: String,
+        hits: u32,
+        unplaced: bool,
+    }
+    let mut rows: Vec<BpRow> = Vec::new();
+    for (file, list) in &state.kept.lines {
+        let rel = crate::tests::rel_of(workspace, file);
+        for b in list {
+            let st = state.ids.iter().find_map(|(id, (f, l))| {
+                (f.as_ref() == Some(file) && *l == b.line)
+                    .then(|| state.states.get(id))
+                    .flatten()
+            });
+            let detail = b
+                .log_message
+                .as_ref()
+                .map(|m| format!("log: {m}"))
+                .or_else(|| b.condition.as_ref().map(|c| format!("if {c}")))
+                .or_else(|| b.hit_condition.as_ref().map(|h| format!("hit {h}")))
+                .unwrap_or_default();
+            rows.push(BpRow {
+                file: Some(file.clone()),
+                line: b.line,
+                text: format!("{rel}:{}  {detail}", b.line),
+                hits: st.map_or(0, |s| s.2),
+                unplaced: state.running() && !st.is_some_and(|s| s.0),
+            });
+        }
+    }
+    for (i, f) in state.kept.functions.iter().enumerate() {
+        rows.push(BpRow {
+            file: None,
+            line: i as u32,
+            text: f.name.clone(),
+            hits: 0,
+            unplaced: false,
+        });
+    }
+    let list_h = (ui.available_height() - 200.0).max(ROW_H * 2.0);
+    if rows.is_empty() {
+        forms::padded(ui, 10, 8, |ui| {
+            forms::paragraph(
+                ui,
+                "Click left of a line number to set a breakpoint; right-click it for a \
+                 condition, a hit count or a log message.",
+                11.5,
+                17.0,
+                p.ink_faint,
+            );
+        });
+    } else {
+        egui::ScrollArea::vertical()
+            .id_salt("debug-bps")
+            .auto_shrink(false)
+            .max_height(list_h)
+            .show_rows(ui, ROW_H, rows.len(), |ui, range| {
+                for r in &rows[range] {
+                    let (rect, resp) = ui.allocate_exact_size(
+                        Vec2::new(ui.available_width(), ROW_H),
+                        Sense::click(),
+                    );
+                    if resp.hovered() {
+                        ui.painter().rect_filled(rect, CornerRadius::ZERO, p.bg_200);
+                    }
+                    let y = rect.center().y;
+                    let color = match (&r.file, r.unplaced) {
+                        (None, _) => p.warning,
+                        (_, true) => p.ink_faint,
+                        _ => p.error,
+                    };
+                    ui.painter()
+                        .circle_filled(Pos2::new(rect.left() + 16.0, y), 4.0, color);
+                    let text_rect = egui::Rect::from_min_max(
+                        Pos2::new(rect.left() + 26.0, rect.top()),
+                        Pos2::new(rect.right() - 70.0, rect.bottom()),
+                    );
+                    ui.painter().with_clip_rect(text_rect).text(
+                        Pos2::new(text_rect.left(), y),
+                        Align2::LEFT_CENTER,
+                        &r.text,
+                        Face::Plex.at(12.0),
+                        if r.unplaced { p.ink_muted } else { p.ink },
+                    );
+                    let x = egui::Rect::from_center_size(
+                        Pos2::new(rect.right() - 14.0, y),
+                        Vec2::splat(16.0),
+                    );
+                    let x_resp = ui.interact(x, resp.id.with("x"), Sense::click());
+                    ui.painter().text(
+                        x.center(),
+                        Align2::CENTER_CENTER,
+                        "×",
+                        Face::Plex.at(12.0),
+                        if x_resp.hovered() { p.ink } else { p.ink_faint },
+                    );
+                    if r.hits > 0 {
+                        ui.painter().text(
+                            Pos2::new(rect.right() - 28.0, y),
+                            Align2::RIGHT_CENTER,
+                            format!("{} hits", r.hits),
+                            Face::Plex.at(11.0),
+                            p.ink_muted,
+                        );
+                    }
+                    let resp = if r.unplaced {
+                        resp.on_hover_text("not loaded yet, or no code at or after this line")
+                    } else {
+                        resp
+                    };
+                    if x_resp.clicked() {
+                        match &r.file {
+                            Some(f) => remove = Some((f.clone(), r.line)),
+                            None => remove_fn = Some(r.line as usize),
+                        }
+                    } else if resp.clicked()
+                        && let Some(f) = &r.file
+                    {
+                        action = Some(Action::Open(f.clone(), r.line as usize));
+                    }
+                }
+            });
+    }
     egui::ScrollArea::vertical()
-        .id_salt("debug-bps")
+        .id_salt("debug-bps-more")
         .auto_shrink(false)
         .show(ui, |ui| {
             forms::padded(ui, 10, 8, |ui| {
-                for (file, list) in &state.kept.lines {
-                    let rel = crate::tests::rel_of(workspace, file);
-                    for b in list {
-                        let state_ = state.ids.iter().find_map(|(id, (f, l))| {
-                            (f.as_ref() == Some(file) && *l == b.line)
-                                .then(|| state.states.get(id))
-                                .flatten()
-                        });
-                        let detail = b
-                            .log_message
-                            .as_ref()
-                            .map(|m| format!("log: {m}"))
-                            .or_else(|| b.condition.as_ref().map(|c| format!("if {c}")))
-                            .or_else(|| b.hit_condition.as_ref().map(|h| format!("hit {h}")))
-                            .unwrap_or_default();
-                        let hits = state_.map_or(0, |s| s.2);
-                        let unplaced = state.running() && !state_.is_some_and(|s| s.0);
-                        ui.horizontal(|ui| {
-                            let color = if unplaced { p.ink_faint } else { p.error };
-                            let (r, _) = ui.allocate_exact_size(Vec2::splat(12.0), Sense::hover());
-                            ui.painter().circle_filled(r.center(), 4.0, color);
-                            let text = format!("{rel}:{}  {detail}", b.line);
-                            if ui
-                                .add(
-                                    egui::Label::new(
-                                        egui::RichText::new(text)
-                                            .font(Face::Plex.at(12.0))
-                                            .color(p.ink),
-                                    )
-                                    .truncate()
-                                    .sense(Sense::click()),
-                                )
-                                .clicked()
-                            {
-                                action = Some(Action::Open(file.clone(), b.line as usize));
-                            }
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    if forms::text_button(ui, "×").clicked() {
-                                        remove = Some((file.clone(), b.line));
-                                    }
-                                    if hits > 0 {
-                                        ui.label(
-                                            egui::RichText::new(format!("{hits} hits"))
-                                                .font(Face::Plex.at(11.0))
-                                                .color(p.ink_muted),
-                                        );
-                                    }
-                                },
-                            );
-                        });
-                        if unplaced {
-                            ui.label(
-                                egui::RichText::new(
-                                    "   not loaded yet, or no code at or after this line",
-                                )
-                                .font(Face::Plex.at(11.0))
-                                .color(p.ink_faint),
-                            );
-                        }
-                    }
-                }
-                for (i, f) in state.kept.functions.iter().enumerate() {
-                    ui.horizontal(|ui| {
-                        let (r, _) = ui.allocate_exact_size(Vec2::splat(12.0), Sense::hover());
-                        ui.painter().circle_filled(r.center(), 4.0, p.warning);
-                        ui.label(
-                            egui::RichText::new(&f.name)
-                                .font(Face::Plex.at(12.0))
-                                .color(p.ink),
-                        );
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if forms::text_button(ui, "×").clicked() {
-                                remove_fn = Some(i);
-                            }
-                        });
-                    });
-                }
-                if state.kept.lines.is_empty() && state.kept.functions.is_empty() {
-                    forms::paragraph(
-                        ui,
-                        "Click left of a line number to set a breakpoint; right-click it for a \
-                         condition, a hit count or a log message.",
-                        11.5,
-                        17.0,
-                        p.ink_faint,
-                    );
-                }
-                ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     let r = forms::text_input(
                         ui,
