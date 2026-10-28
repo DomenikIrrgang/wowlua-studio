@@ -50,6 +50,35 @@ fn font_size() -> f32 {
     f32::from_bits(FONT_BITS.load(std::sync::atomic::Ordering::Relaxed))
 }
 
+/// The package's `fmt.line-width` (100 when it sets none), for wrapping
+/// at the line width (S062).
+static LINE_WIDTH: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(100);
+
+/// Sets the package's line width.
+pub fn set_line_width(width: usize) {
+    LINE_WIDTH.store(width.max(20), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The columns a wrapped line's rows hold: none when lines do not wrap
+/// (the setting "word wrap", S062).
+fn wrap_columns(ctx: &egui::Context, text_width: f32, char_w: f32) -> Option<usize> {
+    match crate::state::prefs(ctx).word_wrap.as_str() {
+        "window" => Some((((text_width - 24.0) / char_w).floor() as usize).max(20)),
+        "line width" => Some(LINE_WIDTH.load(std::sync::atomic::Ordering::Relaxed)),
+        _ => None,
+    }
+}
+
+/// How many rows each line takes, wrapped at `columns`.
+pub fn parts_of(doc: &Document, columns: usize) -> Vec<usize> {
+    (0..doc.line_count())
+        .map(|l| {
+            let width = doc.line(l).chars().fold(0, step);
+            width.div_ceil(columns).max(1)
+        })
+        .collect()
+}
+
 /// A line's height: 21 px for 13 px type.
 pub fn line_h() -> f32 {
     (font_size() * 21.0 / 13.0).round()
@@ -531,23 +560,24 @@ fn compare(ui: &mut Ui, rect: Rect, mine: &str, theirs: &str, path: &std::path::
         });
 }
 
-/// A row of the code: a line, or the lens over one.
+/// A row of the code: a line's part (0, or the next of a wrapped line),
+/// or the lens over a line.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Row {
-    Line(usize),
+    Line(usize, usize),
     Lens(usize),
 }
 
 impl Row {
     fn line(self) -> usize {
         match self {
-            Row::Line(l) | Row::Lens(l) => l,
+            Row::Line(l, _) | Row::Lens(l) => l,
         }
     }
 
     fn height(self) -> f32 {
         match self {
-            Row::Line(_) => line_h(),
+            Row::Line(..) => line_h(),
             Row::Lens(_) => LENS_H,
         }
     }
@@ -560,7 +590,8 @@ struct Rows {
 }
 
 impl Rows {
-    fn new(lines: usize, folded: &[(usize, usize)], lens_lines: &[usize]) -> Rows {
+    /// `parts`: each line's rows when lines wrap (none: one each).
+    fn new(lines: usize, folded: &[(usize, usize)], lens_lines: &[usize], parts: &[usize]) -> Rows {
         let mut rows = Vec::with_capacity(lines + lens_lines.len());
         let mut y = PAD_TOP;
         let mut line = 0;
@@ -569,8 +600,10 @@ impl Rows {
                 rows.push((Row::Lens(line), y));
                 y += LENS_H;
             }
-            rows.push((Row::Line(line), y));
-            y += line_h();
+            for part in 0..parts.get(line).copied().unwrap_or(1).max(1) {
+                rows.push((Row::Line(line, part), y));
+                y += line_h();
+            }
             line = match folded.iter().find(|f| f.0 == line) {
                 Some(&(_, last)) => last + 1,
                 None => line + 1,
@@ -585,7 +618,7 @@ impl Rows {
             .rows
             .partition_point(|(r, _)| r.line() < line || matches!(r, Row::Lens(l) if *l == line));
         match self.rows.get(i) {
-            Some((Row::Line(l), y)) if *l == line => *y,
+            Some((Row::Line(l, _), y)) if *l == line => *y,
             _ => self.rows[i.saturating_sub(1).min(self.rows.len() - 1)].1,
         }
     }
@@ -716,6 +749,18 @@ struct Laid<'a> {
 }
 
 impl Laid<'_> {
+    /// The columns from `from` to `to` on this row: their x range, none
+    /// when the row has none of them (S062: a wrapped line's part).
+    /// `last`: the row is its line's last.
+    fn span(&self, from: usize, to: usize, last: bool, wraps: bool) -> Option<(f32, f32)> {
+        if !wraps {
+            return Some((self.x(from), self.x(to)));
+        }
+        let end = self.from + self.map.len() - 1;
+        let (a, b) = row_span(self.from, end, from, to, last)?;
+        Some((self.x(a), self.x(b)))
+    }
+
     /// The x of character `col`.
     fn x(&self, col: usize) -> f32 {
         if let Some((line, cols, char_w)) = self.long
@@ -750,6 +795,8 @@ impl Laid<'_> {
 
 /// What laying out a line needs besides it.
 struct LayCx<'a> {
+    /// The columns a wrapped line's rows hold; none: lines do not wrap.
+    wrap: Option<usize>,
     highlights: &'a [Vec<(usize, usize, Syntax)>],
     hints: &'a [(Pos, String)],
     long: Option<&'a HashMap<usize, Columns>>,
@@ -808,6 +855,84 @@ fn lay_line<'a>(
         galley,
         map,
         from: 0,
+        x0: 0.0,
+        long: None,
+    }
+}
+
+/// The columns of `from..to` on a wrapped line's row holding `start..end`
+/// (`last`: the line's last row, which holds its end too): none when the
+/// row has none of them. An empty range (the caret) is on the row whose
+/// columns hold it.
+fn row_span(
+    start: usize,
+    end: usize,
+    from: usize,
+    to: usize,
+    last: bool,
+) -> Option<(usize, usize)> {
+    if from == to {
+        let here = (start <= from && from < end) || (from == end && last);
+        return here.then_some((from, from));
+    }
+    let (a, b) = (from.max(start), to.min(end));
+    (a < b).then_some((a, b))
+}
+
+/// Part `part` of line `line` as it is drawn: the whole line when lines do
+/// not wrap; else its characters from display column `part × columns`, at
+/// the text's left (S062).
+fn lay_part<'a>(
+    ui: &Ui,
+    doc: &'a Document,
+    line: usize,
+    part: usize,
+    view: egui::Rangef,
+    cx: &LayCx<'a>,
+    p: &Palette,
+) -> Laid<'a> {
+    let Some(columns) = cx.wrap else {
+        return lay_line(ui, doc, line, view, cx, p);
+    };
+    let text = doc.line(line);
+    let cols = Columns::new(text);
+    let first = cols.col(text, part * columns);
+    let last = cols.col(text, (part + 1) * columns);
+    let colours = cx.highlights.get(line).map_or(&[][..], |h| h.as_slice());
+    let chars: Vec<char> = text[cols.byte(text, first)..]
+        .chars()
+        .take(last - first)
+        .collect();
+    let shifted: Vec<(usize, usize, Syntax)> = colours
+        .iter()
+        .filter(|h| h.1 > first && h.0 < last)
+        .map(|h| (h.0.saturating_sub(first), h.1.min(last) - first, h.2))
+        .collect();
+    // (a hint at the line's end goes on its last part)
+    let len = text.chars().count();
+    let here: Vec<(usize, &str)> = cx
+        .hints
+        .iter()
+        .filter(|(pos, _)| {
+            pos.line == line
+                && pos.col >= first
+                && (pos.col < last || (last == len && pos.col == len))
+        })
+        .map(|(pos, label)| (pos.col - first, label.as_str()))
+        .collect();
+    let (galley, map) = lay(
+        ui,
+        &chars,
+        cols.dcol(text, first),
+        &shifted,
+        &here,
+        &cx.font,
+        p,
+    );
+    Laid {
+        galley,
+        map,
+        from: first,
         x0: 0.0,
         long: None,
     }
@@ -1004,16 +1129,21 @@ fn code(
     let mut lens_lines: Vec<usize> = lenses.iter().map(|l| l.line).collect();
     lens_lines.sort_unstable();
     lens_lines.dedup();
+    let wrap = wrap_columns(&ctx, text_rect.width(), char_w);
+    let parts: Vec<usize> = wrap.map(|w| tab.wrap_parts(w)).unwrap_or_default();
     let highlights: &[Vec<(usize, usize, Syntax)>] =
         tab.highlights.as_ref().map_or(&[], |(_, h)| h.as_slice());
     let folded = tab.folded.clone();
     let doc = &mut tab.doc;
     let lines = doc.line_count();
-    let rows = Rows::new(lines, &folded, &lens_lines);
-    let content = Vec2::new(
-        GUTTER.max(widest as f32 * char_w + 160.0),
-        rows.height + 24.0 + rect.height() * 0.5,
-    );
+    let rows = Rows::new(lines, &folded, &lens_lines, &parts);
+    let parts_of_line = |line: usize| parts.get(line).copied().unwrap_or(1).max(1);
+    // (wrapped lines never reach past the window)
+    let width = match wrap {
+        Some(_) => text_rect.width(),
+        None => GUTTER.max(widest as f32 * char_w + 160.0),
+    };
+    let content = Vec2::new(width, rows.height + 24.0 + rect.height() * 0.5);
     let mut child = ui.new_child(UiBuilder::new().max_rect(text_rect));
     child.set_clip_rect(text_rect);
     let mut reveal = std::mem::take(&mut tab.reveal);
@@ -1029,6 +1159,7 @@ fn code(
         .filter(|l| cmd && l.found == Some(true) && l.version == doc.version)
         .map(|l| (l.line, l.start, l.end));
     let lay_cx = LayCx {
+        wrap,
         highlights,
         hints: &hints,
         long: tab.long.as_ref().map(|(_, l)| l),
@@ -1048,9 +1179,9 @@ fn code(
             }
             let pos_at = |ui: &Ui, doc: &Document, point: Pos2| match rows.at(point.y - origin.y) {
                 Row::Lens(line) => Pos::new(line, 0),
-                Row::Line(line) => Pos::new(
+                Row::Line(line, part) => Pos::new(
                     line,
-                    lay_line(ui, doc, line, viewport.x_range(), &lay_cx, p)
+                    lay_part(ui, doc, line, part, viewport.x_range(), &lay_cx, p)
                         .col_at(point.x - origin.x),
                 ),
             };
@@ -1100,7 +1231,7 @@ fn code(
                 ctx.data_mut(|d| d.insert_temp(id.with("typed"), now));
                 clear_hover = true;
             } else if let Some(point) = response.hover_pos() {
-                if matches!(rows.at(point.y - origin.y), Row::Line(_)) {
+                if matches!(rows.at(point.y - origin.y), Row::Line(..)) {
                     hover_at = Some((pos_at(ui, doc, point), point));
                 }
             } else {
@@ -1112,7 +1243,13 @@ fn code(
             for &(row, top) in rows.between(viewport.min.y, viewport.max.y) {
                 let y = origin.y + top;
                 let line = row.line();
-                let laid = lay_line(ui, doc, line, viewport.x_range(), &lay_cx, p);
+                let part = match row {
+                    Row::Line(_, part) => part,
+                    Row::Lens(_) => 0,
+                };
+                let last_part = part + 1 >= parts_of_line(line);
+                let wraps = wrap.is_some();
+                let laid = lay_part(ui, doc, line, part, viewport.x_range(), &lay_cx, p);
                 let text = doc.line(line);
                 if let Row::Lens(_) = row {
                     // The lens: how many places refer to the function.
@@ -1187,12 +1324,12 @@ fn code(
                     } else {
                         doc.line_len(line)
                     };
+                    let Some((x0, x1)) = laid.span(from, to, last_part, wraps) else {
+                        continue;
+                    };
                     let r = Rect::from_min_max(
-                        Pos2::new(origin.x + laid.x(from), y + 1.0),
-                        Pos2::new(
-                            origin.x + laid.x(to).max(laid.x(from) + 2.0),
-                            y + line_h() - 1.0,
-                        ),
+                        Pos2::new(origin.x + x0, y + 1.0),
+                        Pos2::new(origin.x + x1.max(x0 + 2.0), y + line_h() - 1.0),
                     );
                     ui.painter()
                         .rect_filled(r, CornerRadius::ZERO, p.amber_soft);
@@ -1218,9 +1355,8 @@ fn code(
                     } else {
                         sel_end.col
                     };
-                    let x0 = laid.x(from);
-                    let mut x1 = laid.x(to);
-                    if to_end {
+                    let (x0, mut x1) = laid.span(from, to, last_part, wraps).unwrap_or((0.0, 0.0));
+                    if to_end && last_part {
                         x1 += char_w * 0.6;
                     }
                     if x1 > x0 {
@@ -1240,15 +1376,16 @@ fn code(
                 // The name cmd + click goes to the definition of.
                 if let Some((l, s, e)) = underline
                     && l == line
+                    && let Some((x0, x1)) = laid.span(s, e, last_part, wraps)
                 {
                     ui.painter().hline(
-                        origin.x + laid.x(s)..=origin.x + laid.x(e),
+                        origin.x + x0..=origin.x + x1,
                         y + line_h() - 3.0,
                         Stroke::new(1.0, p.ink),
                     );
                 }
                 // A folded line ends in `⋯`: a click opens it.
-                if let Some(&(_, last)) = folded.iter().find(|f| f.0 == line) {
+                if let Some(&(_, last)) = folded.iter().find(|f| f.0 == line && last_part) {
                     let x = origin.x + laid.galley.size().x + 8.0;
                     let chip =
                         Rect::from_min_size(Pos2::new(x, y + 3.0), Vec2::new(28.0, line_h() - 6.0));
@@ -1270,7 +1407,7 @@ fn code(
                     }
                 }
                 // The stop's values after the line (`st-inval`).
-                if let Some((_, text)) = cx.inline.iter().find(|v| v.0 == line) {
+                if let Some((_, text)) = cx.inline.iter().find(|v| v.0 == line && last_part) {
                     let x = origin.x + laid.galley.size().x + 16.0;
                     let r = ui.painter().text(
                         Pos2::new(x + 6.0, y + line_h() / 2.0),
@@ -1294,12 +1431,15 @@ fn code(
                     } else {
                         doc.line_len(line)
                     };
-                    let x0 = origin.x + laid.x(from);
-                    let x1 = (origin.x + laid.x(to)).max(x0 + char_w);
+                    let Some((a, b)) = laid.span(from, to, last_part, wraps) else {
+                        continue;
+                    };
+                    let x0 = origin.x + a;
+                    let x1 = (origin.x + b).max(x0 + char_w);
                     let color = if d.is_error() { p.error } else { p.warning };
                     wave(ui, x0, x1, y + line_h() - 3.0, color);
                 }
-                if line == head.line {
+                if line == head.line && laid.span(head.col, head.col, last_part, wraps).is_some() {
                     let x = origin.x + laid.x(head.col);
                     caret_screen = Some(Rect::from_min_size(
                         Pos2::new(x, y + 2.0),
@@ -1308,9 +1448,17 @@ fn code(
                 }
             }
             if reveal {
-                let laid = lay_line(ui, doc, head.line, viewport.x_range(), &lay_cx, p);
+                let part = match wrap {
+                    Some(w) => {
+                        let text = doc.line(head.line);
+                        (Columns::new(text).dcol(text, head.col) / w)
+                            .min(parts_of_line(head.line) - 1)
+                    }
+                    None => 0,
+                };
+                let laid = lay_part(ui, doc, head.line, part, viewport.x_range(), &lay_cx, p);
                 let x = origin.x + laid.x(head.col);
-                let y = origin.y + rows.y_of(head.line);
+                let y = origin.y + rows.y_of(head.line) + part as f32 * line_h();
                 ui.scroll_to_rect(
                     Rect::from_min_size(
                         Pos2::new(x - 24.0, y - line_h()),
@@ -1453,7 +1601,7 @@ fn code(
     let head_line = tab.doc.selection.head.line;
     let mut toggle = None;
     for &(row, top) in rows.between(offset, offset + rect.height()) {
-        let Row::Line(line) = row else {
+        let Row::Line(line, 0) = row else {
             continue;
         };
         let cy = rect.top() + top - offset + line_h() / 2.0;
@@ -2820,18 +2968,37 @@ mod tests {
         assert_eq!(cols.byte(&line, 4000), line.len());
     }
 
+    /// Wrapped lines (S062): each part a row; a range's columns on the
+    /// rows that hold them, the caret on one.
+    #[test]
+    fn wrapped_lines_take_rows() {
+        let d = doc("abcdefghij\nab\n\tx");
+        assert_eq!(parts_of(&d, 4), [3, 1, 2]);
+        let rows = Rows::new(3, &[], &[], &[3, 1, 2]);
+        assert_eq!(rows.y_of(1), PAD_TOP + 3.0 * line_h());
+        assert_eq!(rows.at(PAD_TOP + line_h() + 1.0), Row::Line(0, 1));
+        // `abcd|efgh|ij`: the selection 2..6 on the first two rows.
+        assert_eq!(row_span(0, 4, 2, 6, false), Some((2, 4)));
+        assert_eq!(row_span(4, 8, 2, 6, false), Some((4, 6)));
+        assert_eq!(row_span(8, 10, 2, 6, true), None);
+        // The caret at 4 is on the second row, at the end on the last.
+        assert_eq!(row_span(0, 4, 4, 4, false), None);
+        assert_eq!(row_span(4, 8, 4, 4, false), Some((4, 4)));
+        assert_eq!(row_span(8, 10, 10, 10, true), Some((10, 10)));
+    }
+
     #[test]
     fn rows_leave_folds_out_and_put_lenses_in() {
-        let rows = Rows::new(6, &[(1, 3)], &[4]);
+        let rows = Rows::new(6, &[(1, 3)], &[4], &[]);
         let kinds: Vec<Row> = rows.rows.iter().map(|r| r.0).collect();
         assert_eq!(
             kinds,
             [
-                Row::Line(0),
-                Row::Line(1),
+                Row::Line(0, 0),
+                Row::Line(1, 0),
                 Row::Lens(4),
-                Row::Line(4),
-                Row::Line(5)
+                Row::Line(4, 0),
+                Row::Line(5, 0)
             ]
         );
         assert_eq!(rows.y_of(4), PAD_TOP + 2.0 * line_h() + LENS_H);

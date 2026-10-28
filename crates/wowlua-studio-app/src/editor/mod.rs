@@ -55,6 +55,9 @@ pub struct Tab {
     highlights: Option<(u64, LineHighlights)>,
     /// The longest line's width in characters, for the version.
     widest: Option<(u64, usize)>,
+    /// Each line's rows when lines wrap: for the version and the columns
+    /// (S062).
+    wraps: Option<(u64, usize, Vec<usize>)>,
     /// The columns of the lines too long to lay out whole (a data file on
     /// one line), for the version: they are drawn where they are seen.
     pub long: Option<(u64, HashMap<usize, view::Columns>)>,
@@ -305,6 +308,7 @@ impl Tab {
             doc,
             highlights: None,
             widest: None,
+            wraps: None,
             long: None,
             clash: None,
             reveal: true,
@@ -400,6 +404,19 @@ impl Tab {
             self.widest = Some((version, w));
         }
         self.widest.expect("made").1
+    }
+
+    /// Each line's rows wrapped at `columns` (S062).
+    pub fn wrap_parts(&mut self, columns: usize) -> Vec<usize> {
+        let version = self.doc.version;
+        if self
+            .wraps
+            .as_ref()
+            .is_none_or(|(v, c, _)| *v != version || *c != columns)
+        {
+            self.wraps = Some((version, columns, view::parts_of(&self.doc, columns)));
+        }
+        self.wraps.as_ref().expect("made").2.clone()
     }
 }
 

@@ -1997,6 +1997,12 @@ impl Studio {
                     self.explorer.changed(&paths);
                     self.ship.files_changed();
                     self.settings_page.deps.files_changed();
+                    if let Some(w) = &self.workspace
+                        && paths.iter().any(|p| p.ends_with("wowlua.json"))
+                    {
+                        let root = w.root.clone();
+                        self.read_line_width(&root);
+                    }
                     self.files_changed(&paths, ctx);
                     // A changed manifest can change the members: the
                     // workspace is read again.
@@ -2147,6 +2153,7 @@ impl Studio {
             }
             self.ship = ship::ShipState::default();
         }
+        self.read_line_width(&workspace.root);
         self.branch = self.host.system.branch(&workspace.root);
         self.reload_recents();
         self.recents.opened(&workspace, self.host.system.now());
@@ -2369,6 +2376,20 @@ impl Studio {
         self.world.spell_query = query.to_owned();
     }
 
+    /// The package's `fmt.line-width`, for wrapping at the line width
+    /// (S062): 100 when it sets none.
+    fn read_line_width(&self, root: &std::path::Path) {
+        let width = self
+            .host
+            .system
+            .read_file(&root.join("wowlua.json"))
+            .ok()
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+            .and_then(|m| m["fmt"]["line-width"].as_u64())
+            .unwrap_or(100);
+        editor::view::set_line_width(width as usize);
+    }
+
     /// What the settings page asks (S062).
     fn settings_action(&mut self, action: settings::Action, ctx: &Context) {
         match action {
@@ -2433,11 +2454,15 @@ impl Studio {
             .screen_size
             .split_once(" × ")
             .and_then(|(w, h)| Some((w.trim().parse().ok()?, h.trim().parse().ok()?)));
+        let launch = config.launch();
         system::Launch {
             art: s.installation_art,
             game_data: s.installation_data,
             screen,
-            ..config.launch()
+            // (on: every session steps into Blizzard's code; off: as the
+            // configuration says)
+            debug_blizzard_ui: launch.debug_blizzard_ui || s.step_into_blizzard,
+            ..launch
         }
     }
 
