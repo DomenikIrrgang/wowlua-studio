@@ -15,7 +15,10 @@ use wowlua_studio_ui::{Face, Palette, palette};
 
 use crate::system::{GameEvent, GameInput, GameRequest, System, Workspace};
 
-const ROW_H: f32 = 22.0;
+/// A row, at the settings' density (S062).
+fn row_h() -> f32 {
+    wowlua_studio_ui::row(22.0)
+}
 /// The most events kept in the events panel.
 const EVENTS_KEPT: usize = 1000;
 
@@ -978,10 +981,10 @@ pub fn frames(ui: &mut Ui, state: &mut GameState, system: &dyn System) {
     egui::ScrollArea::vertical()
         .id_salt("game-frames")
         .auto_shrink(false)
-        .show_rows(ui, ROW_H, rows.len(), |ui, range| {
+        .show_rows(ui, row_h(), rows.len(), |ui, range| {
             for row in &rows[range] {
-                let (rect, response) =
-                    ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::click());
+                let (rect, response) = ui
+                    .allocate_exact_size(Vec2::new(ui.available_width(), row_h()), Sense::click());
                 if selected == Some(row.id) {
                     ui.painter()
                         .rect_filled(rect, CornerRadius::ZERO, p.amber_soft);
@@ -1450,7 +1453,7 @@ pub fn events(ui: &mut Ui, state: &mut GameState, system: &dyn System) {
     let header = ["event", "arguments", "frames", "in"];
     let widths = [0.30, 0.38, 0.22, 0.10];
     let width = ui.available_width();
-    let (hrect, _) = ui.allocate_exact_size(Vec2::new(width, ROW_H), Sense::hover());
+    let (hrect, _) = ui.allocate_exact_size(Vec2::new(width, row_h()), Sense::hover());
     let mut x = hrect.left() + 10.0;
     for (h, w) in header.iter().zip(widths) {
         ui.painter().text(
@@ -1467,15 +1470,15 @@ pub fn events(ui: &mut Ui, state: &mut GameState, system: &dyn System) {
         .id_salt("game-events")
         .auto_shrink(false)
         .stick_to_bottom(true)
-        .show_rows(ui, ROW_H, events.len(), |ui, range| {
+        .show_rows(ui, row_h(), events.len(), |ui, range| {
             for e in events.range(range) {
-                let (rect, _) = ui.allocate_exact_size(Vec2::new(width, ROW_H), Sense::hover());
+                let (rect, _) = ui.allocate_exact_size(Vec2::new(width, row_h()), Sense::hover());
                 let cells = [&e.event, &e.args, &e.frames, &e.time];
                 let mut x = rect.left() + 10.0;
                 for (i, (c, w)) in cells.iter().zip(widths).enumerate() {
                     let clip = Rect::from_min_size(
                         Pos2::new(x, rect.top()),
-                        Vec2::new(width * w - 8.0, ROW_H),
+                        Vec2::new(width * w - 8.0, row_h()),
                     );
                     ui.painter().with_clip_rect(clip).text(
                         Pos2::new(x, rect.center().y),
@@ -1507,10 +1510,10 @@ pub fn input(ui: &mut Ui, state: &mut GameState) {
         .id_salt("game-input")
         .auto_shrink(false)
         .stick_to_bottom(true)
-        .show_rows(ui, ROW_H, given.len(), |ui, range| {
+        .show_rows(ui, row_h(), given.len(), |ui, range| {
             for g in &given[range] {
-                let (rect, _) =
-                    ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::hover());
+                let (rect, _) = ui
+                    .allocate_exact_size(Vec2::new(ui.available_width(), row_h()), Sense::hover());
                 let y = rect.center().y;
                 ui.painter().text(
                     Pos2::new(rect.left() + 10.0, y),

@@ -19,7 +19,10 @@ use crate::system::{FunctionBp, GameEvent, GameRequest, Launch, LineBp, System, 
 
 /// The debugger's requests' ids: apart from the game page's.
 pub const IDS: u64 = 1 << 40;
-const ROW_H: f32 = 22.0;
+/// A row, at the settings' density (S062).
+fn row_h() -> f32 {
+    wowlua_studio_ui::row(22.0)
+}
 /// The most console lines kept.
 const CONSOLE_KEPT: usize = 2000;
 
@@ -1600,7 +1603,7 @@ pub fn breakpoints(
             }
         });
     }
-    let list_h = (ui.available_height() - 200.0).max(ROW_H * 2.0);
+    let list_h = (ui.available_height() - 200.0).max(row_h() * 2.0);
     if rows.is_empty() {
         forms::padded(ui, 10, 8, |ui| {
             forms::paragraph(
@@ -1617,10 +1620,10 @@ pub fn breakpoints(
             .id_salt("debug-bps")
             .auto_shrink(false)
             .max_height(list_h)
-            .show_rows(ui, ROW_H, rows.len(), |ui, range| {
+            .show_rows(ui, row_h(), rows.len(), |ui, range| {
                 for r in &rows[range] {
                     let (rect, resp) = ui.allocate_exact_size(
-                        Vec2::new(ui.available_width(), ROW_H),
+                        Vec2::new(ui.available_width(), row_h()),
                         Sense::click(),
                     );
                     if resp.hovered() {
@@ -1876,7 +1879,7 @@ fn row(
     p: &Palette,
 ) -> egui::Response {
     let (rect, resp) =
-        ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::click());
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), row_h()), Sense::click());
     if resp.hovered() {
         ui.painter().rect_filled(rect, CornerRadius::ZERO, p.bg_200);
     }

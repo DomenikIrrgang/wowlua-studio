@@ -13,7 +13,10 @@ use wowlua_studio_ui::{Face, Palette, palette};
 use crate::lsp::{Location, TextEdit, Wire};
 use crate::system::{Found, Search};
 
-const ROW_H: f32 = 24.0;
+/// A row, at the settings' density (S062).
+fn row_h() -> f32 {
+    wowlua_studio_ui::row(24.0)
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Tab {
@@ -281,7 +284,7 @@ fn references(
     }
     let heights: Vec<f32> = list_rows
         .iter()
-        .map(|(_, l)| if l.is_some() { ROW_H } else { SECTION_H })
+        .map(|(_, l)| if l.is_some() { row_h() } else { SECTION_H })
         .collect();
     let mut picked = None;
     rows(ui, &heights, |ui, i, r| match list_rows[i] {
@@ -382,7 +385,7 @@ fn rename(ui: &mut Ui, state: &mut SearchState, root: &Path, p: &Palette) -> Opt
                         job.wrap.max_rows = 1;
                         let g = ui.fonts_mut(|f| f.layout_job(job));
                         let (rect, _) = ui.allocate_exact_size(
-                            Vec2::new(ui.available_width(), ROW_H),
+                            Vec2::new(ui.available_width(), row_h()),
                             Sense::hover(),
                         );
                         ui.painter().with_clip_rect(rect).galley(
@@ -529,7 +532,7 @@ fn text(ui: &mut Ui, state: &mut SearchState, root: &Path, p: &Palette) -> Optio
     }
     let mut heights: Vec<f32> = list_rows
         .iter()
-        .map(|(_, h)| if h.is_some() { ROW_H } else { SECTION_H })
+        .map(|(_, h)| if h.is_some() { row_h() } else { SECTION_H })
         .collect();
     heights.push(36.0);
     let cut = if found.cut { " (the first 5000)" } else { "" };

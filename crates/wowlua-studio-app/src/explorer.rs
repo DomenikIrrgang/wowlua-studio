@@ -11,7 +11,10 @@ use wowlua_studio_ui::{Face, Icon, Palette, icons, palette, widgets};
 
 use crate::system::{Entry, System, Workspace};
 
-const ROW_H: f32 = 24.0;
+/// A row, at the settings' density (S062).
+fn row_h() -> f32 {
+    wowlua_studio_ui::row(24.0)
+}
 const SECTION_H: f32 = 30.0;
 
 #[derive(Default)]
@@ -107,7 +110,7 @@ impl Explorer {
         let mut clicked = None;
         egui::ScrollArea::vertical().auto_shrink(false).show_rows(
             ui,
-            ROW_H,
+            row_h(),
             rows.len(),
             |ui, range| {
                 for i in range {
@@ -124,7 +127,7 @@ impl Explorer {
     /// Draws a row; returns whether it was clicked.
     fn row(&self, ui: &mut Ui, p: &Palette, workspace: &Workspace, row: &Row) -> bool {
         let (rect, response) =
-            ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::click());
+            ui.allocate_exact_size(Vec2::new(ui.available_width(), row_h()), Sense::click());
         let selected = match row {
             Row::File { path, .. } => self.selected.as_deref() == Some(path.as_path()),
             _ => false,

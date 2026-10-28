@@ -22,7 +22,10 @@ use crate::system::{
 
 /// The profiler's requests' ids: apart from the debugger's.
 pub const IDS: u64 = 1 << 41;
-const ROW_H: f32 = 22.0;
+/// A row, at the settings' density (S062).
+fn row_h() -> f32 {
+    wowlua_studio_ui::row(22.0)
+}
 const FLAME_ROW: f32 = 20.0;
 /// A function's own share that marks a spike's cause in a frame's tree.
 const BAR_H: f32 = 56.0;
@@ -1524,11 +1527,11 @@ fn functions(ui: &mut Ui, state: &mut ProfilerState, p: &Palette) -> Option<Acti
     egui::ScrollArea::vertical()
         .id_salt("prof-fns")
         .auto_shrink(false)
-        .show_rows(ui, ROW_H, order.len(), |ui, range| {
+        .show_rows(ui, row_h(), order.len(), |ui, range| {
             for &i in &order[range] {
                 let f = &m.flat[i];
-                let (rect, resp) =
-                    ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::click());
+                let (rect, resp) = ui
+                    .allocate_exact_size(Vec2::new(ui.available_width(), row_h()), Sense::click());
                 let sel = state.selected == Some(f.key);
                 if sel {
                     ui.painter().rect_filled(rect, CornerRadius::ZERO, p.bg_400);
@@ -1652,7 +1655,8 @@ fn columns(rect: Rect) -> [Rect; 6] {
 }
 
 fn header(ui: &mut Ui, titles: &[&str; 6], p: &Palette) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::hover());
+    let (rect, _) =
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), row_h()), Sense::hover());
     ui.painter().rect_filled(rect, CornerRadius::ZERO, p.bg_200);
     let cols = columns(rect);
     for (i, t) in titles.iter().enumerate() {
@@ -1746,11 +1750,11 @@ fn tree(ui: &mut Ui, state: &mut ProfilerState, p: &Palette) -> Option<Action> {
     egui::ScrollArea::vertical()
         .id_salt("prof-tree")
         .auto_shrink(false)
-        .show_rows(ui, ROW_H, rows.len(), |ui, range| {
+        .show_rows(ui, row_h(), rows.len(), |ui, range| {
             for &(n, depth) in &rows[range] {
                 let key = m.nodes[n as usize].key;
-                let (rect, resp) =
-                    ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::click());
+                let (rect, resp) = ui
+                    .allocate_exact_size(Vec2::new(ui.available_width(), row_h()), Sense::click());
                 if state.selected == Some(key) {
                     ui.painter().rect_filled(rect, CornerRadius::ZERO, p.bg_400);
                 } else if resp.hovered() {
@@ -1983,7 +1987,7 @@ fn flame(ui: &mut Ui, state: &mut ProfilerState, p: &Palette) -> Option<Action> 
 fn dispatches(ui: &mut Ui, state: &mut ProfilerState, p: &Palette) {
     let Some(m) = &state.current else { return };
     if m.game && !m.watched.is_empty() {
-        let half = (ui.available_height() / 2.0).max(ROW_H * 4.0);
+        let half = (ui.available_height() / 2.0).max(row_h() * 4.0);
         ui.scope_builder(
             egui::UiBuilder::new().max_rect(Rect::from_min_size(
                 ui.available_rect_before_wrap().min,
@@ -2015,10 +2019,10 @@ fn watched(ui: &mut Ui, m: &Model, p: &Palette) {
     egui::ScrollArea::vertical()
         .id_salt("prof-watched")
         .auto_shrink(false)
-        .show_rows(ui, ROW_H, m.watched.len(), |ui, range| {
+        .show_rows(ui, row_h(), m.watched.len(), |ui, range| {
             for w in &m.watched[range] {
-                let (rect, resp) =
-                    ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::hover());
+                let (rect, resp) = ui
+                    .allocate_exact_size(Vec2::new(ui.available_width(), row_h()), Sense::hover());
                 if resp.hovered() {
                     ui.painter().rect_filled(rect, CornerRadius::ZERO, p.bg_200);
                 }
@@ -2083,10 +2087,10 @@ fn dispatch_table(ui: &mut Ui, m: &Model, measure: Measure, p: &Palette) {
     egui::ScrollArea::vertical()
         .id_salt("prof-dispatch")
         .auto_shrink(false)
-        .show_rows(ui, ROW_H, rows.len(), |ui, range| {
+        .show_rows(ui, row_h(), rows.len(), |ui, range| {
             for d in &rows[range] {
-                let (rect, resp) =
-                    ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::hover());
+                let (rect, resp) = ui
+                    .allocate_exact_size(Vec2::new(ui.available_width(), row_h()), Sense::hover());
                 if resp.hovered() {
                     ui.painter().rect_filled(rect, CornerRadius::ZERO, p.bg_200);
                 }
