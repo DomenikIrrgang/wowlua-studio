@@ -348,6 +348,30 @@ Artboards: settings, wowlua.json.
 - Dependencies from the registry: search, add, update, outdated (S010;
   the design adds this view first).
 
+Built (S062): Studio's settings on this computer by section, found by name,
+every one the canvas has and the features behind them: the theme (the OS's
+too), the interface's size, density, reduced motion; the editor's font
+size, format on save, inlay hints, lenses, coverage in the gutter, word
+wrap (at the window or the package's line width); completion (while
+typing, the keys that accept, auto-import from wowlua's completion, T506,
+documentation beside the list, signature help); the language server's
+check timing, threads and profile (wowlua T504) and its check cache kept on
+disk and cleared (T505); the debugger's stops, dispatch frames, inline
+values, secrets and default clock, one with the debugger page's; the game
+screen's size, the installation's art (kept on disk) and data; the
+installation and Blizzard's UI refreshed (T505); layouts per workspace,
+floating panels as OS windows; Studio's log and releases. Keybindings
+recorded per command, the editor's too, with clashes. GitHub's device
+sign-in and the Claude API key in the OS credential store (their other
+settings kept for M12 and M14). `wowlua.json` by section: the designed rows,
+every other key from the schema, the json view the same document, a
+requirement that excludes the built-in wowlua fixed. The dependencies of a
+package of the workspace: newer versions when the view opens, the registry
+searched, added, updated, removed, a new requirement, yanked versions.
+The frame budget holds: 0.09 ms median, 0.15 ms p99. Not yet: GitHub's
+OAuth App (its client ID, from the user); checked by
+hand on macOS only.
+
 ## M11: Git
 
 Artboard: git.
@@ -405,6 +429,10 @@ and tests it on Windows and Linux (S058). On each, with SuuUI's workspace:
    install release, edit a file in the installed folder and see the
    warning; the dev loop with a save (copied and linked); save a publish
    token and see it in `wowlua login`'s store; a dry run.
+10. **M10**: the system theme following the OS; the interface size; record
+    a key and use it; word wrap at the window; save the Claude key; edit a
+    key of `wowlua.json` in its form and see the json view; search the
+    registry and add a dependency.
 
 ## Open questions
 

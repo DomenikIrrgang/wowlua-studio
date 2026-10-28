@@ -2354,7 +2354,7 @@ fn accept(tab: &mut Tab) {
             )
         })
         .collect();
-    edits.sort_by(|a, b| b.0.cmp(&a.0));
+    edits.sort_by_key(|e| std::cmp::Reverse(e.0));
     let caret = tab.doc.selection.head;
     let mut moved = 0;
     for (a, b, text) in edits {

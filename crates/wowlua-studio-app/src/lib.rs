@@ -2371,6 +2371,28 @@ impl Studio {
         self.queued_ship.push(what.to_owned());
     }
 
+    /// The settings page on a section (the screenshot harness's
+    /// `settings:`): a Studio section by its label, `wowlua.json/<section>`,
+    /// or `dependencies`.
+    pub fn settings_show(&mut self, what: &str) {
+        self.queue(Command::ShowPage(Page::Settings));
+        self.settings_page.view = if what == "dependencies" {
+            settings::View::Dependencies
+        } else if let Some(name) = what.strip_prefix("wowlua.json/") {
+            let i = manifest::SECTIONS
+                .iter()
+                .position(|(n, _)| *n == name)
+                .unwrap_or(0);
+            settings::View::Manifest(i)
+        } else {
+            let s = settings::Section::ALL
+                .into_iter()
+                .find(|s| s.label() == what)
+                .unwrap_or_default();
+            settings::View::Studio(s)
+        };
+    }
+
     /// The spells part's search typed (the screenshot harness's `spells:`).
     pub fn world_search(&mut self, query: &str) {
         self.world.spell_query = query.to_owned();

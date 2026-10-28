@@ -229,7 +229,7 @@ pub fn show(ui: &mut Ui, state: &mut DepsState, workspace: &Workspace, system: &
                     system.deps_search(&state.dir(workspace), state.query.trim());
                 }
                 if state.checking {
-                    caption(ui, "checking for newer versions…", &p);
+                    caption(ui, "checking for newer versions…", p);
                 }
             });
         });
@@ -245,7 +245,7 @@ pub fn show(ui: &mut Ui, state: &mut DepsState, workspace: &Workspace, system: &
             return;
         }
         None => {
-            forms::padded(ui, 16, 8, |ui| caption(ui, "reading the dependencies…", &p));
+            forms::padded(ui, 16, 8, |ui| caption(ui, "reading the dependencies…", p));
             return;
         }
     };
@@ -280,7 +280,7 @@ pub fn show(ui: &mut Ui, state: &mut DepsState, workspace: &Workspace, system: &
         });
     }
     for problem in facts.problems.iter().filter(|p| !p.contains("W4322")) {
-        caption(ui, problem, &p);
+        caption(ui, problem, p);
     }
     let newer: Vec<DepNewer> = match &state.newer {
         Some(Ok(n)) => n.clone(),
@@ -306,7 +306,7 @@ pub fn show(ui: &mut Ui, state: &mut DepsState, workspace: &Workspace, system: &
             .id_salt("deps-list")
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                list(ui, state, &facts, &newer, workspace, system, &p)
+                list(ui, state, &facts, &newer, workspace, system, p)
             });
     });
     ui.scope_builder(egui::UiBuilder::new().max_rect(detail_rect), |ui| {
@@ -315,7 +315,7 @@ pub fn show(ui: &mut Ui, state: &mut DepsState, workspace: &Workspace, system: &
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 forms::padded(ui, 14, 12, |ui| {
-                    details(ui, state, &facts, &newer, workspace, system, &p)
+                    details(ui, state, &facts, &newer, workspace, system, p)
                 });
             });
     });
@@ -684,22 +684,22 @@ mod tests {
             yanked: false,
             description: String::new(),
         };
-        assert_eq!(state_of(&row, None, &p).0, "up to date");
+        assert_eq!(state_of(&row, None, p).0, "up to date");
         let newer = DepNewer {
             name: "lib-tooltip".into(),
             latest: "1.2.3".into(),
             action: "`wowlua update`".into(),
         };
-        assert_eq!(state_of(&row, Some(&newer), &p).0, "update: 1.2.3");
+        assert_eq!(state_of(&row, Some(&newer), p).0, "update: 1.2.3");
         let yanked = DepRow {
             yanked: true,
             ..row.clone()
         };
-        assert_eq!(state_of(&yanked, None, &p).0, "W4322 yanked");
+        assert_eq!(state_of(&yanked, None, p).0, "W4322 yanked");
         let unresolved = DepRow {
             locked: String::new(),
             ..row
         };
-        assert_eq!(state_of(&unresolved, None, &p).0, "not resolved");
+        assert_eq!(state_of(&unresolved, None, p).0, "not resolved");
     }
 }

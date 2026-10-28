@@ -107,10 +107,10 @@ pub fn parse(text: &str) -> Option<KeyboardShortcut> {
     let mut key = None;
     for part in text.split('+').map(str::trim) {
         match part.to_lowercase().as_str() {
-            "cmd" | "command" => modifiers = modifiers | Modifiers::COMMAND,
-            "ctrl" | "control" => modifiers = modifiers | Modifiers::CTRL,
-            "alt" | "option" => modifiers = modifiers | Modifiers::ALT,
-            "shift" => modifiers = modifiers | Modifiers::SHIFT,
+            "cmd" | "command" => modifiers |= Modifiers::COMMAND,
+            "ctrl" | "control" => modifiers |= Modifiers::CTRL,
+            "alt" | "option" => modifiers |= Modifiers::ALT,
+            "shift" => modifiers |= Modifiers::SHIFT,
             other => {
                 key = Key::from_name(other).or_else(|| {
                     let mut c = other.chars();

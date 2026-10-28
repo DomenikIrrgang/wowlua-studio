@@ -56,7 +56,8 @@ runs commands first (`new` and `adopt` show the start page's forms;
 `worldlive:<profile>|<path>=<json>|…` the world profiles page;
 `ship:<tab>[/<profile>]` and `shipdo:<build|install|dry|publish|tag|dev>`
 the ship page, run with `WOWLUA_NO_KEYRING=1` so no credential store
-dialog opens). `WOWLUA_STUDIO_DATA=<dir>` keeps settings and layouts
+dialog opens; `settings:<section>`, `settings:wowlua.json/<section>` and
+`settings:dependencies` the settings page). `WOWLUA_STUDIO_DATA=<dir>` keeps settings and layouts
 there instead of the user's folder.
 
 ## wowlua

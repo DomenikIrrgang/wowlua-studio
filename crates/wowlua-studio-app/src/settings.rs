@@ -597,7 +597,7 @@ pub fn sections(ui: &mut Ui, state: &mut SettingsState, manifest_sections: &[&st
     });
     for section in Section::ALL {
         let current = state.query.trim().is_empty() && state.view == View::Studio(section);
-        if nav(ui, section.label(), current, &p) {
+        if nav(ui, section.label(), current, p) {
             state.view = View::Studio(section);
             state.query.clear();
         }
@@ -620,12 +620,12 @@ pub fn sections(ui: &mut Ui, state: &mut SettingsState, manifest_sections: &[&st
         });
     });
     for (i, name) in manifest_sections.iter().enumerate() {
-        if nav(ui, name, state.view == View::Manifest(i), &p) {
+        if nav(ui, name, state.view == View::Manifest(i), p) {
             state.view = View::Manifest(i);
         }
     }
     ui.add_space(8.0);
-    if nav(ui, "dependencies", state.view == View::Dependencies, &p) {
+    if nav(ui, "dependencies", state.view == View::Dependencies, p) {
         state.view = View::Dependencies;
         state.deps.opened();
     }
@@ -794,14 +794,14 @@ pub fn studio(
                         }
                         Section::About => {
                             match &state.updates {
-                                Some(UpdateCheck::Newest) => caption(ui, "This is the newest Studio.", &p),
+                                Some(UpdateCheck::Newest) => caption(ui, "This is the newest Studio.", p),
                                 Some(UpdateCheck::Newer { version, url }) => {
                                     forms::callout(ui, CalloutKind::Note, |ui| {
                                         forms::paragraph(ui, &format!("wowlua studio {version} is out: {url}"), 12.5, 19.0, p.ink);
                                     });
                                 }
-                                Some(UpdateCheck::Failed(why)) => caption(ui, why, &p),
-                                None if state.checking_updates => caption(ui, "checking…", &p),
+                                Some(UpdateCheck::Failed(why)) => caption(ui, why, p),
+                                None if state.checking_updates => caption(ui, "checking…", p),
                                 None => {}
                             }
                         }
@@ -820,11 +820,11 @@ pub fn studio(
                     })
                     .collect();
                 if shown.is_empty() {
-                    caption(ui, &format!("No setting matches \"{}\".", state.query.trim()), &p);
+                    caption(ui, &format!("No setting matches \"{}\".", state.query.trim()), p);
                 }
                 for r in shown {
                     let where_ = (!query.is_empty()).then(|| r.section.label());
-                    let a = row(ui, r, where_, state, settings, system, installation, &flavor, &p);
+                    let a = row(ui, r, where_, state, settings, system, installation, &flavor, p);
                     if a.is_some() {
                         action = a;
                     }
