@@ -52,6 +52,8 @@ pub enum Action {
     Close(usize),
     Hover(Pos),
     Complete(Pos),
+    /// The documentation of the suggestion with this label (S062).
+    Resolve(String),
     Signature(Pos),
     Definition(Pos),
     /// Whether the name at the place has a definition (cmd held over it).
@@ -1560,7 +1562,7 @@ fn code(
     hover_popup(&ctx, id, tab, cx.diagnostics, p);
     if let Some(caret) = caret {
         signature_popup(&ctx, tab, caret, p);
-        completion_popup(&ctx, tab, caret, p);
+        completion_popup(&ctx, tab, caret, p, actions);
         fixes_popup(&ctx, tab, caret, p, actions);
         rename_popup(&ctx, id, tab, caret, p, actions);
     }
@@ -1880,7 +1882,14 @@ fn signature_popup(ctx: &egui::Context, tab: &Tab, caret: Rect, p: &Palette) {
 }
 
 /// The suggestions under the caret, filtered by the word typed.
-fn completion_popup(ctx: &egui::Context, tab: &mut Tab, caret: Rect, p: &Palette) {
+fn completion_popup(
+    ctx: &egui::Context,
+    tab: &mut Tab,
+    caret: Rect,
+    p: &Palette,
+    actions: &mut Vec<Action>,
+) {
+    let docs = crate::state::prefs(ctx).completion_docs;
     let prefix = word_before(&tab.doc).1;
     let Some(c) = &mut tab.completion else {
         return;
@@ -1952,6 +1961,31 @@ fn completion_popup(ctx: &egui::Context, tab: &mut Tab, caret: Rect, p: &Palette
             }
         },
     );
+    // The chosen one's documentation beside the list (S062).
+    if docs && let Some(&item_i) = shown.get(c.selected) {
+        let item = &c.items[item_i];
+        match &item.doc {
+            Some(doc) if !doc.trim().is_empty() => {
+                popup(
+                    ctx,
+                    Id::unique("wowlua-studio-completion-doc"),
+                    Pos2::new(caret.left() - 8.0 + 468.0, caret.bottom() + 4.0),
+                    Align2::LEFT_TOP,
+                    360.0,
+                    |ui| {
+                        ui.set_width(360.0);
+                        ui.label(
+                            egui::RichText::new(doc.trim())
+                                .font(Face::Plex.at(12.0))
+                                .color(p.ink),
+                        );
+                    },
+                );
+            }
+            Some(_) => {}
+            None => actions.push(Action::Resolve(item.label.clone())),
+        }
+    }
     if let Some(i) = picked {
         c.selected = i;
         accept(tab);
@@ -2131,7 +2165,31 @@ fn accept(tab: &mut Tab) {
         Some((start, _)) if start.line == head.line => lsp::from_wire(&tab.doc, start),
         _ => Pos::new(head.line, word_start),
     };
+    let edits = item.edits.clone();
     tab.doc.edit(start, head, &item.insert, EditKind::Other);
+    // (from the last: an earlier place stays where it was)
+    let mut edits: Vec<_> = edits
+        .iter()
+        .map(|e| {
+            (
+                lsp::from_wire(&tab.doc, e.start),
+                lsp::from_wire(&tab.doc, e.end),
+                e.text.clone(),
+            )
+        })
+        .collect();
+    edits.sort_by(|a, b| b.0.cmp(&a.0));
+    let caret = tab.doc.selection.head;
+    let mut moved = 0;
+    for (a, b, text) in edits {
+        tab.doc.edit(a, b, &text, EditKind::Other);
+        if a.line < caret.line {
+            moved += text.matches('\n').count();
+        }
+    }
+    // (the caret stays after what was completed)
+    let caret = Pos::new(caret.line + moved, caret.col);
+    tab.doc.selection = Selection::caret(caret);
 }
 
 /// The design system's syntax colours (`tok-*`).
@@ -2204,6 +2262,7 @@ struct Changed {
 
 /// The editor's keys and text input; the popups' keys first.
 fn keyboard(ui: &Ui, tab: &mut Tab, mac: bool, page: usize, actions: &mut Vec<Action>) -> Changed {
+    let prefs = crate::state::prefs(ui.ctx());
     let mut changed = Changed::default();
     if tab.rename.is_some() {
         return changed;
@@ -2261,7 +2320,7 @@ fn keyboard(ui: &Ui, tab: &mut Tab, mac: bool, page: usize, actions: &mut Vec<Ac
                     c.selected = (c.selected + count.max(1) - 1) % count.max(1);
                     continue;
                 }
-                Key::Enter | Key::Tab if count > 0 => {
+                Key::Enter | Key::Tab if count > 0 && accepts(*key, &prefs.accept_with) => {
                     accept(tab);
                     changed.moved = true;
                     continue;
@@ -2277,7 +2336,7 @@ fn keyboard(ui: &Ui, tab: &mut Tab, mac: bool, page: usize, actions: &mut Vec<Ac
             Event::Text(text) => {
                 tab.doc.insert(&text, EditKind::Typing);
                 changed.moved = true;
-                typed(tab, &text, actions);
+                typed(tab, &text, actions, &prefs);
             }
             Event::Ime(egui::ImeEvent::Commit(text)) if !text.is_empty() => {
                 tab.doc.insert(&text, EditKind::Typing);
@@ -2368,11 +2427,30 @@ fn keyboard(ui: &Ui, tab: &mut Tab, mac: bool, page: usize, actions: &mut Vec<Ac
     changed
 }
 
-/// Typing asks for suggestions and signatures.
-fn typed(tab: &mut Tab, text: &str, actions: &mut Vec<Action>) {
+/// Whether `key` accepts a suggestion (the setting "accept with", S062).
+fn accepts(key: Key, with: &str) -> bool {
+    match key {
+        Key::Tab => with != "enter",
+        Key::Enter => with != "tab",
+        _ => false,
+    }
+}
+
+/// Typing asks for suggestions and signatures, as the settings say.
+fn typed(tab: &mut Tab, text: &str, actions: &mut Vec<Action>, prefs: &crate::state::Settings) {
     let Some(c) = text.chars().last() else {
         return;
     };
+    if !prefs.suggest_while_typing && !matches!(c, '(' | ',' | ')') {
+        // (a list open still narrows as the word grows)
+        if tab.completion.is_some() && !(c.is_alphanumeric() || c == '_') {
+            tab.completion = None;
+        }
+        return;
+    }
+    if !prefs.signature_help && matches!(c, '(' | ',') {
+        return;
+    }
     let head = tab.doc.selection.head;
     match c {
         // A key or a string value of a JSON file with a schema.
@@ -2773,6 +2851,9 @@ mod tests {
         let mut tab = Tab::new(doc("self.fr"));
         tab.doc.selection = Selection::caret(Pos::new(0, 7));
         let item = |label: &str| Item {
+            edits: Vec::new(),
+            doc: None,
+            raw: serde_json::Value::Null,
             label: label.into(),
             detail: String::new(),
             kind: 5,
@@ -2790,5 +2871,50 @@ mod tests {
         assert_eq!(filtered(tab.completion.as_ref().unwrap(), "fr"), [1, 2]);
         accept(&mut tab);
         assert_eq!(tab.doc.text(), "self.free");
+    }
+
+    /// An auto-import's suggestion adds its import too (S062); the caret
+    /// stays after the word.
+    #[test]
+    fn an_auto_import_adds_its_import() {
+        let mut tab = Tab::new(doc("print(1)\nlocal x = gre"));
+        tab.doc.selection = Selection::caret(Pos::new(1, 13));
+        let start = crate::lsp::Wire {
+            line: 0,
+            character: 0,
+        };
+        tab.completion = Some(Completion {
+            at: Pos::new(1, 10),
+            items: vec![Item {
+                edits: vec![crate::lsp::TextEdit {
+                    start,
+                    end: start,
+                    text: "import greet from \"/util\"\n".into(),
+                }],
+                doc: None,
+                raw: serde_json::Value::Null,
+                label: "greet".into(),
+                detail: "import from \"/util\"".into(),
+                kind: 3,
+                insert: "greet".into(),
+                range: None,
+                sort: "1greet".into(),
+            }],
+            selected: 0,
+            incomplete: false,
+        });
+        accept(&mut tab);
+        assert_eq!(
+            tab.doc.text(),
+            "import greet from \"/util\"\nprint(1)\nlocal x = greet"
+        );
+        assert_eq!(tab.doc.selection.head, Pos::new(2, 15));
+    }
+
+    #[test]
+    fn the_keys_that_accept() {
+        assert!(accepts(Key::Tab, "tab and enter") && accepts(Key::Enter, "tab and enter"));
+        assert!(accepts(Key::Tab, "tab") && !accepts(Key::Enter, "tab"));
+        assert!(!accepts(Key::Tab, "enter") && accepts(Key::Enter, "enter"));
     }
 }

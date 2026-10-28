@@ -154,6 +154,23 @@ pub struct Layouts {
     pub workspaces: BTreeMap<String, BTreeMap<Page, Layout>>,
 }
 
+/// The settings as they are now, for code far from the app (S062): the
+/// editor, the debugger, the dock.
+pub fn prefs(ctx: &egui::Context) -> std::sync::Arc<Settings> {
+    ctx.data(|d| d.get_temp::<std::sync::Arc<Settings>>(egui::Id::unique("wowlua-studio-prefs")))
+        .unwrap_or_default()
+}
+
+/// Keeps the settings where [`prefs`] reads them.
+pub fn set_prefs(ctx: &egui::Context, settings: &Settings) {
+    ctx.data_mut(|d| {
+        d.insert_temp(
+            egui::Id::unique("wowlua-studio-prefs"),
+            std::sync::Arc::new(settings.clone()),
+        )
+    });
+}
+
 pub const SETTINGS_FILE: &str = "settings.json";
 pub const LAYOUTS_FILE: &str = "layouts.json";
 

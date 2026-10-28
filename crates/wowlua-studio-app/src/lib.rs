@@ -131,6 +131,8 @@ pub struct Studio {
     settings_page: settings::SettingsState,
     /// The theme and scale last applied (S062).
     applied: Option<(wowlua_studio_ui::Theme, f32)>,
+    /// The settings last applied (S062).
+    prefs: Option<state::Settings>,
     /// The workspace's world profiles (`tests/profiles/*.json`), by name.
     profiles: Vec<String>,
     /// Background jobs (S044); the checks running, by package.
@@ -256,6 +258,7 @@ impl Studio {
             ship: ship::ShipState::default(),
             settings_page: settings::SettingsState::default(),
             applied: None,
+            prefs: None,
             profiles: Vec::new(),
             jobs: jobs::Jobs::default(),
             checks: std::collections::HashMap::new(),
@@ -1209,6 +1212,26 @@ impl Studio {
             A::ToggleBreakpoint(_) | A::EditBreakpoint(_) => {}
             A::Hover(at) => self.lsp.hover(doc, at, system),
             A::Complete(at) => self.lsp.complete(doc, at, system),
+            A::Resolve(label) => {
+                let path = doc.path.clone();
+                let item = tab
+                    .completion
+                    .as_ref()
+                    .and_then(|c| c.items.iter().find(|i| i.label == label))
+                    .cloned();
+                if let Some(item) = item {
+                    self.lsp.resolve(&path, &item, system);
+                    // (asked once: until it answers, and an empty answer,
+                    // nothing shows)
+                    if let Some(t) = self.editors.active_mut()
+                        && let Some(c) = &mut t.completion
+                    {
+                        for it in c.items.iter_mut().filter(|i| i.label == label) {
+                            it.doc = Some(String::new());
+                        }
+                    }
+                }
+            }
             A::Signature(at) => self.lsp.signature(doc, at, system),
             A::Definition(at) => self.lsp.definition(doc, at, system),
             A::Linkable(at) => self.lsp.linkable(doc, at, system),
@@ -1277,6 +1300,9 @@ impl Studio {
                         let end = lsp::to_wire(&tab.doc, at);
                         let label = s.label.trim_matches('"').to_owned();
                         lsp::Item {
+                            edits: Vec::new(),
+                            doc: None,
+                            raw: serde_json::Value::Null,
                             sort: label.clone(),
                             label,
                             detail: s.detail,
@@ -1455,12 +1481,26 @@ impl Studio {
                     && !items.is_empty()
                     && self.editors.tabs[i].doc.selection.head.line == at.line
                 {
+                    // (auto-import's items only when imports are added, S062)
+                    let mut items = items;
+                    if !self.settings.add_imports {
+                        items.retain(|item| item.edits.is_empty());
+                    }
                     self.editors.tabs[i].completion = Some(editor::Completion {
                         at,
                         items,
                         selected: 0,
                         incomplete,
                     });
+                }
+            }
+            R::Resolved { path, label, doc } => {
+                if let Some(i) = find(&self.editors, &path)
+                    && let Some(c) = &mut self.editors.tabs[i].completion
+                {
+                    for item in c.items.iter_mut().filter(|it| it.label == label) {
+                        item.doc = Some(doc.clone());
+                    }
                 }
             }
             R::Signature { path, text, active } => {
@@ -1600,7 +1640,8 @@ impl Studio {
                 if let Some(tab) = self.editors.active()
                     && self.lsp.canonical_of(&tab.doc.path) == Some(path.as_path())
                 {
-                    self.lsp.decorations(&tab.doc, &*self.host.system);
+                    let (h, l) = (self.settings.inlay_hints, self.settings.code_lenses);
+                    self.lsp.decorations(&tab.doc, &*self.host.system, h, l);
                 }
             }
             R::Hints {
@@ -1719,8 +1760,10 @@ impl Studio {
         let Some(tab) = self.editors.tabs.get(i) else {
             return;
         };
-        // Format on save: the server's formatting first, then the write.
-        if self.lsp.ready
+        // Format on save (a setting, S062): the server's formatting first,
+        // then the write.
+        if self.settings.format_on_save
+            && self.lsp.ready
             && lsp::served(&tab.doc.path)
             && self.lsp.format(&tab.doc, true, &*self.host.system)
         {
@@ -1998,7 +2041,8 @@ impl Studio {
             // A package whose requirement excludes this wowlua opens with
             // checks, hover and completion off (E4300).
             if workspace.cannot_check.is_none() {
-                self.lsp.start(&workspace.root, &*self.host.system);
+                let options = lsp::options(&self.settings);
+                self.lsp.start(&workspace.root, &*self.host.system, options);
             } else {
                 self.lsp.stop(&*self.host.system);
                 self.terminal.close(&*self.host.system);
@@ -2257,6 +2301,13 @@ impl Studio {
     /// Applies the settings that change how Studio draws (S062): the
     /// theme (the OS's for `system`) and the interface's scale.
     fn apply_settings(&mut self, ctx: &Context) {
+        if self.prefs.as_ref() != Some(&self.settings) {
+            let before = self.prefs.replace(self.settings.clone());
+            state::set_prefs(ctx, &self.settings);
+            if let Some(before) = before {
+                self.settings_changed(&before);
+            }
+        }
         let theme = if self.settings.follows_system() {
             match ctx.system_theme() {
                 Some(egui::Theme::Light) => wowlua_studio_ui::Theme::Light,
@@ -2273,6 +2324,30 @@ impl Studio {
         wowlua_studio_ui::set_theme(ctx, theme);
         if (ctx.zoom_factor() - zoom).abs() > f32::EPSILON {
             ctx.set_zoom_factor(zoom);
+        }
+    }
+
+    /// What a change of the settings changes (S062).
+    fn settings_changed(&mut self, before: &state::Settings) {
+        let system = &*self.host.system;
+        let options = lsp::options(&self.settings);
+        if lsp::options(before) != options {
+            self.lsp.configure(system, options);
+        }
+        let (hints, lenses) = (self.settings.inlay_hints, self.settings.code_lenses);
+        if (hints, lenses) != (before.inlay_hints, before.code_lenses) {
+            for tab in &mut self.editors.tabs {
+                if !hints {
+                    tab.hints = None;
+                }
+                if !lenses {
+                    tab.lenses = None;
+                }
+            }
+            if let Some(tab) = self.editors.active() {
+                let on = (hints && !before.inlay_hints, lenses && !before.code_lenses);
+                self.lsp.decorations(&tab.doc, system, on.0, on.1);
+            }
         }
     }
 
