@@ -19,6 +19,7 @@ pub mod pages;
 pub mod palette;
 pub mod panels;
 pub mod problems;
+pub mod profiler;
 pub mod recents;
 pub mod search;
 pub mod start;
@@ -114,6 +115,7 @@ pub struct Studio {
     game: game::GameState,
     /// The debugger page (S056).
     debug: debug::DebugState,
+    profiler: profiler::ProfilerState,
     /// The workspace's world profiles (`tests/profiles/*.json`), by name.
     profiles: Vec<String>,
     /// Background jobs (S044); the checks running, by package.
@@ -154,6 +156,14 @@ pub struct Studio {
     queued_debug: bool,
     /// A test to debug once the workspace is open (`debugtest:file::test`).
     queued_debug_test: Option<(PathBuf, Option<String>)>,
+    /// The profiler's steps (`profile:file`, `profiletest:file::test`,
+    /// `record:seconds`, `profview:view@frame#rank`): a profile to show, a
+    /// test to profile, the session to record for that long (and when it
+    /// started), the view.
+    queued_profile: Option<PathBuf>,
+    queued_profile_test: Option<(PathBuf, Option<String>)>,
+    queued_record: Option<(f64, Option<f64>)>,
+    queued_prof_view: Option<(profiler::View, Option<usize>, Option<usize>)>,
     /// A tab of the tests page's results to show once it is open.
     queued_tab: Option<tests::Tab>,
     /// Show the coverage in the gutter once the tests page is there.
@@ -220,6 +230,7 @@ impl Studio {
             tests: tests::TestsState::default(),
             game: game::GameState::default(),
             debug: debug::DebugState::default(),
+            profiler: profiler::ProfilerState::default(),
             profiles: Vec::new(),
             jobs: jobs::Jobs::default(),
             checks: std::collections::HashMap::new(),
@@ -239,6 +250,10 @@ impl Studio {
             queued_bps: Vec::new(),
             queued_debug: false,
             queued_debug_test: None,
+            queued_profile: None,
+            queued_profile_test: None,
+            queued_record: None,
+            queued_prof_view: None,
             queued_tab: None,
             queued_gutter: false,
             menus_changed: false,
@@ -325,6 +340,29 @@ impl Studio {
     /// `debugtest:file::test` step).
     pub fn debug_test_later(&mut self, file: &Path, test: Option<&str>) {
         self.queued_debug_test = Some((file.to_path_buf(), test.map(str::to_owned)));
+    }
+
+    /// The profiler's screenshot steps: a speedscope file shown, a test
+    /// profiled, the running session recorded for `seconds`, a view.
+    pub fn profile_later(&mut self, file: &Path) {
+        self.queued_profile = Some(file.to_path_buf());
+    }
+
+    pub fn profile_test_later(&mut self, file: &Path, test: Option<&str>) {
+        self.queued_profile_test = Some((file.to_path_buf(), test.map(str::to_owned)));
+    }
+
+    pub fn record_later(&mut self, seconds: f64) {
+        self.queued_record = Some((seconds, None));
+    }
+
+    pub fn profile_view(
+        &mut self,
+        view: profiler::View,
+        frame: Option<usize>,
+        rank: Option<usize>,
+    ) {
+        self.queued_prof_view = Some((view, frame, rank));
     }
 
     /// Starts debugging once the workspace is open (the screenshot's
@@ -442,6 +480,42 @@ impl Studio {
                 && let Some((size, ui_scale)) = self.queued_size.take()
             {
                 self.game.set_screen(&*self.host.system, size, ui_scale);
+            }
+            if self.tests.files.is_some()
+                && let Some(path) = self.queued_profile.take()
+            {
+                self.profiler.open_file(&path, &*self.host.system);
+                self.queue(Command::ShowPage(Page::Perf));
+            }
+            if self.tests.files.is_some()
+                && let Some((file, test)) = self.queued_profile_test.take()
+            {
+                self.profile_test(&file, test.as_deref(), &ctx);
+            }
+            if let Some((seconds, started)) = self.queued_record
+                && self.game.running()
+            {
+                let now = ctx.input(|i| i.time);
+                match started {
+                    None => {
+                        self.profiler.record(&*self.host.system);
+                        self.queued_record = Some((seconds, Some(now)));
+                        self.queue(Command::ShowPage(Page::Perf));
+                    }
+                    Some(at) if now - at >= seconds => {
+                        self.profiler.stop(&*self.host.system);
+                        self.queued_record = None;
+                    }
+                    Some(_) => ctx.request_repaint(),
+                }
+            }
+            if self.profiler.current.is_some()
+                && let Some((view, frame, rank)) = self.queued_prof_view.take()
+            {
+                self.profiler.set_view(view, frame);
+                if let Some(r) = rank {
+                    self.profiler.select_rank(r);
+                }
             }
             if self.tests.files.is_some()
                 && let Some(coverage) = self.queued_run.take()
@@ -602,8 +676,11 @@ impl Studio {
         let tests_state = &mut self.tests;
         let game_state = &mut self.game;
         let mut game_action = None;
+        let session_running = self.debug.running() || game_state.running();
         let debug_state = &mut self.debug;
         let mut debug_action = None;
+        let profiler_state = &mut self.profiler;
+        let mut profiler_action = None;
         let on_debug = self.layout_page == Page::Debug;
         let game_status = game_state.status.clone();
         let profiles = &self.profiles;
@@ -754,6 +831,16 @@ impl Studio {
                     debug_action = Some(a);
                 }
             }
+            Panel::Profiler => {
+                profiler_action =
+                    profiler::show(ui, profiler_state, workspace, system, session_running);
+            }
+            Panel::Function => {
+                let p = wowlua_studio_ui::palette(ui.ctx());
+                if let Some(a) = profiler::function(ui, profiler_state, p) {
+                    profiler_action = Some(a);
+                }
+            }
             _ => dock::placeholder(ui, panel),
         };
         let changed = dock::show(ui, area, layout, &mut self.dock, &mut content);
@@ -770,6 +857,9 @@ impl Studio {
         }
         if let Some(a) = debug_action {
             self.debug_action(a, ctx);
+        }
+        if let Some(a) = profiler_action {
+            self.profiler_action(a, ctx);
         }
         // The stop's source, shown once.
         if let Some((path, line)) = self.debug.show.take() {
@@ -830,6 +920,9 @@ impl Studio {
                 self.queue(Command::ShowPage(Page::Files));
             }
             Some(tests::Action::Debug(file, test)) => self.debug_test(&file, test.as_deref()),
+            Some(tests::Action::Profile(file, test)) => {
+                self.profile_test(&file, test.as_deref(), ctx)
+            }
             Some(tests::Action::ShowCoverage) => {
                 self.queue(Command::ShowPanel(Panel::Coverage, dock::Dock::Main));
             }
@@ -1607,12 +1700,20 @@ impl Studio {
                 Event::Tests { run, event } => self.test_event(run, event, ctx),
                 Event::Game { session, event } => {
                     let now = ctx.input(|i| i.time);
-                    let debugger =
-                        matches!(&event, system::GameEvent::Reply { id, .. } if *id >= debug::IDS);
-                    if let Some(w) = self.workspace.clone()
-                        && (debugger || !matches!(event, system::GameEvent::Reply { .. }))
-                    {
-                        self.debug.event(session, &event, &*self.host.system, &w);
+                    let profiling = matches!(&event, system::GameEvent::Reply { id, .. } if *id >= profiler::IDS);
+                    let debugger = !profiling
+                        && matches!(&event, system::GameEvent::Reply { id, .. } if *id >= debug::IDS);
+                    if let Some(w) = self.workspace.clone() {
+                        if profiling || matches!(event, system::GameEvent::Ended { .. }) {
+                            self.profiler.event(&event, &w, &*self.host.system);
+                        }
+                        if debugger || !matches!(event, system::GameEvent::Reply { .. }) {
+                            self.debug.event(session, &event, &*self.host.system, &w);
+                        }
+                    }
+                    if profiling {
+                        ctx.request_repaint();
+                        continue;
                     }
                     if !debugger {
                         self.game.event(session, event, now);
@@ -1630,6 +1731,8 @@ impl Studio {
                         self.lsp_reply(reply, ctx);
                     }
                 }
+                Event::Profile { path, result } => self.profiler.profile_read(&path, result),
+                Event::GameRecordings(result) => self.profiler.game_recordings(result),
                 Event::Installation(_) | Event::Ui { .. } => {}
             }
             ctx.request_repaint();
@@ -1807,6 +1910,53 @@ impl Studio {
         self.queue(Command::ShowPage(Page::Debug));
     }
 
+    /// Profiles a test file, or one test of it (S057): its profile shown
+    /// on the profiler page when the run keeps it.
+    fn profile_test(&mut self, file: &Path, test: Option<&str>, ctx: &Context) {
+        let Some(w) = self.workspace.clone() else {
+            return;
+        };
+        let package = tests::package_of(&w, file);
+        let mut request = tests::request_for(&package, file, test, &self.tests);
+        request.profiler = true;
+        request.coverage = false;
+        self.profiler.awaiting_test = true;
+        self.start_tests(request, ctx);
+    }
+
+    /// What the profiler page asks: a function's code, a breakpoint on it.
+    fn profiler_action(&mut self, action: profiler::Action, ctx: &Context) {
+        let Some(w) = self.workspace.clone() else {
+            return;
+        };
+        match action {
+            profiler::Action::Open(rel, line) => {
+                // A source from its package's root: the root's, else a
+                // member's that has it.
+                let path = std::iter::once(w.root.clone())
+                    .chain(w.members.iter().map(|m| m.dir.clone()))
+                    .map(|r| r.join(&rel))
+                    .find(|p| self.host.system.exists(p))
+                    .unwrap_or_else(|| w.root.join(&rel));
+                let at = lsp::Wire {
+                    line: line.saturating_sub(1) as usize,
+                    character: 0,
+                };
+                let place = lsp::Location {
+                    path,
+                    start: at,
+                    end: at,
+                };
+                self.show_place(&place, ctx);
+                self.queue(Command::ShowPage(Page::Files));
+            }
+            profiler::Action::BreakOn(name) => {
+                self.debug.add_functions(&*self.host.system, vec![name]);
+                self.keep_debug();
+            }
+        }
+    }
+
     /// The configuration chosen on the debugger page, else the addon's.
     fn chosen_config(&mut self) -> debug::Config {
         let name = self
@@ -1950,6 +2100,15 @@ impl Studio {
         else {
             return;
         };
+        if let system::TestEvent::Profiled { path, .. } = &event
+            && let Some(w) = self.workspace.clone()
+        {
+            let showing = self.profiler.awaiting_test;
+            self.profiler.test_profiled(path, &w, &*self.host.system);
+            if showing {
+                self.queue(Command::ShowPage(Page::Perf));
+            }
+        }
         let done = self.tests.event(run, event);
         let now = ctx.input(|i| i.time);
         if let Some(r) = &self.tests.running {
@@ -2011,6 +2170,7 @@ impl Studio {
                 self.queue(Command::ShowPage(Page::Tests));
             }
             C::Debug { file, test } => self.debug_test(&file, test.as_deref()),
+            C::Profile { file, test } => self.profile_test(&file, test.as_deref(), ctx),
         }
     }
 
@@ -2055,6 +2215,7 @@ impl Studio {
             coverage: self.tests.coverage_on,
             update_snapshots: false,
             profile: self.tests.profile.clone(),
+            profiler: false,
         };
         self.start_tests(request, ctx);
     }
@@ -2285,6 +2446,7 @@ impl Studio {
                         coverage: self.tests.coverage_on,
                         update_snapshots: false,
                         profile: self.tests.profile.clone(),
+                        profiler: false,
                     };
                     self.start_tests(request, ctx);
                 }

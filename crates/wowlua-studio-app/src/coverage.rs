@@ -116,6 +116,7 @@ pub fn show(
                     coverage: true,
                     update_snapshots: false,
                     profile: state.profile.clone(),
+                    profiler: false,
                 }));
             }
         });

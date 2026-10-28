@@ -426,6 +426,129 @@ fn the_game_page_stays_within_the_budget() {
     }
 }
 
+/// The profiler page with a large profile (3,000 functions, a tree of
+/// 20,000 nodes, 600 frames with their trees): each view, a frame picked,
+/// scrolled through.
+#[test]
+fn the_profiler_page_stays_within_the_budget() {
+    use egui::UiBuilder;
+    use wowlua_studio_app::profiler::{self, ProfilerState, View};
+    use wowlua_studio_app::system::{
+        NoSystem, Profile, ProfileFrame, ProfileKey, ProfileNode, Workspace,
+    };
+    let ctx = egui::Context::default();
+    let _ = common::studio(&ctx);
+    let w = Workspace {
+        root: "/p/suuui".into(),
+        name: "SuuUI".into(),
+        members: Vec::new(),
+        flavors: vec!["camelot".into()],
+        cannot_check: None,
+    };
+    let mut keys = vec![ProfileKey {
+        name: "(root)".into(),
+        ..ProfileKey::default()
+    }];
+    for i in 0..3000u32 {
+        keys.push(ProfileKey {
+            name: format!("function src/Module{}.wowlua:{}", i % 60, i),
+            file: Some(format!("src/Module{}.wowlua", i % 60)),
+            line: i,
+            kind: None,
+        });
+    }
+    // A tree: each node under one a few before it, costs varied.
+    let mut nodes = vec![ProfileNode::default()];
+    for i in 1..20_000u32 {
+        let parent = if i < 40 { 0 } else { i / 3 };
+        nodes.push(ProfileNode {
+            key: 1 + (i * 7919) % 3000,
+            parent,
+            calls: u64::from(i % 50 + 1),
+            cost: [
+                u64::from(i * 31 % 9000),
+                u64::from(i % 700),
+                u64::from(i * 13),
+            ],
+        });
+    }
+    let frames = (0..600u32)
+        .map(|f| ProfileFrame {
+            name: format!("frame {f}"),
+            cost: [u64::from(f % 12 * 1000 + 500), 100, 2000],
+            nodes: (0..200u32)
+                .map(|j| {
+                    let n = (f * 31 + j * 97) % 20_000;
+                    (n, (1u64, [u64::from(j * 10), 10, 30]))
+                })
+                .collect::<std::collections::BTreeMap<_, _>>()
+                .into_iter()
+                .map(|(n, (c, cost))| (n, c, cost))
+                .collect(),
+        })
+        .collect();
+    let profile = Profile {
+        name: "SuuUI · addon".into(),
+        keys,
+        nodes,
+        frames,
+    };
+    let mut state = ProfilerState::default();
+    state.open_profile(&profile, None);
+    let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(1440.0, 900.0));
+    let main = Rect::from_min_max(Pos2::new(64.0, 40.0), Pos2::new(1110.0, 874.0));
+    let side = Rect::from_min_max(Pos2::new(1110.0, 40.0), Pos2::new(1440.0, 874.0));
+    let views = [View::Functions, View::Tree, View::Flame, View::Dispatches];
+    let mut times = Vec::new();
+    for frame in 0..400u32 {
+        if frame % 50 == 0 {
+            let picked = (frame % 100 == 50).then_some((frame as usize * 7) % 600);
+            state.set_view(views[(frame / 50) as usize % views.len()], picked);
+        }
+        let mut input = RawInput {
+            screen_rect: Some(screen),
+            ..Default::default()
+        };
+        input.events.push(Event::PointerMoved(Pos2::new(
+            300.0 + (frame * 5 % 700) as f32,
+            200.0 + (frame * 3 % 600) as f32,
+        )));
+        input.events.push(Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: Vec2::new(0.0, -200.0),
+            modifiers: egui::Modifiers::NONE,
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Wheel,
+        });
+        let started = Instant::now();
+        let mut output = ctx.run_ui(input, |ui| {
+            ui.scope_builder(UiBuilder::new().max_rect(main), |ui| {
+                profiler::show(ui, &mut state, &w, &NoSystem, true);
+            });
+            ui.scope_builder(UiBuilder::new().max_rect(side), |ui| {
+                let p = wowlua_studio_ui::palette(ui.ctx());
+                profiler::function(ui, &mut state, p);
+            });
+        });
+        let _ = ctx.tessellate(output.shapes, output.pixels_per_point);
+        output.textures_delta.clear();
+        if frame >= 20 {
+            times.push(started.elapsed());
+        }
+    }
+    times.sort_unstable();
+    let at = |q: f64| times[((times.len() - 1) as f64 * q) as usize];
+    let ms = |d: Duration| d.as_secs_f64() * 1000.0;
+    eprintln!(
+        "profiler page: median {:.3} ms · p99 {:.3} ms",
+        ms(at(0.5)),
+        ms(at(0.99))
+    );
+    if !cfg!(debug_assertions) {
+        assert!(at(0.99) <= BUDGET, "p99 {:.3} ms", ms(at(0.99)));
+    }
+}
+
 /// The debugger page's console full (2,000 lines) and 300 breakpoints,
 /// the session running: scrolled through.
 #[test]

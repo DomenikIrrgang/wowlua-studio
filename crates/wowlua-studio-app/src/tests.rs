@@ -120,6 +120,8 @@ pub enum Action {
     Open(PathBuf, usize),
     /// Debug a test (S056).
     Debug(PathBuf, Option<String>),
+    /// Profile a test (S057).
+    Profile(PathBuf, Option<String>),
     ShowCoverage,
 }
 
@@ -200,6 +202,7 @@ impl TestsState {
                 };
                 self.results.insert(key, merged);
             }
+            TestEvent::Profiled { .. } => {}
             TestEvent::Done(done) => {
                 let request = self.running.take()?.request;
                 self.last = Some(LastRun {
@@ -396,6 +399,14 @@ pub fn lenses(state: &TestsState, workspace: &Workspace, path: &Path) -> Vec<Len
                 test: None,
             },
         ));
+        out.push(click(
+            "profile",
+            0,
+            LensClick::Profile {
+                file: file.clone(),
+                test: None,
+            },
+        ));
         let n = tests.len();
         out.push(note(
             format!("{n} test{}", if n == 1 { "" } else { "s" }),
@@ -426,12 +437,23 @@ pub fn lenses(state: &TestsState, workspace: &Workspace, path: &Path) -> Vec<Len
                     },
                 )
             };
+            let profile = || {
+                click(
+                    "profile",
+                    line,
+                    LensClick::Profile {
+                        file: file.clone(),
+                        test: Some(t.name.clone()),
+                    },
+                )
+            };
             if results.is_empty() {
                 if t.skip {
                     out.push(note("skipped".into(), line, Tone::Muted));
                 }
                 out.push(run());
                 out.push(debug());
+                out.push(profile());
             } else if let Some(failed) = results
                 .iter()
                 .find(|r| matches!(r.outcome, TestOutcome::Fail { .. }))
@@ -455,6 +477,7 @@ pub fn lenses(state: &TestsState, workspace: &Workspace, path: &Path) -> Vec<Len
                 ));
                 out.push(run());
                 out.push(debug());
+                out.push(profile());
             } else if results
                 .iter()
                 .all(|r| matches!(r.outcome, TestOutcome::Skip(_)))
@@ -469,6 +492,7 @@ pub fn lenses(state: &TestsState, workspace: &Workspace, path: &Path) -> Vec<Len
                 out.push(note(passed, line, Tone::Ok));
                 out.push(run());
                 out.push(debug());
+                out.push(profile());
             }
         }
     }
@@ -539,6 +563,7 @@ pub fn request_for(
         coverage: state.coverage_on,
         update_snapshots: false,
         profile: state.profile.clone(),
+        profiler: false,
     }
 }
 
@@ -1218,6 +1243,7 @@ pub fn results(
                     coverage: state.coverage_on,
                     update_snapshots: false,
                     profile: state.profile.clone(),
+                    profiler: false,
                 }));
             }
             let failed = state.failed_filters();
@@ -1235,7 +1261,22 @@ pub fn results(
                     coverage: state.coverage_on,
                     update_snapshots: false,
                     profile: state.profile.clone(),
+                    profiler: false,
                 }));
+            }
+            // The selected test (or file), profiled (S057).
+            let selected = state.selected.clone();
+            if button(
+                ui,
+                ButtonKind::Secondary,
+                "profile the selected test",
+                !running && selected.is_some(),
+                None,
+            )
+            .clicked()
+                && let Some((file, test)) = selected
+            {
+                action = Some(Action::Profile(file, test));
             }
             forms::checkbox(ui, &mut state.coverage_on, "coverage", None);
             forms::checkbox(ui, &mut state.run_on_save, "run on save", None);
@@ -1760,6 +1801,9 @@ fn failure_view(
         if button(ui, ButtonKind::Secondary, "run it again", idle, None).clicked() {
             action = Some(Action::Run(request_for(&package, file, Some(name), state)));
         }
+        if button(ui, ButtonKind::Ghost, "profile it", idle, None).clicked() {
+            action = Some(Action::Profile(file.to_path_buf(), Some(name.to_owned())));
+        }
         if button(ui, ButtonKind::Ghost, "open the test", true, None).clicked() {
             action = Some(Action::Open(file.to_path_buf(), test_line.unwrap_or(0)));
         }
@@ -1845,6 +1889,7 @@ fn snapshot_view(
                 coverage: state.coverage_on,
                 update_snapshots: true,
                 profile: state.profile.clone(),
+                profiler: false,
             }));
         }
     });
@@ -2125,16 +2170,20 @@ mod unit {
             [
                 line(0, "run all tests"),
                 line(0, "debug"),
+                line(0, "profile"),
                 line(0, "3 tests"),
                 line(2, "passed"),
                 line(2, "run test"),
                 line(2, "debug"),
+                line(2, "profile"),
                 line(5, "failed at line 7"),
                 line(5, "show failure"),
                 line(5, "run test"),
                 line(5, "debug"),
+                line(5, "profile"),
                 line(8, "run test"),
                 line(8, "debug"),
+                line(8, "profile"),
             ]
         );
         assert_eq!(titles("/p/demo/src/math.wowlua"), [line(0, "2 tests")]);

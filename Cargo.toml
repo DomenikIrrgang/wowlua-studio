@@ -32,17 +32,21 @@ wowlua-studio-app = { path = "crates/wowlua-studio-app" }
 # hosted in process, with the event log, the inspector and the units (M5).
 # The debugger page's pause, hit counts, stop details, clock, the world as a
 # profile and the frame hook at a stop (M6).
-wowlua-debug = { git = "https://github.com/DomenikIrrgang/wowlua", tag = "v0.13.5" }
-wowlua-engine = { git = "https://github.com/DomenikIrrgang/wowlua", tag = "v0.13.5" }
-wowlua-render = { git = "https://github.com/DomenikIrrgang/wowlua", tag = "v0.13.5" }
-wowlua-vm = { git = "https://github.com/DomenikIrrgang/wowlua", tag = "v0.13.5" }
-wowlua-driver = { git = "https://github.com/DomenikIrrgang/wowlua", tag = "v0.13.5" }
-wowlua-flavors = { git = "https://github.com/DomenikIrrgang/wowlua", tag = "v0.13.5" }
-wowlua-manifest = { git = "https://github.com/DomenikIrrgang/wowlua", tag = "v0.13.5" }
-wowlua-test = { git = "https://github.com/DomenikIrrgang/wowlua", tag = "v0.13.5" }
-wowlua-lsp = { git = "https://github.com/DomenikIrrgang/wowlua", tag = "v0.13.5" }
-wowlua-span = { git = "https://github.com/DomenikIrrgang/wowlua", tag = "v0.13.5" }
-wowlua-syntax = { git = "https://github.com/DomenikIrrgang/wowlua", tag = "v0.13.5" }
+# Until it is released: the commit of wowlua's pull request #96 (on 0.13.6),
+# the profiler's per-frame call trees, the speedscope file that keeps the whole
+# profile, the game's recordings in a library and function breakpoints by
+# definition (M7).
+wowlua-debug = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "45ec4d900b0b668c4cb68d9d3b1fe8d8a27ae0e0" }
+wowlua-engine = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "45ec4d900b0b668c4cb68d9d3b1fe8d8a27ae0e0" }
+wowlua-render = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "45ec4d900b0b668c4cb68d9d3b1fe8d8a27ae0e0" }
+wowlua-vm = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "45ec4d900b0b668c4cb68d9d3b1fe8d8a27ae0e0" }
+wowlua-driver = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "45ec4d900b0b668c4cb68d9d3b1fe8d8a27ae0e0" }
+wowlua-flavors = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "45ec4d900b0b668c4cb68d9d3b1fe8d8a27ae0e0" }
+wowlua-manifest = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "45ec4d900b0b668c4cb68d9d3b1fe8d8a27ae0e0" }
+wowlua-test = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "45ec4d900b0b668c4cb68d9d3b1fe8d8a27ae0e0" }
+wowlua-lsp = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "45ec4d900b0b668c4cb68d9d3b1fe8d8a27ae0e0" }
+wowlua-span = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "45ec4d900b0b668c4cb68d9d3b1fe8d8a27ae0e0" }
+wowlua-syntax = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "45ec4d900b0b668c4cb68d9d3b1fe8d8a27ae0e0" }
 
 [workspace.lints.rust]
 # Denied, not forbidden: one macOS module may allow it (decision S022).

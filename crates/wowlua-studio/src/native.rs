@@ -100,6 +100,13 @@ impl System for NativeSystem {
         rfd::FileDialog::new().set_title(title).pick_folder()
     }
 
+    fn pick_file(&self, title: &str, endings: &[&str]) -> Option<PathBuf> {
+        rfd::FileDialog::new()
+            .set_title(title)
+            .add_filter("speedscope", endings)
+            .pick_file()
+    }
+
     fn list(&self, dir: &Path) -> Vec<Entry> {
         let Ok(read) = std::fs::read_dir(dir) else {
             return Vec::new();
@@ -326,14 +333,7 @@ impl System for NativeSystem {
     }
 
     fn branch(&self, dir: &Path) -> Option<String> {
-        let out = Command::new("git")
-            .arg("-C")
-            .arg(dir)
-            .args(["rev-parse", "--abbrev-ref", "HEAD"])
-            .output()
-            .ok()?;
-        let branch = String::from_utf8_lossy(&out.stdout).trim().to_owned();
-        (out.status.success() && !branch.is_empty()).then_some(branch)
+        repository_branch(dir)
     }
 
     fn canonical(&self, path: &Path) -> PathBuf {
@@ -481,6 +481,32 @@ impl System for NativeSystem {
         if let Some(running) = self.game.borrow_mut().take() {
             running.stop();
         }
+    }
+
+    fn profiles(&self, root: &Path) -> Vec<wowlua_studio_app::system::SavedProfile> {
+        crate::profiles::list(root)
+    }
+
+    fn profile_read(&self, path: &Path) {
+        let path = path.to_path_buf();
+        self.spawn(move || Event::Profile {
+            result: crate::profiles::read(&path),
+            path,
+        });
+    }
+
+    fn profile_keep(
+        &self,
+        root: &Path,
+        name: &str,
+        speedscope: &serde_json::Value,
+    ) -> Result<(PathBuf, wowlua_studio_app::system::Profile), String> {
+        crate::profiles::keep(root, name, speedscope)
+    }
+
+    fn game_recordings(&self, root: &Path) {
+        let root = root.to_path_buf();
+        self.spawn(move || Event::GameRecordings(crate::profiles::game_recordings(&root)));
     }
 
     fn game_screen(&self) -> Option<wowlua_studio_app::system::GameScreen> {
@@ -707,6 +733,18 @@ fn kind_name(kind: PackageKind) -> &'static str {
         PackageKind::LuaLibrary => "lua-library",
         PackageKind::Types => "types",
     }
+}
+
+/// The branch checked out in `dir`'s repository.
+pub(crate) fn repository_branch(dir: &Path) -> Option<String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .output()
+        .ok()?;
+    let branch = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    (out.status.success() && !branch.is_empty()).then_some(branch)
 }
 
 /// The installation as `wowlua install` finds it, with its client folders.
