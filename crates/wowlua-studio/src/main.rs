@@ -17,6 +17,7 @@ mod terminal;
 mod tests;
 #[cfg(target_os = "macos")]
 mod traffic_lights;
+mod world;
 
 use eframe::egui;
 use frame_stats::FrameStats;

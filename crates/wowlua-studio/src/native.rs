@@ -518,6 +518,30 @@ impl System for NativeSystem {
         self.spawn(move || Event::GameRecordings(crate::profiles::game_recordings(&root)));
     }
 
+    fn world_profiles(&self, root: &Path) -> Vec<wowlua_studio_app::system::WorldProfile> {
+        crate::world::profiles(root)
+    }
+
+    fn check_world_profile(&self, text: &str) -> Vec<wowlua_studio_app::system::ProfileProblem> {
+        crate::world::check(text)
+    }
+
+    fn profile_uses(&self, root: &Path, name: &str) -> Vec<String> {
+        crate::world::uses(root, name, &self.test_files(root))
+    }
+
+    fn world_snapshots(&self, root: &Path) {
+        let root = root.to_path_buf();
+        self.spawn(move || Event::WorldSnapshots(crate::world::snapshots(&root)));
+    }
+
+    fn read_saved_variables(
+        &self,
+        path: &Path,
+    ) -> Result<Vec<(String, serde_json::Value)>, String> {
+        crate::world::saved_variables(path)
+    }
+
     fn game_screen(&self) -> Option<wowlua_studio_app::system::GameScreen> {
         let frames = self.game_frames.borrow().clone();
         self.game_screen.borrow_mut().as_mut()?.show(&frames)

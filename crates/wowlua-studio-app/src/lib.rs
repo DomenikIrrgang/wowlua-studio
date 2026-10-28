@@ -27,6 +27,7 @@ pub mod state;
 pub mod system;
 pub mod terminal;
 pub mod tests;
+pub mod world;
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -116,6 +117,7 @@ pub struct Studio {
     /// The debugger page (S056).
     debug: debug::DebugState,
     profiler: profiler::ProfilerState,
+    world: world::WorldState,
     /// The workspace's world profiles (`tests/profiles/*.json`), by name.
     profiles: Vec<String>,
     /// Background jobs (S044); the checks running, by package.
@@ -231,6 +233,7 @@ impl Studio {
             game: game::GameState::default(),
             debug: debug::DebugState::default(),
             profiler: profiler::ProfilerState::default(),
+            world: world::WorldState::default(),
             profiles: Vec::new(),
             jobs: jobs::Jobs::default(),
             checks: std::collections::HashMap::new(),
@@ -681,6 +684,9 @@ impl Studio {
         let mut debug_action = None;
         let profiler_state = &mut self.profiler;
         let mut profiler_action = None;
+        let world_state = &mut self.world;
+        let mut world_action = None;
+        let on_world = self.layout_page == Page::World;
         let on_debug = self.layout_page == Page::Debug;
         let game_status = game_state.status.clone();
         let profiles = &self.profiles;
@@ -837,9 +843,57 @@ impl Studio {
             Panel::Variables => debug::variables(ui, debug_state, system),
             Panel::Watch => debug::watch(ui, debug_state, system),
             Panel::Console => debug::console(ui, debug_state, system),
+            Panel::LiveWorld if on_world => {
+                if let Some(a) = world::live(ui, world_state, debug_state, workspace, system) {
+                    world_action = Some(a);
+                }
+            }
             Panel::LiveWorld => {
                 if let Some(a) = debug::live_world(ui, debug_state, workspace, system) {
                     debug_action = Some(a);
+                }
+            }
+            Panel::Profiles => {
+                if let Some(a) = world::profiles(ui, world_state, editors, workspace, system) {
+                    world_action = Some(a);
+                }
+            }
+            Panel::Parts => world::parts_panel(ui, world_state, editors, workspace, system),
+            Panel::ProfileEditor => {
+                let live = world::session_profile(debug_state, world_state);
+                let (json, a) = world::editor(
+                    ui,
+                    world_state,
+                    editors,
+                    workspace,
+                    system,
+                    &lsp_state.diagnostics,
+                    live.as_deref(),
+                );
+                if let Some(a) = a {
+                    world_action = Some(a);
+                }
+                // The json view: the profile's document in the editor's code.
+                if let Some((rect, i)) = json {
+                    let text = editors.tabs[i].doc.text();
+                    let diagnostics = world::diagnostics(world_state, &text);
+                    let cx = editor::view::Cx {
+                        system,
+                        workspace,
+                        mac,
+                        diagnostics: &diagnostics,
+                        lenses: &[],
+                        tests_at: &[],
+                        coverage: None,
+                        breakpoints: &[],
+                        stopped: None,
+                        inline: &[],
+                    };
+                    let tab = &mut editors.tabs[i];
+                    ui.scope_builder(UiBuilder::new().max_rect(rect), |ui| {
+                        // (typing, selection and undo act on the tab itself)
+                        let _ = editor::view::single(ui, tab, &cx, i);
+                    });
                 }
             }
             Panel::Profiler => {
@@ -872,6 +926,10 @@ impl Studio {
         if let Some(a) = profiler_action {
             self.profiler_action(a, ctx);
         }
+        if let Some(a) = world_action {
+            self.world_action(a, ctx);
+        }
+        world::flush_live(&mut self.world, &mut self.debug, &*self.host.system);
         // The stop's source, shown once.
         if let Some((path, line)) = self.debug.show.take() {
             let at = lsp::Wire {
@@ -1745,6 +1803,7 @@ impl Studio {
                 Event::Profile { path, result } => self.profiler.profile_read(&path, result),
                 Event::GameRecordings(result) => self.profiler.game_recordings(result),
                 Event::FunctionNames(names) => self.profiler.function_names(names),
+                Event::WorldSnapshots(found) => self.world.snapshots_read(found),
                 Event::Installation(_) | Event::Ui { .. } => {}
             }
             ctx.request_repaint();
@@ -2006,6 +2065,80 @@ impl Studio {
     }
 
     /// What the debugger page asked for.
+    /// The world profiles page on a profile, a part of it, its json view
+    /// (the screenshot harness's `world:`).
+    pub fn world_show(&mut self, profile: &str, part: Option<&str>, json: bool) {
+        self.queue(Command::ShowPage(Page::World));
+        self.world.selected = Some(profile.to_owned());
+        if let Some(part) = part {
+            self.world.part = part.to_owned();
+        }
+        self.world.json_view = json;
+    }
+
+    /// What the world profiles page asks (S060).
+    fn world_action(&mut self, action: world::Action, ctx: &Context) {
+        match action {
+            world::Action::Open(path) => self.open_file(&path, ctx),
+            world::Action::Save(path) => {
+                if let Some(i) = self.editors.find(&path)
+                    && let Err(e) = self.editors.save(i, &*self.host.system)
+                {
+                    let note = Notification::new(Kind::Error, "save", e);
+                    self.notify(note, ctx);
+                }
+            }
+            world::Action::Note(title, text) => {
+                let note = Notification::new(Kind::Error, &title, text);
+                self.notify(note, ctx);
+            }
+            world::Action::RunTests(name) => {
+                let Some(w) = &self.workspace else {
+                    return;
+                };
+                let uses = self.host.system.profile_uses(&w.root, &name);
+                let everything = uses.iter().any(|u| u == "wowlua.json · test.profile");
+                let filters: Vec<String> = uses
+                    .iter()
+                    .filter_map(|u| u.split(" · ").next())
+                    .filter(|f| f.ends_with(".test.wowlua"))
+                    .map(str::to_owned)
+                    .collect();
+                if !everything && filters.is_empty() {
+                    let note = Notification::new(
+                        Kind::Note,
+                        "run its tests",
+                        format!(
+                            "No test starts in {name}: config({{ profile = \"{name}\" }}) in a test file names it."
+                        ),
+                    );
+                    self.notify(note, ctx);
+                    return;
+                }
+                let request = system::TestRequest {
+                    filters: if everything { Vec::new() } else { filters },
+                    coverage: self.tests.coverage_on,
+                    ..system::TestRequest::default()
+                };
+                self.queue(Command::ShowPage(Page::Tests));
+                self.start_tests(request, ctx);
+            }
+            world::Action::Start(name) => {
+                let Some(w) = &self.workspace else {
+                    return;
+                };
+                let addon = w
+                    .members
+                    .first()
+                    .map_or("addon".to_owned(), |m| m.name.clone());
+                let mut config = debug::Config::addon(&format!("{addon} · {name}"));
+                config.profile = Some(name);
+                self.queue(Command::ShowPage(Page::Debug));
+                self.start_session(config);
+            }
+        }
+    }
+
     fn debug_action(&mut self, action: debug::Action, ctx: &Context) {
         match action {
             debug::Action::Start(config) => {

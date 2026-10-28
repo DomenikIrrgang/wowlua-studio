@@ -180,7 +180,7 @@ pub fn show(ui: &mut Ui, editors: &mut Editors, cx: &Cx<'_>) -> Vec<Action> {
     let rect = ui.max_rect();
     ui.painter().rect_filled(rect, CornerRadius::ZERO, p.bg_000);
     let mut actions = Vec::new();
-    if editors.tabs.is_empty() {
+    if !editors.shown() {
         ui.painter().text(
             rect.center(),
             Align2::CENTER_CENTER,
@@ -191,6 +191,15 @@ pub fn show(ui: &mut Ui, editors: &mut Editors, cx: &Cx<'_>) -> Vec<Action> {
         return actions;
     }
     editors.active = editors.active.min(editors.tabs.len() - 1);
+    if editors.tabs[editors.active].hidden {
+        // (a held document: the nearest tab shown instead)
+        let shown = |i: &usize| !editors.tabs[*i].hidden;
+        editors.active = (0..editors.active)
+            .rev()
+            .find(shown)
+            .or_else(|| (editors.active..editors.tabs.len()).find(shown))
+            .unwrap_or(0);
+    }
 
     let tabs_rect = Rect::from_min_size(rect.min, Vec2::new(rect.width(), TABS_H));
     tab_bar(ui, tabs_rect, editors, &mut actions);
@@ -265,7 +274,7 @@ fn tab_bar(ui: &mut Ui, rect: Rect, editors: &mut Editors, actions: &mut Vec<Act
             tab.preview = false;
         }
     }
-    for (i, tab) in editors.tabs.iter().enumerate() {
+    for (i, tab) in editors.tabs.iter().enumerate().filter(|(_, t)| !t.hidden) {
         let name = if tab.preview {
             format!("{} · preview", file_name(&tab.doc))
         } else {
@@ -866,6 +875,15 @@ fn lay(
 
 /// The code: the gutter and the visible rows; the keyboard, the pointer
 /// and the popups.
+/// One document's code, without the tab bar (a world profile's json view,
+/// S060): `index` its tab's.
+pub fn single(ui: &mut Ui, tab: &mut Tab, cx: &Cx<'_>, index: usize) -> Vec<Action> {
+    let mut actions = Vec::new();
+    let rect = ui.max_rect();
+    code(ui, rect, tab, cx, false, index, &[], &mut actions);
+    actions
+}
+
 #[allow(clippy::too_many_arguments)]
 fn code(
     ui: &mut Ui,

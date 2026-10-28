@@ -166,6 +166,9 @@ pub enum Event {
     /// Functions named (a profile's): the source, the line a function is
     /// defined on, its name.
     FunctionNames(Vec<(String, u32, String)>),
+    /// The snapshots found in the installation (`/wl snapshot`, wowlua
+    /// T498), newest first, and warnings for files that can't be read.
+    WorldSnapshots(Result<(Vec<WorldSnapshot>, Vec<String>), String>),
 }
 
 /// What the game page asks a running session (S055): the debugger's UI
@@ -535,6 +538,37 @@ pub struct GameRecordings {
     pub account: String,
     pub path: PathBuf,
     pub recordings: Vec<serde_json::Value>,
+}
+
+/// A world profile of the package (`tests/profiles/<name>.json`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorldProfile {
+    pub name: String,
+    pub path: PathBuf,
+}
+
+/// A problem of a world profile's text (E4400, E4401): its bytes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProfileProblem {
+    pub code: String,
+    pub message: String,
+    pub start: usize,
+    pub end: usize,
+}
+
+/// A snapshot taken in the game (`/wl snapshot`): where, when, and the
+/// world profile it makes (its names scrubbed).
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorldSnapshot {
+    pub client: String,
+    pub account: String,
+    pub path: PathBuf,
+    /// Unix seconds.
+    pub at: Option<f64>,
+    /// The profile's JSON.
+    pub text: String,
+    /// The parts the client refused.
+    pub failed: Vec<String>,
 }
 
 /// Covered and all, of a kind.
@@ -947,6 +981,31 @@ pub trait System {
     fn game_recordings(&self, _root: &Path) {}
     /// Ends the running session.
     fn game_stop(&self) {}
+    // The world profiles' (M8).
+    /// The package's world profiles, by name.
+    fn world_profiles(&self, _root: &Path) -> Vec<WorldProfile> {
+        Vec::new()
+    }
+    /// A world profile's problems (E4400, E4401), from its text as edited.
+    fn check_world_profile(&self, _text: &str) -> Vec<ProfileProblem> {
+        Vec::new()
+    }
+    /// Where the package names a world profile: test files'
+    /// `config({ profile })`, the manifest's `test.profile`, debug
+    /// configurations.
+    fn profile_uses(&self, _root: &Path, _name: &str) -> Vec<String> {
+        Vec::new()
+    }
+    /// The snapshots of the package's addon in the installation
+    /// (→ [`Event::WorldSnapshots`]).
+    fn world_snapshots(&self, _root: &Path) {}
+    /// A SavedVariables file's variables as JSON, read without running it.
+    fn read_saved_variables(
+        &self,
+        _path: &Path,
+    ) -> Result<Vec<(String, serde_json::Value)>, String> {
+        Err("no SavedVariables here".into())
+    }
     /// The running session's screen, drawn on the UI's GPU device.
     fn game_screen(&self) -> Option<GameScreen> {
         None
