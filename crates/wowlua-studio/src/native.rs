@@ -440,7 +440,13 @@ impl System for NativeSystem {
         });
     }
 
-    fn game_start(&self, root: &Path, session: u64, profile: Option<String>) {
+    fn game_start(
+        &self,
+        root: &Path,
+        session: u64,
+        launch: wowlua_studio_app::system::Launch,
+        setup: Vec<(u64, wowlua_studio_app::system::GameRequest)>,
+    ) {
         if let Some(old) = self.game.borrow_mut().take() {
             old.stop();
         }
@@ -451,7 +457,8 @@ impl System for NativeSystem {
         let wake_ctx = self.ctx.clone();
         let running = crate::game::start(
             root.to_path_buf(),
-            profile,
+            launch,
+            setup,
             frames,
             move |event| {
                 if let Ok(send) = send.lock() {

@@ -353,7 +353,7 @@ impl TestsState {
 }
 
 /// `path` from its package's root, with `/`.
-fn rel_of(workspace: &Workspace, path: &Path) -> String {
+pub(crate) fn rel_of(workspace: &Workspace, path: &Path) -> String {
     let package = package_of(workspace, path);
     path.strip_prefix(&package)
         .unwrap_or(path)

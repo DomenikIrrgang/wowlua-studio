@@ -264,6 +264,11 @@ impl GameState {
                 };
                 self.answer(asked, result, now);
             }
+            // (the debugger's: the screen draws what the stop shows)
+            GameEvent::Stopped { .. }
+            | GameEvent::Continued
+            | GameEvent::Breakpoint(_)
+            | GameEvent::Reloaded => {}
         }
     }
 
