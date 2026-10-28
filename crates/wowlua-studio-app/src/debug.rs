@@ -80,6 +80,7 @@ impl Config {
             manual: self.manual,
             stop_on_entry: self.stop_on_entry,
             debug_blizzard_ui: self.debug_blizzard_ui,
+            ..Launch::default()
         }
     }
 

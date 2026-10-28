@@ -4,6 +4,7 @@
 //! menu bar. `wowlua-studio <folder>` opens the folder (S031: a new window
 //! is Studio started again with it).
 
+mod art;
 mod deps;
 mod frame_stats;
 mod game;

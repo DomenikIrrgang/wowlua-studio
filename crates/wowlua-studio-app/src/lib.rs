@@ -2250,7 +2250,7 @@ impl Studio {
         let setup = self.debug.begin(session, config.clone(), &w);
         self.host
             .system
-            .game_start(&w.root, session, config.launch(), setup);
+            .game_start(&w.root, session, self.launch_of(&config), setup);
     }
 
     /// What the debugger page asked for.
@@ -2342,6 +2342,21 @@ impl Studio {
         wowlua_studio_ui::set_theme(ctx, theme);
         if (ctx.zoom_factor() - zoom).abs() > f32::EPSILON {
             ctx.set_zoom_factor(zoom);
+        }
+    }
+
+    /// A configuration's launch with the game screen's settings (S062).
+    fn launch_of(&self, config: &debug::Config) -> system::Launch {
+        let s = &self.settings;
+        let screen = s
+            .screen_size
+            .split_once(" × ")
+            .and_then(|(w, h)| Some((w.trim().parse().ok()?, h.trim().parse().ok()?)));
+        system::Launch {
+            art: s.installation_art,
+            game_data: s.installation_data,
+            screen,
+            ..config.launch()
         }
     }
 

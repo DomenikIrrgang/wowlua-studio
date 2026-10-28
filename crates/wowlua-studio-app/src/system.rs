@@ -318,6 +318,12 @@ pub struct Launch {
     pub manual: bool,
     pub stop_on_entry: bool,
     pub debug_blizzard_ui: bool,
+    /// The settings' (S062): draw with the installation's art; answer from
+    /// its data where a profile defines nothing; the screen of a package
+    /// whose `test.screen` sets none.
+    pub art: bool,
+    pub game_data: bool,
+    pub screen: Option<(f64, f64)>,
 }
 
 /// Input as the user gives it, in screen pixels from the top left.
