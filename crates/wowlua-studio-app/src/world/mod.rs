@@ -23,7 +23,10 @@ use crate::editor::Editors;
 use crate::editor::doc::{EditKind, Pos};
 use crate::lsp::Diag;
 use crate::system::Workspace;
-use crate::system::{GameRequest, ProfileProblem, System, WorldProfile, WorldSnapshot};
+use crate::system::{
+    Art, ClassSpell, GameRequest, Image, ProfileProblem, SpellRow, System, WorldProfile,
+    WorldSnapshot,
+};
 use json::Key;
 
 /// The schema a new profile names, for editors.
@@ -56,7 +59,7 @@ pub const PARTS: &[(&str, &str, &str)] = &[
     (
         "spells",
         "spells",
-        "Spell data by spell ID (mock.defineSpell).",
+        "The spells the character has trained (trained, mock.player:learn), and spells whose data the profile overrides (mock.defineSpell).",
     ),
     (
         "actions",
@@ -138,6 +141,41 @@ const DESIGNED: &[&str] = &[
     "savedVariables",
 ];
 
+/// Game art read from the installation, as textures (S060): asked for
+/// the first time a form wants it; the design's stand-in until then, or
+/// when the installation has none.
+#[derive(Default)]
+pub struct ArtCache {
+    textures: std::cell::RefCell<HashMap<Art, Option<egui::TextureHandle>>>,
+}
+
+impl ArtCache {
+    pub fn get(&self, system: &dyn System, flavor: &str, art: Art) -> Option<egui::TextureId> {
+        let mut textures = self.textures.borrow_mut();
+        if let Some(t) = textures.get(&art) {
+            return t.as_ref().map(egui::TextureHandle::id);
+        }
+        textures.insert(art.clone(), None);
+        system.game_art(flavor, art);
+        None
+    }
+
+    /// Art read: its texture.
+    pub fn read(&self, ctx: &egui::Context, art: Art, image: Option<Image>) {
+        let texture = image.filter(|i| i.width > 0 && i.height > 0).map(|i| {
+            ctx.load_texture(
+                format!("game-art-{art:?}"),
+                egui::ColorImage::from_rgba_unmultiplied(
+                    [i.width as usize, i.height as usize],
+                    &i.rgba,
+                ),
+                egui::TextureOptions::LINEAR,
+            )
+        });
+        self.textures.borrow_mut().insert(art, texture);
+    }
+}
+
 /// The snapshots found, and warnings; or why none could be looked for.
 pub type Snapshots = Result<(Vec<WorldSnapshot>, Vec<String>), String>;
 
@@ -188,6 +226,20 @@ pub struct WorldState {
     snapshot_name: String,
     /// The schema (wowlua's), read once.
     schema: Option<Option<Json>>,
+    /// The installation's art.
+    pub art: ArtCache,
+    /// The spells part's search: what is typed, what was asked, the
+    /// spells found for it.
+    pub(crate) spell_query: String,
+    spell_asked: String,
+    pub(crate) spells: Option<(String, Vec<SpellRow>)>,
+    /// The class's spells from the client, as asked for a class.
+    class_asked: String,
+    pub(crate) class_spells: Option<(String, Vec<ClassSpell>)>,
+    /// The spells part shows every rank and level.
+    pub(crate) all_ranks: bool,
+    /// Changes made from outside a form (the screenshot harness).
+    pub pending: Vec<Change>,
 }
 
 impl Default for WorldState {
@@ -212,6 +264,14 @@ impl Default for WorldState {
             snapshots: None,
             snapshot_name: String::new(),
             schema: None,
+            art: ArtCache::default(),
+            spell_query: String::new(),
+            spell_asked: String::new(),
+            spells: None,
+            class_asked: String::new(),
+            class_spells: None,
+            all_ranks: false,
+            pending: Vec::new(),
         }
     }
 }
@@ -308,6 +368,20 @@ impl WorldState {
     /// Scripts for the running world, taken.
     pub fn take_live(&mut self) -> Vec<(String, String)> {
         std::mem::take(&mut self.live)
+    }
+
+    /// The client's spells found for a search.
+    pub fn spells_found(&mut self, query: String, found: Vec<SpellRow>) {
+        if query == self.spell_asked {
+            self.spells = Some((query, found));
+        }
+    }
+
+    /// A class's spells from the client.
+    pub fn class_spells_found(&mut self, class: String, found: Vec<ClassSpell>) {
+        if class == self.class_asked {
+            self.class_spells = Some((class, found));
+        }
     }
 
     /// The snapshots read.
@@ -456,6 +530,7 @@ fn summary(key: &str, v: &Json) -> String {
         "position" => v["zone"].as_str().unwrap_or("set").to_string(),
         "money" => v.as_f64().map(money).unwrap_or_default(),
         "client" => v.as_str().unwrap_or("set").chars().take(12).collect(),
+        "spells" if v.is_string() => v.as_str().unwrap_or_default().to_string(),
         "savedVariables" => v
             .as_object()
             .map(|o| o.keys().cloned().collect::<Vec<_>>().join(", "))
@@ -519,7 +594,9 @@ pub fn parts_panel(
         .unwrap_or_default();
     let set = PARTS
         .iter()
-        .filter(|(k, _, _)| root.get(*k).is_some())
+        .filter(|(k, _, _)| {
+            root.get(*k).is_some() || (*k == "spells" && root.get("trained").is_some())
+        })
         .count();
     forms::padded(ui, 12, 4, |ui| {
         ui.label(
@@ -533,7 +610,12 @@ pub fn parts_panel(
         .auto_shrink(false)
         .show(ui, |ui| {
             for (key, label, _) in PARTS {
-                let value = root.get(*key);
+                // (the spells part holds `trained` too)
+                let trained = (*key == "spells")
+                    .then(|| root.get("trained"))
+                    .flatten()
+                    .map(|t| Json::String(format!("{} trained", list(t).len())));
+                let value = trained.as_ref().or(root.get(*key));
                 let (rect, response) =
                     ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), Sense::click());
                 let current = state.part == *key;
@@ -801,6 +883,23 @@ pub fn editor(
                         .color(p.ink_muted),
                 );
                 ui.add_space(12.0);
+                let flavor = workspace_flavor(workspace);
+                // The spells part's search, asked as it is typed.
+                if part == "spells" && state.spell_query != state.spell_asked {
+                    state.spell_asked = state.spell_query.clone();
+                    state.spells = None;
+                    system.search_spells(&flavor, &state.spell_query);
+                }
+                // The class's spells, asked for the character's class.
+                let class = root["character"]["class"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_uppercase();
+                if part == "spells" && !class.is_empty() && class != state.class_asked {
+                    state.class_asked = class.clone();
+                    state.class_spells = None;
+                    system.class_spells(&flavor, &class);
+                }
                 let mut cx = parts::Cx {
                     root: &root,
                     changes: &mut changes,
@@ -809,8 +908,16 @@ pub fn editor(
                     entry: &mut state.entry,
                     slot: &mut state.slot,
                     bag: &mut state.bag,
-                    flavor: workspace_flavor(workspace),
+                    look: parts::Look {
+                        art: &state.art,
+                        system,
+                        flavor: &flavor,
+                    },
                     system,
+                    spell_query: &mut state.spell_query,
+                    spells: state.spells.as_ref(),
+                    class_spells: state.class_spells.as_ref(),
+                    all_ranks: &mut state.all_ranks,
                 };
                 if DESIGNED.contains(&part.as_str()) {
                     if let Some(a) = parts::designed(ui, &mut cx, &part) {
@@ -822,6 +929,7 @@ pub fn editor(
             });
         });
     // The changes, as edits of the document's text.
+    changes.append(&mut state.pending);
     for change in changes {
         let text = editors.tabs[tab].doc.text();
         let Some((range, with)) = json::set(&text, &change.path, change.value.as_ref()) else {
@@ -835,9 +943,12 @@ pub fn editor(
         };
         editors.tabs[tab].doc.edit(a, b, &with, kind);
         if state.auto_apply && live == Some(profile.name.as_str()) {
+            let before: Json = serde_json::from_str(&text).unwrap_or(Json::Null);
             let now_root: Json =
                 serde_json::from_str(&editors.tabs[tab].doc.text()).unwrap_or(Json::Null);
-            if let Some(script) = live_script(&now_root, &change.path) {
+            if let Some(script) = live_trained(&before, &now_root, &change.path)
+                .or_else(|| live_script(&now_root, &change.path))
+            {
                 state.live.push(script);
             }
         }
@@ -1099,6 +1210,45 @@ pub fn live_script(root: &Json, path: &[Key]) -> Option<(String, String)> {
     }
 }
 
+/// The script for a change of `trained`: the spells it added learned, the
+/// ones it took away forgotten (`mock.player:learn`, `unlearn`).
+pub fn live_trained(before: &Json, after: &Json, path: &[Key]) -> Option<(String, String)> {
+    if path.first() != Some(&Key::Name("trained".into())) {
+        return None;
+    }
+    let ids = |v: &Json| -> Vec<i64> {
+        list(&v["trained"])
+            .iter()
+            .filter_map(|(_, v)| v.as_i64())
+            .collect()
+    };
+    let (was, now) = (ids(before), ids(after));
+    let added: Vec<String> = now
+        .iter()
+        .filter(|i| !was.contains(i))
+        .map(i64::to_string)
+        .collect();
+    let removed: Vec<String> = was
+        .iter()
+        .filter(|i| !now.contains(i))
+        .map(i64::to_string)
+        .collect();
+    let mut script = Vec::new();
+    if !added.is_empty() {
+        script.push(format!("mock.player:learn({{ {} }})", added.join(", ")));
+    }
+    if !removed.is_empty() {
+        script.push(format!("mock.player:unlearn({{ {} }})", removed.join(", ")));
+    }
+    let what = match (added.len(), removed.len()) {
+        (0, 0) => return None,
+        (_, 0) => format!("trained {}", added.join(", ")),
+        (0, _) => format!("trained without {}", removed.join(", ")),
+        _ => "trained spells".into(),
+    };
+    Some((script.join("; "), what))
+}
+
 /// A value in a few characters.
 fn short(v: &Json) -> String {
     let s = match v {
@@ -1180,7 +1330,7 @@ pub fn live(
                             );
                         });
                         if started == &name {
-                            forms::checkbox(ui, &mut state.auto_apply, "apply edits to the running world", None);
+                            forms::checkbox(ui, &mut state.auto_apply, "apply edits", Some("to the running world"));
                             forms::paragraph(
                                 ui,
                                 "Each change runs as a world request between frames: the units, auras and character \
@@ -1210,8 +1360,9 @@ pub fn live(
                             );
                         }
                         ui.add_space(6.0);
-                        ui.horizontal(|ui| {
-                            forms::text_input(ui, &mut state.snapshot_name, 140.0, "raid-pull");
+                        // (the panel is narrow: the name, then the button)
+                        ui.vertical(|ui| {
+                            forms::text_input(ui, &mut state.snapshot_name, ui.available_width().min(220.0), "raid-pull");
                             if widgets::button(ui, ButtonKind::Ghost, "save the running world as a profile", true, None)
                                 .clicked()
                                 && valid_name(&state.snapshot_name)
@@ -1440,6 +1591,25 @@ mod tests {
         );
         // A /reload's.
         assert!(live_script(&root, &k(&["savedVariables", "DB"])).is_none());
+    }
+
+    #[test]
+    fn trained_spells_are_learned_and_forgotten_live() {
+        let before = json!({ "trained": [78, 72] });
+        let after = json!({ "trained": [78, 871, 6343] });
+        let path = vec![Key::Name("trained".into())];
+        assert_eq!(
+            live_trained(&before, &after, &path).unwrap().0,
+            "mock.player:learn({ 871, 6343 }); mock.player:unlearn({ 72 })"
+        );
+        assert_eq!(
+            live_trained(&json!({}), &json!({ "trained": [78] }), &path)
+                .unwrap()
+                .1,
+            "trained 78"
+        );
+        assert!(live_trained(&before, &before, &path).is_none());
+        assert!(live_trained(&before, &after, &[Key::Name("money".into())]).is_none());
     }
 
     #[test]

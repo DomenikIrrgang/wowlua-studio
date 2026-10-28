@@ -76,6 +76,10 @@ pub struct Host {
 }
 
 /// Studio's whole state: one window, one workspace (S025).
+/// A session to start in a profile, the edits for its live world
+/// (`path`, `json`), and whether it started.
+type QueuedWorld = (String, Vec<(String, String)>, bool);
+
 pub struct Studio {
     host: Host,
     home: Option<PathBuf>,
@@ -165,6 +169,9 @@ pub struct Studio {
     queued_profile: Option<PathBuf>,
     queued_profile_test: Option<(PathBuf, Option<String>)>,
     queued_record: Option<(f64, Option<f64>)>,
+    /// A session to start in a profile, then edits for its live world
+    /// (`path=json`), once it ran a moment (the screenshot harness's).
+    queued_world: Option<QueuedWorld>,
     queued_prof_view: Option<(profiler::View, Option<usize>, Option<usize>)>,
     /// A tab of the tests page's results to show once it is open.
     queued_tab: Option<tests::Tab>,
@@ -256,6 +263,7 @@ impl Studio {
             queued_profile: None,
             queued_profile_test: None,
             queued_record: None,
+            queued_world: None,
             queued_prof_view: None,
             queued_tab: None,
             queued_gutter: false,
@@ -353,6 +361,10 @@ impl Studio {
 
     pub fn profile_test_later(&mut self, file: &Path, test: Option<&str>) {
         self.queued_profile_test = Some((file.to_path_buf(), test.map(str::to_owned)));
+    }
+
+    pub fn world_live_later(&mut self, profile: &str, edits: Vec<(String, String)>) {
+        self.queued_world = Some((profile.to_owned(), edits, false));
     }
 
     pub fn record_later(&mut self, seconds: f64) {
@@ -494,6 +506,31 @@ impl Studio {
                 && let Some((file, test)) = self.queued_profile_test.take()
             {
                 self.profile_test(&file, test.as_deref(), &ctx);
+            }
+            if let Some((profile, edits, started)) = self.queued_world.take() {
+                if !started && self.tests.files.is_some() {
+                    self.world_action(world::Action::Start(profile.clone()), &ctx);
+                    self.queued_world = Some((profile, edits, true));
+                } else if started && self.debug.running() && self.debug.clock.1 > 30 {
+                    for (path, value) in edits {
+                        let keys = path
+                            .split('/')
+                            .map(|k| match k.parse::<usize>() {
+                                Ok(i) => world::json::Key::Index(i),
+                                Err(_) => world::json::Key::Name(k.to_owned()),
+                            })
+                            .collect();
+                        self.world.pending.push(world::Change {
+                            path: keys,
+                            value: serde_json::from_str(&value).ok(),
+                            typing: false,
+                        });
+                    }
+                    self.queue(Command::ShowPage(Page::World));
+                } else {
+                    self.queued_world = Some((profile, edits, started));
+                    ctx.request_repaint();
+                }
             }
             if let Some((seconds, started)) = self.queued_record
                 && self.game.running()
@@ -1804,6 +1841,9 @@ impl Studio {
                 Event::GameRecordings(result) => self.profiler.game_recordings(result),
                 Event::FunctionNames(names) => self.profiler.function_names(names),
                 Event::WorldSnapshots(found) => self.world.snapshots_read(found),
+                Event::GameArt(art, image) => self.world.art.read(ctx, art, image),
+                Event::Spells(query, found) => self.world.spells_found(query, found),
+                Event::ClassSpells(class, found) => self.world.class_spells_found(class, found),
                 Event::Installation(_) | Event::Ui { .. } => {}
             }
             ctx.request_repaint();
@@ -2074,6 +2114,11 @@ impl Studio {
             self.world.part = part.to_owned();
         }
         self.world.json_view = json;
+    }
+
+    /// The spells part's search typed (the screenshot harness's `spells:`).
+    pub fn world_search(&mut self, query: &str) {
+        self.world.spell_query = query.to_owned();
     }
 
     /// What the world profiles page asks (S060).

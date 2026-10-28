@@ -169,6 +169,12 @@ pub enum Event {
     /// The snapshots found in the installation (`/wl snapshot`, wowlua
     /// T498), newest first, and warnings for files that can't be read.
     WorldSnapshots(Result<(Vec<WorldSnapshot>, Vec<String>), String>),
+    /// Game art read from the installation (none: it has none).
+    GameArt(Art, Option<Image>),
+    /// The client's spells a search found: the query, the spells.
+    Spells(String, Vec<SpellRow>),
+    /// A class's spells from the client: the class, its spells.
+    ClassSpells(String, Vec<ClassSpell>),
 }
 
 /// What the game page asks a running session (S055): the debugger's UI
@@ -538,6 +544,40 @@ pub struct GameRecordings {
     pub account: String,
     pub path: PathBuf,
     pub recordings: Vec<serde_json::Value>,
+}
+
+/// Game art from the installation (S060).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Art {
+    /// A texture by file ID.
+    File(u32),
+    /// A class's icon, by file name (`WARRIOR`): the class sheet's part.
+    Class(String),
+    /// A spell's icon, by spell ID.
+    Spell(u32),
+    /// An item's icon, by item ID.
+    Item(u32),
+}
+
+/// A spell of the client's tables: its ID, name, icon and description.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SpellRow {
+    pub id: u32,
+    pub name: String,
+    pub icon: Option<u32>,
+    pub text: String,
+}
+
+/// A spell of a class's skill lines: its ID, name, rank, the level it is
+/// learned at, its skill line and icon.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ClassSpell {
+    pub id: u32,
+    pub name: String,
+    pub rank: String,
+    pub level: u32,
+    pub line: String,
+    pub icon: Option<u32>,
 }
 
 /// A world profile of the package (`tests/profiles/<name>.json`).
@@ -999,6 +1039,12 @@ pub trait System {
     /// The snapshots of the package's addon in the installation
     /// (→ [`Event::WorldSnapshots`]).
     fn world_snapshots(&self, _root: &Path) {}
+    /// Game art of the flavor's client (→ [`Event::GameArt`]).
+    fn game_art(&self, _flavor: &str, _art: Art) {}
+    /// The flavor's client's spells by name or ID (→ [`Event::Spells`]).
+    fn search_spells(&self, _flavor: &str, _query: &str) {}
+    /// A class's spells of the flavor's client (→ [`Event::ClassSpells`]).
+    fn class_spells(&self, _flavor: &str, _class: &str) {}
     /// A SavedVariables file's variables as JSON, read without running it.
     fn read_saved_variables(
         &self,

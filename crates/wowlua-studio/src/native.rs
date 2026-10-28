@@ -40,6 +40,8 @@ pub struct NativeSystem {
     game: RefCell<Option<crate::game::Running>>,
     game_frames: RefCell<std::sync::Arc<std::sync::Mutex<crate::game::Frames>>>,
     game_screen: RefCell<Option<crate::game::Screen>>,
+    /// The installation's art and spells (the world profiles', S060).
+    gamedata: std::sync::Arc<crate::gamedata::GameData>,
 }
 
 impl NativeSystem {
@@ -56,6 +58,7 @@ impl NativeSystem {
             game: RefCell::new(None),
             game_frames: RefCell::default(),
             game_screen: RefCell::new(None),
+            gamedata: std::sync::Arc::default(),
         }
     }
 
@@ -516,6 +519,33 @@ impl System for NativeSystem {
     fn game_recordings(&self, root: &Path) {
         let root = root.to_path_buf();
         self.spawn(move || Event::GameRecordings(crate::profiles::game_recordings(&root)));
+    }
+
+    fn game_art(&self, flavor: &str, art: wowlua_studio_app::system::Art) {
+        let data = self.gamedata.clone();
+        let flavor = flavor.to_string();
+        self.spawn(move || {
+            let image = data.art(&flavor, &art);
+            Event::GameArt(art, image)
+        });
+    }
+
+    fn class_spells(&self, flavor: &str, class: &str) {
+        let data = self.gamedata.clone();
+        let (flavor, class) = (flavor.to_string(), class.to_string());
+        self.spawn(move || {
+            let found = data.class_spells(&flavor, &class);
+            Event::ClassSpells(class, found)
+        });
+    }
+
+    fn search_spells(&self, flavor: &str, query: &str) {
+        let data = self.gamedata.clone();
+        let (flavor, query) = (flavor.to_string(), query.to_string());
+        self.spawn(move || {
+            let found = data.search_spells(&flavor, &query);
+            Event::Spells(query, found)
+        });
     }
 
     fn world_profiles(&self, root: &Path) -> Vec<wowlua_studio_app::system::WorldProfile> {

@@ -13,8 +13,8 @@ use wowlua_studio_ui::{Face, palette};
 
 use super::json::Key;
 use super::schema::{self, Form, Kind};
-use super::{Action, Change, list};
-use crate::system::System;
+use super::{Action, ArtCache, Change, list};
+use crate::system::{Art, System};
 
 /// What a form works with.
 pub struct Cx<'a> {
@@ -25,8 +25,57 @@ pub struct Cx<'a> {
     pub entry: &'a mut usize,
     pub slot: &'a mut usize,
     pub bag: &'a mut usize,
-    pub flavor: String,
+    pub look: Look<'a>,
     pub system: &'a dyn System,
+    /// The spells part's search: what is typed, the spells found.
+    pub spell_query: &'a mut String,
+    pub spells: Option<&'a (String, Vec<crate::system::SpellRow>)>,
+    pub class_spells: Option<&'a (String, Vec<crate::system::ClassSpell>)>,
+    pub all_ranks: &'a mut bool,
+}
+
+/// Where the installation's art comes from.
+#[derive(Clone, Copy)]
+pub struct Look<'a> {
+    pub art: &'a ArtCache,
+    pub system: &'a dyn System,
+    pub flavor: &'a str,
+}
+
+/// Art to draw: the stand-in's label, the texture once read.
+pub struct Pic {
+    label: String,
+    tex: Option<egui::TextureId>,
+}
+
+impl Look<'_> {
+    fn pic(&self, label: &str, art: Option<Art>) -> Pic {
+        Pic {
+            label: label.to_string(),
+            tex: art.and_then(|a| self.art.get(self.system, self.flavor, a)),
+        }
+    }
+}
+
+/// A class's art, by file name.
+fn class_art(class: &str) -> Option<Art> {
+    (!class.is_empty()).then(|| Art::Class(class.to_uppercase()))
+}
+
+/// An action's art: its spell's or item's icon.
+fn action_art(a: &Json) -> Option<Art> {
+    let id = a["id"].as_u64()? as u32;
+    match a["type"].as_str()? {
+        "spell" => Some(Art::Spell(id)),
+        "item" => Some(Art::Item(id)),
+        _ => None,
+    }
+}
+
+/// An item reference's art (an ID, or a stack with `id`).
+fn item_art(v: &Json) -> Option<Art> {
+    let id = v.as_u64().or_else(|| v["id"].as_u64())?;
+    Some(Art::Item(id as u32))
 }
 
 impl Cx<'_> {
@@ -240,10 +289,31 @@ fn caption(ui: &mut Ui, text: &str) {
 
 /// Game art: in Studio the installation's icon; here the design's
 /// stand-in, a hatched box with what it shows.
-fn art(ui: &mut Ui, size: f32, label: &str, selected: bool) -> egui::Response {
+fn art(
+    ui: &mut Ui,
+    size: f32,
+    label: &str,
+    selected: bool,
+    tex: Option<egui::TextureId>,
+) -> egui::Response {
     let p = palette(ui.ctx());
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
     let painter = ui.painter();
+    if let Some(tex) = tex {
+        painter.image(
+            tex,
+            rect,
+            Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            egui::Color32::WHITE,
+        );
+        let stroke = if selected {
+            Stroke::new(2.0, p.amber)
+        } else {
+            Stroke::new(1.0, p.line_strong)
+        };
+        painter.rect_stroke(rect, CornerRadius::ZERO, stroke, egui::StrokeKind::Inside);
+        return response;
+    }
     painter.rect_filled(rect, CornerRadius::ZERO, p.bg_300);
     let mut x = rect.left() - rect.height();
     while x < rect.right() {
@@ -279,7 +349,7 @@ fn art(ui: &mut Ui, size: f32, label: &str, selected: bool) -> egui::Response {
 fn tile(
     ui: &mut Ui,
     width: f32,
-    art_label: &str,
+    pic: &Pic,
     name: &str,
     sub: &str,
     selected: bool,
@@ -313,7 +383,7 @@ fn tile(
     );
     if !empty {
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(icon));
-        art(&mut child, 32.0, art_label, selected);
+        art(&mut child, 32.0, &pic.label, selected, pic.tex);
     }
     let fit = |s: &str, n: usize| -> String {
         if s.chars().count() > n {
@@ -451,13 +521,13 @@ fn character(ui: &mut Ui, cx: &mut Cx<'_>) {
         .and_then(|d| d["class"].as_str())
         .unwrap_or("")
         .to_string();
+    let look = cx.look;
     ui.horizontal(|ui| {
-        art(
-            ui,
-            52.0,
+        let pic = look.pic(
             if class.is_empty() { "class" } else { &class },
-            false,
+            class_art(&class),
         );
+        art(ui, 52.0, &pic.label, false, pic.tex);
         ui.add_space(12.0);
         let w = col(ui, 4);
         input(ui, cx, "name", p("name"), Kind::Text, w, "Player");
@@ -475,13 +545,21 @@ fn character(ui: &mut Ui, cx: &mut Cx<'_>) {
     });
     ui.add_space(10.0);
     forms::label(ui, "class");
-    let list = classes(&cx.flavor);
+    let list = classes(look.flavor);
     let per = list.len().min(9);
     let w = ((ui.available_width() - 6.0 * (per as f32 - 1.0)) / per as f32).max(60.0);
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
         for (file, short) in &list {
-            if tile(ui, w, short, file, "", class == *file, false) {
+            if tile(
+                ui,
+                w,
+                &look.pic(short, class_art(file)),
+                file,
+                "",
+                class == *file,
+                false,
+            ) {
                 cx.set(p("class"), Some(Json::String((*file).to_string())));
             }
         }
@@ -493,7 +571,7 @@ fn character(ui: &mut Ui, cx: &mut Cx<'_>) {
     ui.add_space(10.0);
     ui.horizontal(|ui| {
         let w = col(ui, 4);
-        let races = races(&cx.flavor);
+        let races = races(look.flavor);
         choice(ui, cx, "race", p("race"), &races, w);
         choice(ui, cx, "sex", p("sex"), SEX, w);
         choice(ui, cx, "role", p("role"), ROLES, w);
@@ -541,6 +619,7 @@ fn unit_path(key: &Key, f: &str) -> Vec<Key> {
 fn units(ui: &mut Ui, cx: &mut Cx<'_>) {
     let pal = palette(ui.ctx());
     let root = cx.root;
+    let look = cx.look;
     let all: Vec<(Key, Json)> = root
         .get("units")
         .map(|u| list(u).into_iter().map(|(k, v)| (k, v.clone())).collect())
@@ -647,19 +726,23 @@ fn units(ui: &mut Ui, cx: &mut Cx<'_>) {
                 let mut add_target = false;
                 row(ui, if kind == 2 { "you" } else { "group" }, &mut |ui| {
                     let (n, short) = label(&character, "Player");
-                    if tile(ui, w, &short, &n, "you", cx.unit.is_none(), false) {
+                    let pic =
+                        look.pic(&short, class_art(character["class"].as_str().unwrap_or("")));
+                    if tile(ui, w, &pic, &n, "you", cx.unit.is_none(), false) {
                         picked = Some(None);
                     }
                     if kind != 2 {
                         for &i in grouped.iter().take(if raid { 39 } else { 4 }) {
                             let (n, short) = label(&all[i].1, "Member");
                             let sub = all[i].1["role"].as_str().unwrap_or("member").to_lowercase();
-                            if tile(ui, w, &short, &n, &sub, *cx.unit == Some(i), false) {
+                            let pic = look
+                                .pic(&short, class_art(all[i].1["class"].as_str().unwrap_or("")));
+                            if tile(ui, w, &pic, &n, &sub, *cx.unit == Some(i), false) {
                                 picked = Some(Some(i));
                             }
                         }
                         if grouped.len() < if raid { 39 } else { 4 }
-                            && tile(ui, w, "", "+ member", "empty", false, true)
+                            && tile(ui, w, &look.pic("", None), "+ member", "empty", false, true)
                         {
                             add_member = true;
                         }
@@ -677,12 +760,14 @@ fn units(ui: &mut Ui, cx: &mut Cx<'_>) {
                                 .map(|l| l.to_string())
                                 .unwrap_or_default()
                         );
-                        if tile(ui, w, &short, &n, sub.trim(), *cx.unit == Some(i), false) {
+                        let pic =
+                            look.pic(&short, class_art(all[i].1["class"].as_str().unwrap_or("")));
+                        if tile(ui, w, &pic, &n, sub.trim(), *cx.unit == Some(i), false) {
                             picked = Some(Some(i));
                         }
                     }
                     None => {
-                        if tile(ui, w, "", "+ target", "empty", false, true) {
+                        if tile(ui, w, &look.pic("", None), "+ target", "empty", false, true) {
                             add_target = true;
                         }
                     }
@@ -1045,9 +1130,13 @@ fn auras(ui: &mut Ui, cx: &mut Cx<'_>) {
                 Some(d) => format!("{d} s"),
                 None => "no duration".into(),
             };
+            let art = a["icon"]
+                .as_u64()
+                .map(|f| Art::File(f as u32))
+                .or_else(|| a["spellId"].as_u64().map(|s| Art::Spell(s as u32)));
             if card_button(
                 ui,
-                &icon,
+                &cx.look.pic(&icon, art),
                 a["name"].as_str().unwrap_or("Aura"),
                 &format!("spell {} · {kind}", shown(a.get("spellId"))),
                 &meta,
@@ -1137,7 +1226,7 @@ fn grid(ui: &mut Ui, cx: &mut Cx<'_>, base: &[Key], fields: &[(&str, Kind)]) {
 /// A card with art, a title and two lines; whether it was clicked.
 fn card_button(
     ui: &mut Ui,
-    icon: &str,
+    icon: &Pic,
     title: &str,
     line: &str,
     meta: &str,
@@ -1167,7 +1256,7 @@ fn card_button(
     );
     let icon_rect = Rect::from_min_size(rect.min + Vec2::new(10.0, 13.0), Vec2::splat(36.0));
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(icon_rect));
-    art(&mut child, 36.0, icon, false);
+    art(&mut child, 36.0, &icon.label, false, icon.tex);
     let x = icon_rect.right() + 10.0;
     painter.text(
         egui::pos2(x, rect.top() + 14.0),
@@ -1210,23 +1299,248 @@ fn dashed_button(ui: &mut Ui, label: &str) -> bool {
     response.clicked()
 }
 
+/// The spells part: the class's spells to check as trained (`trained`,
+/// wowlua T500), others found by a search, and spells whose data the
+/// profile overrides (`spells`).
 fn spells(ui: &mut Ui, cx: &mut Cx<'_>) {
     let p = palette(ui.ctx());
-    let all: Vec<(Key, Json)> = cx
-        .root
+    let root = cx.root;
+    let trained: Vec<i64> = root
+        .get("trained")
+        .map(|t| list(t).iter().filter_map(|(_, v)| v.as_i64()).collect())
+        .unwrap_or_default();
+    let class = root["character"]["class"]
+        .as_str()
+        .unwrap_or("")
+        .to_uppercase();
+    let level = root["character"]["level"].as_f64().unwrap_or(1.0) as u32;
+    // Trained set or not: the whole list written again (an array).
+    let set_trained = |cx: &mut Cx<'_>, id: i64, on: bool| {
+        let mut ids = trained.clone();
+        ids.retain(|i| *i != id);
+        if on {
+            ids.push(id);
+        }
+        cx.set(vec![name("trained")], Some(json!(ids)));
+    };
+
+    // The class's spells.
+    if class.is_empty() {
+        ui.label(
+            egui::RichText::new(
+                "Give the character a class: its spells show here to check as trained.",
+            )
+            .font(Face::Plex.at(12.0))
+            .color(p.ink_muted),
+        );
+    } else {
+        match cx.class_spells.filter(|(c, _)| *c == class) {
+            None => {
+                ui.label(
+                    egui::RichText::new(format!("Reading {class}'s spells from the installation…"))
+                        .font(Face::Plex.at(12.0))
+                        .color(p.ink_muted),
+                );
+            }
+            Some((_, list)) if list.is_empty() => {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "No installation with this flavor's client: {class}'s spells come from its tables. Add trained spells by ID below."
+                    ))
+                    .font(Face::Plex.at(12.0))
+                    .color(p.ink_muted),
+                );
+            }
+            Some((_, list)) => {
+                let shown: Vec<&crate::system::ClassSpell> = list
+                    .iter()
+                    .filter(|s| *cx.all_ranks || (s.level > 0 && s.level <= level))
+                    .collect();
+                // (a spell without a level is learned another way: a
+                // talent, an item; shown with every rank)
+                let up_to: Vec<&crate::system::ClassSpell> = list
+                    .iter()
+                    .filter(|s| s.level > 0 && s.level <= level)
+                    .collect();
+                let count = up_to
+                    .iter()
+                    .filter(|s| trained.contains(&i64::from(s.id)))
+                    .count();
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{class} at level {level} · {count} of {} trained",
+                            up_to.len()
+                        ))
+                        .font(Face::PlexMedium.at(12.0))
+                        .color(p.ink),
+                    );
+                    if forms::text_button(ui, "train all to its level").clicked() {
+                        let mut ids = trained.clone();
+                        for s in &up_to {
+                            if !ids.contains(&i64::from(s.id)) {
+                                ids.push(i64::from(s.id));
+                            }
+                        }
+                        cx.set(vec![name("trained")], Some(json!(ids)));
+                    }
+                    forms::checkbox(ui, cx.all_ranks, "show all ranks and levels", None);
+                });
+                ui.add_space(6.0);
+                let mut line = "";
+                for s in shown {
+                    if s.line != line {
+                        line = &s.line;
+                        ui.add_space(6.0);
+                        ui.label(
+                            egui::RichText::new(line)
+                                .font(Face::PlexMedium.at(11.0))
+                                .color(p.ink_muted),
+                        );
+                    }
+                    let id = i64::from(s.id);
+                    let mut on = trained.contains(&id);
+                    let above = s.level > level;
+                    ui.horizontal(|ui| {
+                        if forms::checkbox(ui, &mut on, "", None) {
+                            set_trained(cx, id, on);
+                        }
+                        let tex = s
+                            .icon
+                            .and_then(|f| cx.look.art.get(cx.system, cx.look.flavor, Art::File(f)));
+                        art(ui, 24.0, "", false, tex);
+                        cell(
+                            ui,
+                            220.0,
+                            egui::RichText::new(&s.name)
+                                .font(Face::Plex.at(12.0))
+                                .color(if above { p.ink_muted } else { p.ink }),
+                        );
+                        cell(
+                            ui,
+                            80.0,
+                            egui::RichText::new(&s.rank)
+                                .font(Face::Plex.at(11.0))
+                                .color(p.ink_muted),
+                        );
+                        cell(
+                            ui,
+                            70.0,
+                            egui::RichText::new(if s.level == 0 {
+                                "no level".to_string()
+                            } else {
+                                format!("level {}", s.level)
+                            })
+                            .font(Face::Plex.at(11.0))
+                            .color(p.ink_muted),
+                        );
+                        ui.label(
+                            egui::RichText::new(s.id.to_string())
+                                .font(Face::Plex.at(11.0))
+                                .color(p.ink_faint),
+                        );
+                    });
+                }
+            }
+        }
+    }
+
+    // Other trained spells (racials, professions…): found by a search.
+    ui.add_space(14.0);
+    forms::label(ui, "other spells");
+    let class_ids: Vec<i64> = cx
+        .class_spells
+        .map(|(_, l)| l.iter().map(|s| i64::from(s.id)).collect())
+        .unwrap_or_default();
+    let others: Vec<i64> = trained
+        .iter()
+        .copied()
+        .filter(|i| !class_ids.contains(i))
+        .collect();
+    if !others.is_empty() {
+        ui.horizontal_wrapped(|ui| {
+            for id in &others {
+                if forms::text_button(ui, &format!("{id} ×")).clicked() {
+                    set_trained(cx, *id, false);
+                }
+            }
+        });
+    }
+    forms::text_input(
+        ui,
+        cx.spell_query,
+        520.0_f32.min(ui.available_width()),
+        "search the client's spells by name or ID (from the installation's tables)",
+    );
+    if let Some((query, found)) = cx.spells.filter(|(q, _)| !q.trim().is_empty()) {
+        ui.add_space(6.0);
+        if found.is_empty() {
+            ui.label(
+                egui::RichText::new(format!(
+                    "No spell of the installation's is named like \"{query}\" (or no installation has this flavor's client)."
+                ))
+                .font(Face::Plex.at(12.0))
+                .color(p.ink_muted),
+            );
+        }
+        for s in found {
+            let id = i64::from(s.id);
+            let is_trained = trained.contains(&id);
+            ui.horizontal(|ui| {
+                let tex = s
+                    .icon
+                    .and_then(|f| cx.look.art.get(cx.system, cx.look.flavor, Art::File(f)));
+                art(ui, 24.0, "", false, tex);
+                cell(
+                    ui,
+                    220.0,
+                    egui::RichText::new(&s.name)
+                        .font(Face::Plex.at(12.0))
+                        .color(p.ink),
+                );
+                cell(
+                    ui,
+                    70.0,
+                    egui::RichText::new(s.id.to_string())
+                        .font(Face::Plex.at(12.0))
+                        .color(p.ink_muted),
+                );
+                if is_trained {
+                    ui.label(
+                        egui::RichText::new("trained")
+                            .font(Face::Plex.at(11.0))
+                            .color(p.ink_faint),
+                    );
+                } else if forms::text_button(ui, "+ trained").clicked() {
+                    set_trained(cx, id, true);
+                }
+                let text: String = s.text.chars().take(90).collect();
+                ui.label(
+                    egui::RichText::new(text)
+                        .font(Face::Plex.at(11.0))
+                        .color(p.ink_muted),
+                );
+            });
+        }
+    }
+
+    // Spells whose data the profile overrides.
+    let all: Vec<(Key, Json)> = root
         .get("spells")
         .map(|s| list(s).into_iter().map(|(k, v)| (k, v.clone())).collect())
         .unwrap_or_default();
+    ui.add_space(14.0);
+    forms::label(ui, "spell data overrides");
     let new_key = "spells/+".to_string();
     ui.horizontal(|ui| {
         let buffer = cx.buffers.entry(new_key.clone()).or_default();
         forms::text_input(ui, buffer, 160.0, "spell ID");
         let id = buffer.trim().parse::<u64>().ok();
-        if widgets::button(ui, ButtonKind::Secondary, "+ spell", true, None).clicked()
+        if forms::text_button(ui, "+ override").clicked()
             && let Some(id) = id
         {
-            let data = json!({ "name": format!("Spell {id}"), "known": true });
-            if cx.root.get("spells").is_none() {
+            let data = json!({ "name": format!("Spell {id}") });
+            if root.get("spells").is_none() {
                 cx.set(vec![name("spells")], Some(json!({ id.to_string(): data })));
             } else {
                 cx.set(vec![name("spells"), name(&id.to_string())], Some(data));
@@ -1234,29 +1548,15 @@ fn spells(ui: &mut Ui, cx: &mut Cx<'_>) {
             cx.buffers.insert(new_key.clone(), String::new());
         }
     });
-    ui.add_space(8.0);
-    if all.is_empty() {
-        ui.label(
-            egui::RichText::new("No spells defined: the client's data answers.")
-                .font(Face::Plex.at(12.0))
-                .color(p.ink_muted),
-        );
-    }
     for (i, (key, s)) in all.iter().enumerate() {
         let id = match key {
             Key::Name(k) => k.clone(),
             Key::Index(i) => i.to_string(),
         };
         let text = format!(
-            "{:<26} {:>7}  {:>7}  {:<5}  {}",
+            "{:<26} {:>7}  {}",
             s["name"].as_str().unwrap_or("Spell"),
             id,
-            shown(s.get("iconID")),
-            if s["known"] == Json::Bool(true) {
-                "known"
-            } else {
-                "—"
-            },
             s["description"].as_str().unwrap_or("")
         );
         if ui
@@ -1270,17 +1570,16 @@ fn spells(ui: &mut Ui, cx: &mut Cx<'_>) {
         }
     }
     if let Some((key, s)) = all.get(*cx.entry).cloned() {
-        ui.add_space(12.0);
+        ui.add_space(8.0);
         entry_card(
             ui,
             cx,
-            &format!("{} · spell", s["name"].as_str().unwrap_or("Spell")),
+            &format!("{} · its data", s["name"].as_str().unwrap_or("Spell")),
             vec![name("spells"), key],
             &[
                 ("name", Kind::Text),
                 ("iconID", Kind::Number),
                 ("castTime", Kind::Number),
-                ("known", Kind::Bool),
                 ("description", Kind::Text),
                 ("minRange", Kind::Number),
                 ("maxRange", Kind::Number),
@@ -1290,7 +1589,7 @@ fn spells(ui: &mut Ui, cx: &mut Cx<'_>) {
     }
     caption(
         ui,
-        "Defined here, a spell overrides the client's data (mock.defineSpell). Without an entry, the installation's tables answer when the session allows it; tests stay the same on every machine by default.",
+        "Trained: the spells the character knows (mock.player:learn). An override replaces what the client's tables answer for a spell (mock.defineSpell); without one the installation's data answers.",
     );
 }
 
@@ -1328,6 +1627,10 @@ fn actions(ui: &mut Ui, cx: &mut Cx<'_>) {
             ui.spacing_mut().item_spacing.x = 4.0;
             for i in 1..=12 {
                 let slot = bar * 12 + i;
+                let tex = action(slot)
+                    .as_ref()
+                    .and_then(action_art)
+                    .and_then(|a| cx.look.art.get(cx.system, cx.look.flavor, a));
                 let label = action(slot)
                     .map(|a| {
                         format!(
@@ -1338,7 +1641,7 @@ fn actions(ui: &mut Ui, cx: &mut Cx<'_>) {
                         )
                     })
                     .unwrap_or_default();
-                if art(ui, 40.0, &format!("{slot} {label}"), selected == slot).clicked() {
+                if art(ui, 40.0, &format!("{slot} {label}"), selected == slot, tex).clicked() {
                     *cx.slot = slot;
                 }
             }
@@ -1479,10 +1782,14 @@ fn equipment(ui: &mut Ui, cx: &mut Cx<'_>) {
                 .as_ref()
                 .map(|(_, v)| item_word(v))
                 .unwrap_or_else(|| "empty".into());
+            let pic = cx.look.pic(
+                if w.is_some() { "icon" } else { "" },
+                w.as_ref().and_then(|(_, v)| item_art(v)),
+            );
             if tile(
                 ui,
                 92.0,
-                if w.is_some() { "icon" } else { "" },
+                &pic,
                 slot.trim_end_matches("Slot"),
                 &sub,
                 selected == i,
@@ -1621,7 +1928,10 @@ fn bags(ui: &mut Ui, cx: &mut Cx<'_>) {
                         format!("{id}{count}")
                     })
                     .unwrap_or_default();
-                if art(ui, 40.0, &label, selected == slot).clicked() {
+                let tex = item_at(slot)
+                    .and_then(|(_, v)| item_art(&v))
+                    .and_then(|a| cx.look.art.get(cx.system, cx.look.flavor, a));
+                if art(ui, 40.0, &label, selected == slot, tex).clicked() {
                     *cx.entry = slot;
                 }
             }

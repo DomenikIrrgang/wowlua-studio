@@ -25,6 +25,8 @@ regex = "1.13"
 rfd = "0.17"
 # Keeps the order of wowlua's config.json when Studio writes `wow.path`.
 serde_json = { workspace = true, features = ["preserve_order"] }
+# The installation's art and spells for the world profiles (M8, S060).
+wowlua-casc.workspace = true
 # A game session hosted in process, its screen drawn on eframe's device
 # (M5, S055).
 wowlua-debug.workspace = true

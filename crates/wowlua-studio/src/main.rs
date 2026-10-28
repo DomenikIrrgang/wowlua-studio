@@ -6,6 +6,7 @@
 
 mod frame_stats;
 mod game;
+mod gamedata;
 mod lsp;
 #[cfg(target_os = "macos")]
 mod menu_bar;
