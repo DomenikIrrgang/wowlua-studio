@@ -38,6 +38,9 @@ wowlua-vm.workspace = true
 wowlua-driver.workspace = true
 wowlua-flavors.workspace = true
 wowlua-manifest.workspace = true
+# The dependencies page: updates and a registry package's versions (M10).
+wowlua-pkg.workspace = true
+semver = "1"
 wowlua-studio-app.workspace = true
 wowlua-studio-ui.workspace = true
 wowlua-lsp.workspace = true

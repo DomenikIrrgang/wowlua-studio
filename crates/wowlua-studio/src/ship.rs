@@ -58,7 +58,7 @@ fn manifest_at(dir: &Path) -> (Option<String>, bool) {
 /// As the CLI loads the package of `dir`: at a workspace's root its own
 /// package (`-p <it>`, S061), not its members; the lockfile kept up to
 /// date, dependencies fetched when missing.
-fn options(dir: &Path) -> LoadOptions {
+pub(crate) fn options(dir: &Path) -> LoadOptions {
     let (name, workspace) = manifest_at(dir);
     LoadOptions {
         cwd: dir.to_path_buf(),

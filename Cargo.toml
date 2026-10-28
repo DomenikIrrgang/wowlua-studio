@@ -52,6 +52,7 @@ wowlua-vm = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "337e61e97
 wowlua-driver = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "337e61e972309c51cc27db0a8fd9efda653dc354" }
 wowlua-flavors = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "337e61e972309c51cc27db0a8fd9efda653dc354" }
 wowlua-manifest = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "337e61e972309c51cc27db0a8fd9efda653dc354" }
+wowlua-pkg = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "337e61e972309c51cc27db0a8fd9efda653dc354" }
 wowlua-test = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "337e61e972309c51cc27db0a8fd9efda653dc354" }
 wowlua-lsp = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "337e61e972309c51cc27db0a8fd9efda653dc354" }
 wowlua-span = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "337e61e972309c51cc27db0a8fd9efda653dc354" }

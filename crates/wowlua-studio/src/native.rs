@@ -14,9 +14,9 @@ use wowlua_driver::project::{LoadOptions, find_manifest, load_projects};
 use wowlua_driver::scaffold::{InitRequest, NewRequest};
 use wowlua_manifest::model::{CheckMode, PackageKind};
 use wowlua_studio_app::system::{
-    Adopt, AdoptPreview, ClientFolder, Entry, Event, FileChange, Found, FoundIn, Highlight, Hit,
-    Installation, MOST_FOUND, Member, NewAddon, Opened, PackageNames, Search, ShipEvent, Syntax,
-    System, UiState, Workspace,
+    Adopt, AdoptPreview, ClientFolder, DepsEvent, Entry, Event, FileChange, Found, FoundIn,
+    Highlight, Hit, Installation, MOST_FOUND, Member, NewAddon, Opened, PackageNames, Search,
+    ShipEvent, Syntax, System, UiState, Workspace,
 };
 
 /// Folders the explorer and the watcher leave out: build output and the
@@ -605,6 +605,45 @@ impl System for NativeSystem {
         if let Err(e) = Command::new(opener).arg(path).spawn() {
             eprintln!("wowlua studio: cannot show {}: {e}", path.display());
         }
+    }
+
+    fn deps_read(&self, dir: &Path) {
+        let dir = dir.to_path_buf();
+        self.spawn(move || Event::Deps(DepsEvent::Read(Box::new(crate::deps::read(&dir)))));
+    }
+
+    fn deps_outdated(&self, dir: &Path) {
+        let dir = dir.to_path_buf();
+        self.spawn(move || Event::Deps(DepsEvent::Outdated(crate::deps::outdated(&dir))));
+    }
+
+    fn deps_search(&self, _dir: &Path, query: &str) {
+        let query = query.to_owned();
+        self.spawn(move || {
+            let found = crate::deps::search(&query);
+            Event::Deps(DepsEvent::Searched { query, found })
+        });
+    }
+
+    fn deps_versions(&self, _dir: &Path, name: &str) {
+        let name = name.to_owned();
+        self.spawn(move || {
+            let versions = crate::deps::versions(&name);
+            Event::Deps(DepsEvent::Versions { name, versions })
+        });
+    }
+
+    fn deps_run(&self, dir: &Path, job: u64, command: wowlua_studio_app::system::DepsCommand) {
+        let dir = dir.to_path_buf();
+        self.spawn(move || {
+            let (ok, output) = crate::deps::run(&dir, &command);
+            Event::Deps(DepsEvent::Ran {
+                job,
+                command: command.line(),
+                ok,
+                output,
+            })
+        });
     }
 
     fn ship_read(&self, root: &Path) {

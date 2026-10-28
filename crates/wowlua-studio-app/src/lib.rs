@@ -8,6 +8,7 @@ pub mod chrome;
 pub mod commands;
 pub mod coverage;
 pub mod debug;
+pub mod deps;
 pub mod dock;
 pub mod editor;
 pub mod explorer;
@@ -22,6 +23,7 @@ pub mod problems;
 pub mod profiler;
 pub mod recents;
 pub mod search;
+pub mod settings;
 pub mod ship;
 pub mod start;
 pub mod state;
@@ -125,6 +127,10 @@ pub struct Studio {
     world: world::WorldState,
     /// The ship page (M9, S061).
     ship: ship::ShipState,
+    /// The settings page (M10, S062).
+    settings_page: settings::SettingsState,
+    /// The theme and scale last applied (S062).
+    applied: Option<(wowlua_studio_ui::Theme, f32)>,
     /// The workspace's world profiles (`tests/profiles/*.json`), by name.
     profiles: Vec<String>,
     /// Background jobs (S044); the checks running, by package.
@@ -248,6 +254,8 @@ impl Studio {
             profiler: profiler::ProfilerState::default(),
             world: world::WorldState::default(),
             ship: ship::ShipState::default(),
+            settings_page: settings::SettingsState::default(),
+            applied: None,
             profiles: Vec::new(),
             jobs: jobs::Jobs::default(),
             checks: std::collections::HashMap::new(),
@@ -445,6 +453,8 @@ impl Studio {
             }
         }
         self.focused = focused;
+        // The OS's theme can change under a `system` theme.
+        self.apply_settings(&ctx);
 
         // Closing the window with unsaved edits asks first.
         if ctx.input(|i| i.viewport().close_requested())
@@ -742,6 +752,10 @@ impl Studio {
         let mut world_action = None;
         let ship_state = &mut self.ship;
         let mut ship_action = None;
+        let settings_page = &mut self.settings_page;
+        settings_page.wowlua_version = self.host.wowlua_version.clone();
+        let studio_settings = &mut self.settings;
+        let mut settings_action = None;
         let installation = self.start.installation();
         let on_world = self.layout_page == Page::World;
         let on_debug = self.layout_page == Page::Debug;
@@ -926,6 +940,27 @@ impl Studio {
                     ship_action = Some(a);
                 }
             }
+            Panel::SettingsSections => settings::sections(ui, settings_page, &[]),
+            Panel::Settings => match settings_page.view {
+                settings::View::Studio(_) => {
+                    let keys = |_: &mut Ui, _: &mut state::Settings| false;
+                    if let Some(a) = settings::studio(
+                        ui,
+                        settings_page,
+                        studio_settings,
+                        system,
+                        Some(workspace),
+                        installation,
+                        keys,
+                    ) {
+                        settings_action = Some(a);
+                    }
+                }
+                settings::View::Dependencies => {
+                    deps::show(ui, &mut settings_page.deps, workspace, system)
+                }
+                settings::View::Manifest(_) => {}
+            },
             Panel::ProfileEditor => {
                 let live = world::session_profile(debug_state, world_state);
                 let (json, a) = world::editor(
@@ -1001,6 +1036,9 @@ impl Studio {
         }
         if let Some(a) = ship_action {
             self.ship_action(a, ctx);
+        }
+        if let Some(a) = settings_action {
+            self.settings_action(a, ctx);
         }
         world::flush_live(&mut self.world, &mut self.debug, &*self.host.system);
         // The stop's source, shown once.
@@ -1830,6 +1868,7 @@ impl Studio {
                 Event::FilesChanged(paths) => {
                     self.explorer.changed(&paths);
                     self.ship.files_changed();
+                    self.settings_page.deps.files_changed();
                     self.files_changed(&paths, ctx);
                     // A changed manifest can change the members: the
                     // workspace is read again.
@@ -1882,6 +1921,10 @@ impl Studio {
                 Event::Spells(query, found) => self.world.spells_found(query, found),
                 Event::ClassSpells(class, found) => self.world.class_spells_found(class, found),
                 Event::Ship(event) => self.ship.event(event),
+                Event::Deps(event) => self.settings_page.deps.event(event),
+                Event::Settings(info) => self.settings_page.info(info),
+                Event::Updates(check) => self.settings_page.updates(check),
+                Event::Github(event) => self.settings_page.github(event),
                 Event::Installation(_) | Event::Ui { .. } => {}
             }
             ctx.request_repaint();
@@ -2183,6 +2226,54 @@ impl Studio {
     /// The spells part's search typed (the screenshot harness's `spells:`).
     pub fn world_search(&mut self, query: &str) {
         self.world.spell_query = query.to_owned();
+    }
+
+    /// What the settings page asks (S062).
+    fn settings_action(&mut self, action: settings::Action, ctx: &Context) {
+        match action {
+            settings::Action::Changed => {
+                self.apply_settings(ctx);
+                self.touch(ctx);
+            }
+            settings::Action::PickInstallation => {
+                let system = &*self.host.system;
+                if let Some(path) = system.pick_folder("Pick your World of Warcraft folder") {
+                    system.set_installation(&path);
+                }
+            }
+            settings::Action::ResetLayouts => {
+                let key = self.layout_key();
+                self.layouts.workspaces.remove(&key);
+                self.touch(ctx);
+            }
+            settings::Action::OpenLog => {
+                if let Some(log) = self.host.system.log_file() {
+                    self.host.system.reveal(&log);
+                }
+            }
+        }
+    }
+
+    /// Applies the settings that change how Studio draws (S062): the
+    /// theme (the OS's for `system`) and the interface's scale.
+    fn apply_settings(&mut self, ctx: &Context) {
+        let theme = if self.settings.follows_system() {
+            match ctx.system_theme() {
+                Some(egui::Theme::Light) => wowlua_studio_ui::Theme::Light,
+                _ => wowlua_studio_ui::Theme::Dark,
+            }
+        } else {
+            self.settings.theme()
+        };
+        let zoom = self.settings.zoom();
+        if self.applied == Some((theme, zoom)) {
+            return;
+        }
+        self.applied = Some((theme, zoom));
+        wowlua_studio_ui::set_theme(ctx, theme);
+        if (ctx.zoom_factor() - zoom).abs() > f32::EPSILON {
+            ctx.set_zoom_factor(zoom);
+        }
     }
 
     /// What the ship page asks (S061).
@@ -2607,6 +2698,9 @@ impl Studio {
     fn run(&mut self, ctx: &Context, command: Command) {
         match command {
             Command::ShowPage(page) => {
+                if page == Page::Settings && self.page != Page::Settings {
+                    self.settings_page.opened();
+                }
                 self.page = page;
                 if self.settings.follow_presets {
                     self.layout_page = page;

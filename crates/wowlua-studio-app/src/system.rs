@@ -177,6 +177,12 @@ pub enum Event {
     ClassSpells(String, Vec<ClassSpell>),
     /// The ship page's news (S061).
     Ship(ShipEvent),
+    /// The dependencies page's news (S062).
+    Deps(DepsEvent),
+    /// The settings page's facts of this computer (S062).
+    Settings(SettingsInfo),
+    Updates(UpdateCheck),
+    Github(GithubSignIn),
 }
 
 /// What the game page asks a running session (S055): the debugger's UI
@@ -903,6 +909,162 @@ pub enum ShipEvent {
     Tagged(Result<String, String>),
 }
 
+/// What the settings page shows of this computer (→ [`Event::Settings`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SettingsInfo {
+    /// The language server's check cache on disk, in bytes.
+    pub check_cache: Option<u64>,
+    /// The installation's art kept on disk, in bytes, and how many files.
+    pub art_cache: Option<(u64, usize)>,
+    /// Studio's log file.
+    pub log: Option<PathBuf>,
+    /// Signed in to GitHub as.
+    pub github: Option<String>,
+    /// A Claude API key is saved.
+    pub claude_key: bool,
+}
+
+/// Studio's releases (`check for updates`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum UpdateCheck {
+    /// This is the newest.
+    Newest,
+    Newer {
+        version: String,
+        url: String,
+    },
+    Failed(String),
+}
+
+/// GitHub's device sign-in (S062): the code to enter, then the account.
+#[derive(Clone, Debug, PartialEq)]
+pub enum GithubSignIn {
+    /// Enter `code` at `url`; the sign-in waits for it.
+    Code {
+        code: String,
+        url: String,
+    },
+    SignedIn(String),
+    Failed(String),
+}
+
+/// A dependency the package declares, as it resolved (S062).
+#[derive(Clone, Debug, PartialEq)]
+pub struct DepRow {
+    pub name: String,
+    /// In `dev-dependencies`.
+    pub dev: bool,
+    /// `registry`, `git · owner/repo`, `svn · host`, `path · libs/X`,
+    /// `archive · host`.
+    pub source: String,
+    /// From a registry: a version requirement, versions to choose from.
+    pub registry: bool,
+    pub kind: String,
+    /// What `wowlua.json` asks: `^1.2`, `tag Release-r1390`, `path`.
+    pub requirement: String,
+    /// The locked version (and tag, commit or revision); empty when it
+    /// did not resolve.
+    pub locked: String,
+    pub yanked: bool,
+    pub description: String,
+}
+
+/// What the dependencies page shows of a package (→ [`DepsEvent::Read`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DepsFacts {
+    pub package: String,
+    pub manifest: PathBuf,
+    pub rows: Vec<DepRow>,
+    /// The resolution's problems and warnings (W4322 for a yanked version),
+    /// as compiler output.
+    pub problems: Vec<String>,
+}
+
+/// A newer version, tag, commit or revision, and what brings it in
+/// (`wowlua outdated`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct DepNewer {
+    pub name: String,
+    pub latest: String,
+    pub action: String,
+}
+
+/// A registry package a search found.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DepFound {
+    pub name: String,
+    pub newest: String,
+    pub description: String,
+}
+
+/// What the dependencies page changes, as `wowlua add`, `remove` and
+/// `update` do.
+#[derive(Clone, Debug, PartialEq)]
+pub enum DepsCommand {
+    /// Adds a registry package, or changes a dependency's requirement.
+    Add {
+        name: String,
+        requirement: Option<String>,
+        dev: bool,
+    },
+    Remove {
+        name: String,
+        dev: bool,
+    },
+    /// Updates these (none: every dependency).
+    Update(Vec<String>),
+}
+
+impl DepsCommand {
+    /// The command as the CLI writes it.
+    pub fn line(&self) -> String {
+        match self {
+            DepsCommand::Add {
+                name,
+                requirement,
+                dev,
+            } => format!(
+                "wowlua add {name}{}{}",
+                requirement
+                    .as_ref()
+                    .map_or(String::new(), |r| format!("@{r}")),
+                if *dev { " --dev" } else { "" }
+            ),
+            DepsCommand::Remove { name, dev } => {
+                format!("wowlua remove {name}{}", if *dev { " --dev" } else { "" })
+            }
+            DepsCommand::Update(names) if names.is_empty() => "wowlua update".into(),
+            DepsCommand::Update(names) => format!("wowlua update {}", names.join(" ")),
+        }
+    }
+}
+
+/// The dependencies page's news (S062).
+#[derive(Clone, Debug, PartialEq)]
+pub enum DepsEvent {
+    Read(Box<Result<DepsFacts, String>>),
+    /// `wowlua outdated`: newer ones, or why not (offline).
+    Outdated(Result<Vec<DepNewer>, String>),
+    Searched {
+        query: String,
+        found: Result<Vec<DepFound>, String>,
+    },
+    /// A registry package's versions, newest first, and whether each was
+    /// yanked.
+    Versions {
+        name: String,
+        versions: Vec<(String, bool)>,
+    },
+    /// A command ran: its lines (`Updating a 1.2.1 -> 1.2.3`) or its
+    /// errors.
+    Ran {
+        job: u64,
+        command: String,
+        ok: bool,
+        output: Vec<String>,
+    },
+}
+
 /// A world profile of the package (`tests/profiles/<name>.json`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct WorldProfile {
@@ -1396,6 +1558,35 @@ pub trait System {
     fn ship_tag(&self, _root: &Path, _tag: TagPush) {}
     /// Shows a folder in the system's file manager.
     fn reveal(&self, _path: &Path) {}
+    /// The settings page's facts of this computer (→ [`Event::Settings`]).
+    fn settings_info(&self) {}
+    /// Studio's log file.
+    fn log_file(&self) -> Option<PathBuf> {
+        None
+    }
+    /// Clears the language server's check cache on disk.
+    fn clear_check_cache(&self) {}
+    /// Clears the installation's art kept on disk.
+    fn clear_art_cache(&self) {}
+    /// Looks for a newer Studio (→ [`Event::Updates`]).
+    fn check_updates(&self) {}
+    /// Fetches Blizzard's UI source of a flavor again.
+    fn refresh_ui(&self, _flavor: &str) {}
+    /// Signs in to GitHub with the device flow (→ [`Event::Github`]), or
+    /// out (`false`).
+    fn github_sign_in(&self, _on: bool) {}
+    /// Saves the Claude API key, or removes it.
+    fn claude_key(&self, _key: Option<String>) {}
+    /// The package's dependencies (→ [`DepsEvent::Read`]).
+    fn deps_read(&self, _dir: &Path) {}
+    /// Newer versions of them (→ [`DepsEvent::Outdated`]): the network.
+    fn deps_outdated(&self, _dir: &Path) {}
+    /// Searches the registry (→ [`DepsEvent::Searched`]).
+    fn deps_search(&self, _dir: &Path, _query: &str) {}
+    /// A registry package's versions (→ [`DepsEvent::Versions`]).
+    fn deps_versions(&self, _dir: &Path, _name: &str) {}
+    /// Adds, removes or updates (→ [`DepsEvent::Ran`]).
+    fn deps_run(&self, _dir: &Path, _job: u64, _command: DepsCommand) {}
     /// Work finished since the last call.
     fn poll(&self) -> Vec<Event>;
 }
