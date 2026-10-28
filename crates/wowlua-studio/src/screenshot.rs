@@ -8,7 +8,8 @@
 //! `gamesize:WxH[@scale]`, `units`, `bp:file:line`, `debug`, `debugtest:file::test`,
 //! `profile:<speedscope file>`, `profiletest:file::test`, `record:<seconds>`,
 //! `profview:<view>[@frame][#rank]`, `world:<profile>[/<part>][@json]`, `spells:<query>`,
-//! `worldlive:<profile>|<path>=<json>|…`.
+//! `worldlive:<profile>|<path>=<json>|…`, `ship:<tab>[/<profile>]`,
+//! `shipdo:<build|install|dry|publish|tag|dev>`.
 
 use std::{
     path::PathBuf,
@@ -134,6 +135,18 @@ impl Screenshot {
                     .map(|(p, v)| (p.to_owned(), v.to_owned()))
                     .collect();
                 studio.world_live_later(profile, edits);
+                continue;
+            }
+            if let Some(rest) = step.strip_prefix("ship:") {
+                let (tab, profile) = match rest.split_once('/') {
+                    Some((t, p)) => (t, Some(p)),
+                    None => (rest, None),
+                };
+                studio.ship_show(tab, profile);
+                continue;
+            }
+            if let Some(what) = step.strip_prefix("shipdo:") {
+                studio.ship_later(what);
                 continue;
             }
             if let Some(query) = step.strip_prefix("spells:") {

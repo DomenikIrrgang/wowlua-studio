@@ -18,6 +18,8 @@ pub enum Kind {
     Numbers,
     /// Any JSON.
     Json,
+    /// One of these strings (`log-level`, `runtime-checks`).
+    Choice(Vec<String>),
 }
 
 impl Kind {
@@ -30,6 +32,7 @@ impl Kind {
             Kind::Scalar => "string, number or boolean",
             Kind::Numbers => "list of numbers",
             Kind::Json => "any JSON",
+            Kind::Choice(_) => "one of its values",
         }
     }
 }
@@ -95,6 +98,18 @@ fn help(node: &Json) -> String {
 /// How a value following `node` is edited.
 pub fn kind(root: &Json, node: &Json) -> Kind {
     let opts = options(root, node);
+    // Strings the schema lists (an enum).
+    if !opts.is_empty() && opts.iter().all(|n| n.get("enum").is_some()) {
+        let values: Vec<String> = opts
+            .iter()
+            .filter_map(|n| n.get("enum").and_then(Json::as_array))
+            .flatten()
+            .filter_map(|v| v.as_str().map(str::to_owned))
+            .collect();
+        if !values.is_empty() {
+            return Kind::Choice(values);
+        }
+    }
     let all: Vec<&str> = opts.iter().flat_map(|n| types(n)).collect();
     let has = |t: &str| all.contains(&t);
     if opts.len() > 1 && has("string") && has("number") && has("boolean") {
@@ -120,7 +135,7 @@ pub fn kind(root: &Json, node: &Json) -> Kind {
 }
 
 /// An object schema's fields and whether it keeps others.
-fn fields(root: &Json, object: &Json) -> (Vec<Field>, bool) {
+pub fn fields(root: &Json, object: &Json) -> (Vec<Field>, bool) {
     let object = resolve(root, object);
     let list = object
         .get("properties")
@@ -254,6 +269,11 @@ mod tests {
             ]
         );
         let cached = fields.iter().find(|f| f.name == "cached").unwrap();
+        let level = serde_json::json!({ "enum": ["trace", "debug", "off"] });
+        assert_eq!(
+            kind(&s, &level),
+            Kind::Choice(vec!["trace".into(), "debug".into(), "off".into()])
+        );
         assert_eq!(cached.help, "In the client's cache.");
         let Form::Fields { fields, other } = form(&s, "position") else {
             panic!();

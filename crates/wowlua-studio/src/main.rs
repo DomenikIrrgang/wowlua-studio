@@ -13,6 +13,7 @@ mod menu_bar;
 mod native;
 mod profiles;
 mod screenshot;
+mod ship;
 mod store;
 mod terminal;
 mod tests;

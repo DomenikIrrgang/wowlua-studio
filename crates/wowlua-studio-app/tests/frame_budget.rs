@@ -555,6 +555,203 @@ fn the_world_page_stays_within_the_budget() {
     }
 }
 
+/// The ship page with SuuUI's size: four profiles and their forms, 300
+/// files a build, a log of 60 diagnostics, 200 lines of the dev loop, the
+/// publish checks and targets; each tab, scrolled through.
+#[test]
+fn the_ship_page_stays_within_the_budget() {
+    use egui::UiBuilder;
+    use serde_json::json;
+    use std::path::PathBuf;
+    use wowlua_studio_app::editor::{Editors, Tab, doc::Document};
+    use wowlua_studio_app::ship::{self, ShipState};
+    use wowlua_studio_app::system::*;
+    let ctx = egui::Context::default();
+    let _ = common::studio(&ctx);
+    let manifest = json!({
+        "package": { "name": "suuui", "version": "0.6.0-beta.2" },
+        "profiles": {
+            "release": { "minify": "max", "optimize": { "inline": true } },
+            "readable": { "inherits": "release", "minify": "none" }
+        }
+    });
+    let text = serde_json::to_string_pretty(&manifest).unwrap();
+    let path = PathBuf::from("/w/wowlua.json");
+    let mut editors = Editors::default();
+    let mut tab = Tab::new(Document::new(path.clone(), &text));
+    tab.hidden = true;
+    editors.tabs.push(tab);
+    let workspace = Workspace {
+        root: "/w".into(),
+        name: "SuuUI".into(),
+        members: Vec::new(),
+        flavors: vec!["camelot".into()],
+        cannot_check: None,
+    };
+    let effective = json!({ "bundle": true, "minify": "max", "minify-libraries": true,
+        "optimize": { "inline": true, "cache-globals": "safe", "dead-code": true },
+        "debug": false, "assertions": false, "log-level": "warn" });
+    let profile = |name: &str, chain: &[&str]| BuildProfile {
+        name: name.into(),
+        builtin: name != "readable",
+        chain: chain.iter().map(|s| s.to_string()).collect(),
+        effective: effective.clone(),
+        problem: None,
+    };
+    let files: Vec<(String, u64)> = (0..300)
+        .map(|i| (format!("Media/Textures/file{i}.tga"), 4_000 + i))
+        .chain([
+            ("SuuUI.lua".to_owned(), 1_840_000),
+            ("SuuUI.toc".to_owned(), 400),
+        ])
+        .collect();
+    let facts = ShipFacts {
+        addon: "SuuUI".into(),
+        version: "0.6.0-beta.2".into(),
+        manifest: path,
+        out: "/w/dist".into(),
+        profiles: vec![
+            profile("release", &["release"]),
+            profile("readable", &["release", "readable"]),
+            profile("test", &["test"]),
+            profile("dev", &["dev"]),
+        ],
+        outputs: ["release", "readable", "dev"]
+            .iter()
+            .map(|p| BuiltOutput {
+                profile: (*p).into(),
+                dir: format!("/w/dist/{p}/SuuUI").into(),
+                files: files.clone(),
+                modified: Some(1_700_000_000_000),
+            })
+            .collect(),
+        installs: vec![InstallFolder {
+            client: "_forever_".into(),
+            path: "/wow/_forever_/Interface/AddOns/SuuUI".into(),
+            state: InstallState::Copied(Some(
+                (0..20)
+                    .map(|i| InstallChange {
+                        path: format!("SuuUI/file{i}.lua"),
+                        kind: ChangeKind::Changed { was: 10, now: 12 },
+                        modified: Some(1_700_000_000_000),
+                    })
+                    .collect(),
+            )),
+        }],
+        targets: ["curseforge", "wago", "github"]
+            .iter()
+            .map(|k| ShipTarget {
+                name: (*k).into(),
+                kind: (*k).into(),
+                project: "1742945".into(),
+                profile: "readable".into(),
+                token_env: None,
+                enabled: true,
+            })
+            .collect(),
+        release: "beta".into(),
+        branch: Some("main".into()),
+        remote: Some("origin".into()),
+        clean: true,
+        tag: "v0.6.0-beta.2".into(),
+        changelog: Some((
+            "/w/CHANGELOG.md".into(),
+            "### New\n- Threat meter: raid pulls.\n".repeat(20),
+        )),
+        ..ShipFacts::default()
+    };
+    let mut state = ShipState::default();
+    state.event(ShipEvent::Read(Box::new(Ok(facts))));
+    let diagnostic = |i: u32| ShipDiagnostic {
+        severity: "warning".into(),
+        code: Some("W1004".into()),
+        message: format!("`data` shadows a local of an enclosing scope ({i})"),
+        path: Some("/w/src/UI/GroupFinderListing.wowlua".into()),
+        line: Some(i),
+        column: Some(33),
+    };
+    state.event(ShipEvent::Build {
+        job: 0,
+        event: BuildEvent::Done(BuildDone {
+            ok: true,
+            profile: "release".into(),
+            dir: Some("/w/dist/release/SuuUI".into()),
+            ms: 2_100,
+            diagnostics: (0..60).map(diagnostic).collect(),
+            installed: Vec::new(),
+        }),
+    });
+    for i in 0..200 {
+        state.event(ShipEvent::Dev(DevEvent::Built(DevBuild {
+            at: 0,
+            clock: "10:58:12".into(),
+            changed: vec![format!("src/UI/File{i}.wowlua")],
+            ok: i % 7 != 0,
+            ms: 400,
+            diagnostics: vec![diagnostic(i)],
+            synced: vec!["/wow/_forever_/Interface/AddOns/SuuUI".into()],
+        })));
+    }
+    state.event(ShipEvent::Tokens(vec![
+        ("curseforge".into(), TokenState::Saved),
+        ("wago".into(), TokenState::Missing),
+        ("github".into(), TokenState::FromEnv("GITHUB_TOKEN".into())),
+    ]));
+    let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(1440.0, 900.0));
+    let left = Rect::from_min_max(Pos2::new(64.0, 40.0), Pos2::new(344.0, 870.0));
+    let main = Rect::from_min_max(Pos2::new(344.0, 40.0), Pos2::new(1440.0, 870.0));
+    let installation = Installation {
+        path: Some("/wow".into()),
+        clients: Vec::new(),
+        problem: None,
+    };
+    let mut times = Vec::new();
+    for frame in 0..300u32 {
+        state.tab =
+            [ship::Tab::Build, ship::Tab::Install, ship::Tab::Publish][frame as usize / 100];
+        let mut input = RawInput {
+            screen_rect: Some(screen),
+            ..Default::default()
+        };
+        input.events.push(egui::Event::PointerMoved(Pos2::new(
+            700.0,
+            (frame * 3 % 800) as f32,
+        )));
+        input.events.push(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: Vec2::new(0.0, -120.0),
+            modifiers: egui::Modifiers::NONE,
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Wheel,
+        });
+        let started = Instant::now();
+        let mut output = ctx.run_ui(input, |ui| {
+            ui.scope_builder(UiBuilder::new().max_rect(left), |ui| {
+                ship::profiles(ui, &mut state, &mut editors, &workspace, &NoSystem);
+            });
+            ui.scope_builder(UiBuilder::new().max_rect(main), |ui| {
+                ship::ship(ui, &mut state, &workspace, &NoSystem, Some(&installation));
+            });
+        });
+        let _ = ctx.tessellate(output.shapes, output.pixels_per_point);
+        output.textures_delta.clear();
+        if frame % 100 >= 20 {
+            times.push(started.elapsed());
+        }
+    }
+    times.sort_unstable();
+    let at = |q: f64| times[((times.len() - 1) as f64 * q) as usize];
+    let ms = |d: Duration| d.as_secs_f64() * 1000.0;
+    eprintln!(
+        "ship page: median {:.3} ms · p99 {:.3} ms",
+        ms(at(0.5)),
+        ms(at(0.99))
+    );
+    if !cfg!(debug_assertions) {
+        assert!(at(0.99) <= BUDGET, "p99 {:.3} ms", ms(at(0.99)));
+    }
+}
+
 /// The profiler page with a large profile (3,000 functions, a tree of
 /// 20,000 nodes, 600 frames with their trees): each view, a frame picked,
 /// scrolled through.

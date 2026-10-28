@@ -1633,7 +1633,10 @@ mod tests {
         assert_eq!(money(123456.0), "12g 34s 56c");
         assert_eq!(when(0.0), "1970-01-01 00:00");
         // (one key each: the order of an object's keys is serde_json's)
-        assert_eq!(lua(&json!({ "a b": [1, "x"] })), "{ [\"a b\"] = { 1, \"x\" } }");
+        assert_eq!(
+            lua(&json!({ "a b": [1, "x"] })),
+            "{ [\"a b\"] = { 1, \"x\" } }"
+        );
         assert_eq!(lua(&json!({ "3": true })), "{ [3] = true }");
         assert_eq!(lua(&json!({ "level": 61 })), "{ level = 61 }");
     }

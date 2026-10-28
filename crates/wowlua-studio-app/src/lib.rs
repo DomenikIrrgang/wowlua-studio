@@ -22,6 +22,7 @@ pub mod problems;
 pub mod profiler;
 pub mod recents;
 pub mod search;
+pub mod ship;
 pub mod start;
 pub mod state;
 pub mod system;
@@ -122,6 +123,8 @@ pub struct Studio {
     debug: debug::DebugState,
     profiler: profiler::ProfilerState,
     world: world::WorldState,
+    /// The ship page (M9, S061).
+    ship: ship::ShipState,
     /// The workspace's world profiles (`tests/profiles/*.json`), by name.
     profiles: Vec<String>,
     /// Background jobs (S044); the checks running, by package.
@@ -172,6 +175,9 @@ pub struct Studio {
     /// A session to start in a profile, then edits for its live world
     /// (`path=json`), once it ran a moment (the screenshot harness's).
     queued_world: Option<QueuedWorld>,
+    /// What the ship page does once the package is read (the screenshot
+    /// harness's `shipdo:`).
+    queued_ship: Vec<String>,
     queued_prof_view: Option<(profiler::View, Option<usize>, Option<usize>)>,
     /// A tab of the tests page's results to show once it is open.
     queued_tab: Option<tests::Tab>,
@@ -241,6 +247,7 @@ impl Studio {
             debug: debug::DebugState::default(),
             profiler: profiler::ProfilerState::default(),
             world: world::WorldState::default(),
+            ship: ship::ShipState::default(),
             profiles: Vec::new(),
             jobs: jobs::Jobs::default(),
             checks: std::collections::HashMap::new(),
@@ -264,6 +271,7 @@ impl Studio {
             queued_profile_test: None,
             queued_record: None,
             queued_world: None,
+            queued_ship: Vec::new(),
             queued_prof_view: None,
             queued_tab: None,
             queued_gutter: false,
@@ -507,6 +515,15 @@ impl Studio {
             {
                 self.profile_test(&file, test.as_deref(), &ctx);
             }
+            if !self.queued_ship.is_empty()
+                && let Some(w) = self.workspace.clone()
+            {
+                let what = self.queued_ship[0].clone();
+                if self.ship.act(&what, &w, &*self.host.system) {
+                    self.queued_ship.remove(0);
+                }
+                ctx.request_repaint();
+            }
             if let Some((profile, edits, started)) = self.queued_world.take() {
                 if !started && self.tests.files.is_some() {
                     self.world_action(world::Action::Start(profile.clone()), &ctx);
@@ -723,6 +740,9 @@ impl Studio {
         let mut profiler_action = None;
         let world_state = &mut self.world;
         let mut world_action = None;
+        let ship_state = &mut self.ship;
+        let mut ship_action = None;
+        let installation = self.start.installation();
         let on_world = self.layout_page == Page::World;
         let on_debug = self.layout_page == Page::Debug;
         let game_status = game_state.status.clone();
@@ -896,6 +916,16 @@ impl Studio {
                 }
             }
             Panel::Parts => world::parts_panel(ui, world_state, editors, workspace, system),
+            Panel::BuildProfiles => {
+                if let Some(a) = ship::profiles(ui, ship_state, editors, workspace, system) {
+                    ship_action = Some(a);
+                }
+            }
+            Panel::Ship => {
+                if let Some(a) = ship::ship(ui, ship_state, workspace, system, installation) {
+                    ship_action = Some(a);
+                }
+            }
             Panel::ProfileEditor => {
                 let live = world::session_profile(debug_state, world_state);
                 let (json, a) = world::editor(
@@ -965,6 +995,12 @@ impl Studio {
         }
         if let Some(a) = world_action {
             self.world_action(a, ctx);
+        }
+        if let Some(w) = self.workspace.clone() {
+            ship::dialogs(ctx, &mut self.ship, &w, &*self.host.system);
+        }
+        if let Some(a) = ship_action {
+            self.ship_action(a, ctx);
         }
         world::flush_live(&mut self.world, &mut self.debug, &*self.host.system);
         // The stop's source, shown once.
@@ -1793,6 +1829,7 @@ impl Studio {
                 }
                 Event::FilesChanged(paths) => {
                     self.explorer.changed(&paths);
+                    self.ship.files_changed();
                     self.files_changed(&paths, ctx);
                     // A changed manifest can change the members: the
                     // workspace is read again.
@@ -1844,6 +1881,7 @@ impl Studio {
                 Event::GameArt(art, image) => self.world.art.read(ctx, art, image),
                 Event::Spells(query, found) => self.world.spells_found(query, found),
                 Event::ClassSpells(class, found) => self.world.class_spells_found(class, found),
+                Event::Ship(event) => self.ship.event(event),
                 Event::Installation(_) | Event::Ui { .. } => {}
             }
             ctx.request_repaint();
@@ -1930,6 +1968,12 @@ impl Studio {
         }
         if !again {
             self.open_tests(&workspace);
+            // The ship page's package and its dev loop are the last
+            // workspace's.
+            if self.ship.dev_on {
+                self.host.system.ship_dev(&workspace.root, None);
+            }
+            self.ship = ship::ShipState::default();
         }
         self.branch = self.host.system.branch(&workspace.root);
         self.reload_recents();
@@ -2116,9 +2160,61 @@ impl Studio {
         self.world.json_view = json;
     }
 
+    /// The ship page on a tab and a profile (the screenshot harness's
+    /// `ship:`).
+    pub fn ship_show(&mut self, tab: &str, profile: Option<&str>) {
+        self.queue(Command::ShowPage(Page::Ship));
+        self.ship.tab = match tab {
+            "install" => ship::Tab::Install,
+            "publish" => ship::Tab::Publish,
+            _ => ship::Tab::Build,
+        };
+        if let Some(p) = profile {
+            self.ship.selected = Some(p.to_owned());
+        }
+    }
+
+    /// What the ship page does once the package is read (the screenshot
+    /// harness's `shipdo:`).
+    pub fn ship_later(&mut self, what: &str) {
+        self.queued_ship.push(what.to_owned());
+    }
+
     /// The spells part's search typed (the screenshot harness's `spells:`).
     pub fn world_search(&mut self, query: &str) {
         self.world.spell_query = query.to_owned();
+    }
+
+    /// What the ship page asks (S061).
+    fn ship_action(&mut self, action: ship::Action, ctx: &Context) {
+        match action {
+            ship::Action::Save(path) => {
+                if let Some(i) = self.editors.find(&path)
+                    && let Err(e) = self.editors.save(i, &*self.host.system)
+                {
+                    let note = Notification::new(Kind::Error, "save", e);
+                    self.notify(note, ctx);
+                }
+            }
+            ship::Action::GoTo(path, line, column) => {
+                let at = lsp::Wire {
+                    line: (line as usize).saturating_sub(1),
+                    character: (column as usize).saturating_sub(1),
+                };
+                let location = lsp::Location {
+                    path,
+                    start: at,
+                    end: at,
+                };
+                self.go_to(&location, ctx);
+            }
+            ship::Action::PickInstallation => {
+                let system = &*self.host.system;
+                if let Some(path) = system.pick_folder("Pick your World of Warcraft folder") {
+                    system.set_installation(&path);
+                }
+            }
+        }
     }
 
     /// What the world profiles page asks (S060).
