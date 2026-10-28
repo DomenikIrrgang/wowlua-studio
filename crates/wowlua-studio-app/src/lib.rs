@@ -2330,6 +2330,7 @@ impl Studio {
             let before = self.prefs.replace(self.settings.clone());
             state::set_prefs(ctx, &self.settings);
             wowlua_studio_ui::set_density(self.settings.comfortable());
+            editor::view::set_font_size(self.settings.font_size);
             if let Some(before) = before {
                 self.settings_changed(&before);
             }

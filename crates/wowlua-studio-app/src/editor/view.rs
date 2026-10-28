@@ -26,7 +26,6 @@ use super::{Completion, Editors, Tab};
 use crate::lsp::{self, Diag, Fix};
 use crate::system::{Highlight, Syntax, System, Workspace};
 
-pub const LINE_H: f32 = 21.0;
 /// A lens row over a function (`st-ln--lens`).
 const LENS_H: f32 = 18.0;
 const PAD_TOP: f32 = 6.0;
@@ -35,7 +34,26 @@ const GUTTER: f32 = 20.0 + 46.0;
 const TABS_H: f32 = 34.0;
 const CRUMBS_H: f32 = 26.0;
 const TAB_STOP: usize = 4;
-const FONT_SIZE: f32 = 13.0;
+/// The code's type size (the setting "font size", S062), as `f32` bits.
+static FONT_BITS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x4150_0000);
+
+/// Sets the code's type size.
+pub fn set_font_size(size: f32) {
+    FONT_BITS.store(
+        size.clamp(8.0, 32.0).to_bits(),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+/// The code's type size: 13 px by default.
+fn font_size() -> f32 {
+    f32::from_bits(FONT_BITS.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// A line's height: 21 px for 13 px type.
+pub fn line_h() -> f32 {
+    (font_size() * 21.0 / 13.0).round()
+}
 /// How long the pointer rests before the hover is asked for.
 const HOVER_AFTER: f64 = 0.45;
 /// How long the hover stays once the pointer left its place: time to move
@@ -468,7 +486,7 @@ fn rich(ui: &Ui, parts: &[(&str, FontId, Color32)], width: f32) -> Arc<Galley> {
 /// lines theirs (`st-ln--del`, `st-ln--add`).
 fn compare(ui: &mut Ui, rect: Rect, mine: &str, theirs: &str, path: &std::path::Path) {
     let p = palette(ui.ctx());
-    let font = Face::Plex.at(FONT_SIZE);
+    let font = Face::Plex.at(font_size());
     let mut child = ui.new_child(UiBuilder::new().max_rect(rect));
     child.set_clip_rect(rect);
     let Some(lines) = diff::lines(mine, theirs) else {
@@ -484,7 +502,7 @@ fn compare(ui: &mut Ui, rect: Rect, mine: &str, theirs: &str, path: &std::path::
     egui::ScrollArea::both()
         .id_salt(("wowlua-studio-compare", path))
         .auto_shrink(false)
-        .show_rows(&mut child, LINE_H, lines.len(), |ui, range| {
+        .show_rows(&mut child, line_h(), lines.len(), |ui, range| {
             for line in &lines[range] {
                 let (sign, text, bg) = match line {
                     diff::Line::Same(t) => (" ", *t, Color32::TRANSPARENT),
@@ -493,7 +511,7 @@ fn compare(ui: &mut Ui, rect: Rect, mine: &str, theirs: &str, path: &std::path::
                 };
                 let (shown, _) = display(text);
                 let width = ui.available_width().max(rect.width());
-                let (r, _) = ui.allocate_exact_size(Vec2::new(width, LINE_H), Sense::hover());
+                let (r, _) = ui.allocate_exact_size(Vec2::new(width, line_h()), Sense::hover());
                 ui.painter().rect_filled(r, CornerRadius::ZERO, bg);
                 ui.painter().text(
                     Pos2::new(r.left() + 12.0, r.center().y),
@@ -529,7 +547,7 @@ impl Row {
 
     fn height(self) -> f32 {
         match self {
-            Row::Line(_) => LINE_H,
+            Row::Line(_) => line_h(),
             Row::Lens(_) => LENS_H,
         }
     }
@@ -552,7 +570,7 @@ impl Rows {
                 y += LENS_H;
             }
             rows.push((Row::Line(line), y));
-            y += LINE_H;
+            y += line_h();
             line = match folded.iter().find(|f| f.0 == line) {
                 Some(&(_, last)) => last + 1,
                 None => line + 1,
@@ -900,7 +918,7 @@ fn code(
     let p = palette(ui.ctx());
     let ctx = ui.ctx().clone();
     let id = Id::unique(("wowlua-studio-editor", &tab.doc.path));
-    let font = Face::Plex.at(FONT_SIZE);
+    let font = Face::Plex.at(font_size());
     let char_w = ui.fonts_mut(|f| f.glyph_width(&font, 'M'));
     let text_rect = Rect::from_min_max(Pos2::new(rect.left() + GUTTER, rect.top()), rect.max);
     let now = ctx.input(|i| i.time);
@@ -921,7 +939,13 @@ fn code(
                 },
             );
         });
-        let changed = keyboard(ui, tab, cx.mac, (rect.height() / LINE_H) as usize, actions);
+        let changed = keyboard(
+            ui,
+            tab,
+            cx.mac,
+            (rect.height() / line_h()) as usize,
+            actions,
+        );
         if changed.save {
             actions.push(Action::Save(index));
         }
@@ -1133,7 +1157,7 @@ fn code(
                 }
                 let row_rect = Rect::from_min_size(
                     Pos2::new(viewport.min.x + origin.x, y),
-                    Vec2::new(viewport.width().max(full.width()), LINE_H),
+                    Vec2::new(viewport.width().max(full.width()), line_h()),
                 );
                 let line_diags: Vec<&Diag> = cx
                     .diagnostics
@@ -1167,7 +1191,7 @@ fn code(
                         Pos2::new(origin.x + laid.x(from), y + 1.0),
                         Pos2::new(
                             origin.x + laid.x(to).max(laid.x(from) + 2.0),
-                            y + LINE_H - 1.0,
+                            y + line_h() - 1.0,
                         ),
                     );
                     ui.painter()
@@ -1203,14 +1227,14 @@ fn code(
                         ui.painter().rect_filled(
                             Rect::from_min_max(
                                 Pos2::new(origin.x + x0, y),
-                                Pos2::new(origin.x + x1, y + LINE_H),
+                                Pos2::new(origin.x + x1, y + line_h()),
                             ),
                             CornerRadius::ZERO,
                             p.amber_soft,
                         );
                     }
                 }
-                let text_y = y + (LINE_H - laid.galley.size().y) / 2.0;
+                let text_y = y + (line_h() - laid.galley.size().y) / 2.0;
                 ui.painter()
                     .galley(Pos2::new(origin.x, text_y), laid.galley.clone(), p.ink);
                 // The name cmd + click goes to the definition of.
@@ -1219,7 +1243,7 @@ fn code(
                 {
                     ui.painter().hline(
                         origin.x + laid.x(s)..=origin.x + laid.x(e),
-                        y + LINE_H - 3.0,
+                        y + line_h() - 3.0,
                         Stroke::new(1.0, p.ink),
                     );
                 }
@@ -1227,7 +1251,7 @@ fn code(
                 if let Some(&(_, last)) = folded.iter().find(|f| f.0 == line) {
                     let x = origin.x + laid.galley.size().x + 8.0;
                     let chip =
-                        Rect::from_min_size(Pos2::new(x, y + 3.0), Vec2::new(28.0, LINE_H - 6.0));
+                        Rect::from_min_size(Pos2::new(x, y + 3.0), Vec2::new(28.0, line_h() - 6.0));
                     ui.painter()
                         .rect_filled(chip, CornerRadius::same(2), p.bg_300);
                     ui.painter().text(
@@ -1249,7 +1273,7 @@ fn code(
                 if let Some((_, text)) = cx.inline.iter().find(|v| v.0 == line) {
                     let x = origin.x + laid.galley.size().x + 16.0;
                     let r = ui.painter().text(
-                        Pos2::new(x + 6.0, y + LINE_H / 2.0),
+                        Pos2::new(x + 6.0, y + line_h() / 2.0),
                         Align2::LEFT_CENTER,
                         text,
                         Face::PlexItalic.at(11.5),
@@ -1273,13 +1297,13 @@ fn code(
                     let x0 = origin.x + laid.x(from);
                     let x1 = (origin.x + laid.x(to)).max(x0 + char_w);
                     let color = if d.is_error() { p.error } else { p.warning };
-                    wave(ui, x0, x1, y + LINE_H - 3.0, color);
+                    wave(ui, x0, x1, y + line_h() - 3.0, color);
                 }
                 if line == head.line {
                     let x = origin.x + laid.x(head.col);
                     caret_screen = Some(Rect::from_min_size(
                         Pos2::new(x, y + 2.0),
-                        Vec2::new(2.0, LINE_H - 4.0),
+                        Vec2::new(2.0, line_h() - 4.0),
                     ));
                 }
             }
@@ -1289,8 +1313,8 @@ fn code(
                 let y = origin.y + rows.y_of(head.line);
                 ui.scroll_to_rect(
                     Rect::from_min_size(
-                        Pos2::new(x - 24.0, y - LINE_H),
-                        Vec2::new(48.0, LINE_H * 3.0),
+                        Pos2::new(x - 24.0, y - line_h()),
+                        Vec2::new(48.0, line_h() * 3.0),
                     ),
                     None,
                 );
@@ -1432,7 +1456,7 @@ fn code(
         let Row::Line(line) = row else {
             continue;
         };
-        let cy = rect.top() + top - offset + LINE_H / 2.0;
+        let cy = rect.top() + top - offset + line_h() / 2.0;
         // The coverage: run, not run, a branch one way only.
         if let Some(cov) = cx.coverage
             && let Some(&hits) = cov.lines.get(&(line as u32 + 1))
@@ -1451,8 +1475,8 @@ fn code(
             };
             painter.rect_filled(
                 Rect::from_min_size(
-                    Pos2::new(gutter.left() + 3.0, cy - LINE_H / 2.0 + 1.0),
-                    Vec2::new(3.0, LINE_H - 2.0),
+                    Pos2::new(gutter.left() + 3.0, cy - line_h() / 2.0 + 1.0),
+                    Vec2::new(3.0, line_h() - 2.0),
                 ),
                 CornerRadius::ZERO,
                 color,
@@ -1461,8 +1485,8 @@ fn code(
         // The breakpoint column: a line's breakpoint, the stopped line's
         // arrow; a click sets or removes one, a right click edits it.
         let bp_rect = Rect::from_min_size(
-            Pos2::new(gutter.left() + 6.0, cy - LINE_H / 2.0),
-            Vec2::new(14.0, LINE_H),
+            Pos2::new(gutter.left() + 6.0, cy - line_h() / 2.0),
+            Vec2::new(14.0, line_h()),
         );
         let bp_resp = ui.interact(bp_rect, id.with(("bp", line)), Sense::click());
         let center = bp_rect.center();
@@ -1531,7 +1555,7 @@ fn code(
             Pos2::new(gutter.right() - 16.0, cy),
             Align2::RIGHT_CENTER,
             (line + 1).to_string(),
-            Face::Plex.at(FONT_SIZE),
+            Face::Plex.at(font_size()),
             color,
         );
         if let Some(&range) = foldable.iter().find(|f| f.0 == line) {
@@ -2808,8 +2832,8 @@ mod tests {
                 Row::Line(5)
             ]
         );
-        assert_eq!(rows.y_of(4), PAD_TOP + 2.0 * LINE_H + LENS_H);
-        assert_eq!(rows.at(PAD_TOP + 2.0 * LINE_H + 1.0), Row::Lens(4));
+        assert_eq!(rows.y_of(4), PAD_TOP + 2.0 * line_h() + LENS_H);
+        assert_eq!(rows.at(PAD_TOP + 2.0 * line_h() + 1.0), Row::Lens(4));
         // A hidden line is drawn where its fold's first is.
         assert_eq!(rows.y_of(2), rows.y_of(1));
     }
