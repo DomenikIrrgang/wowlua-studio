@@ -191,6 +191,91 @@ pub enum GameRequest {
         frame: Option<usize>,
         to: PathBuf,
     },
+    // The debugger's (S056).
+    /// A source's line breakpoints (its path from the package's root).
+    SetBreakpoints {
+        source: String,
+        lines: Vec<LineBp>,
+    },
+    /// The function, event, script and timer breakpoints.
+    SetFunctionBreakpoints(Vec<FunctionBp>),
+    /// What stops the session: `uncaught`, `all`, `taint`, `blocked`.
+    SetStopOn(Vec<String>),
+    Continue,
+    Next,
+    StepIn,
+    StepOut,
+    Pause,
+    StackTrace,
+    Scopes(u32),
+    Variables(u32),
+    SetVariable {
+        reference: u32,
+        name: String,
+        value: String,
+    },
+    /// An expression in a frame of the stop (none: the running client's).
+    Evaluate {
+        expression: String,
+        frame: Option<u32>,
+        watch: bool,
+    },
+    /// Time moves on (a manual clock): frames or seconds.
+    Advance {
+        frames: Option<u32>,
+        seconds: Option<f64>,
+    },
+    SetClock {
+        manual: bool,
+    },
+    /// Every breakpoint with its hit count.
+    Breakpoints,
+    /// Lua with `mock` the engine's controls (the live world).
+    World(String),
+    /// A documented event fired with these arguments.
+    FireEvent {
+        event: String,
+        args: Vec<serde_json::Value>,
+    },
+    /// The running world as a world profile's JSON.
+    SaveWorld,
+}
+
+/// A line breakpoint (S056): its line from 1, and a condition, a hit
+/// count (`5`, `>5`, `%5`) or a log message (`{expr}` evaluated).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct LineBp {
+    pub line: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub condition: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hit_condition: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_message: Option<String>,
+}
+
+/// A function breakpoint: a path (`Module:Update`, `C_Timer.After`),
+/// `event:NAME`, `script:OnClick`, `script:Frame:OnUpdate` or `timer`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct FunctionBp {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub condition: Option<String>,
+}
+
+/// What a session runs (S056; `.wowlua/launch.json`'s options).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Launch {
+    /// A test file (its path from the package's root) and the tests whose
+    /// names contain any of `filters`; none: the addon.
+    pub test: Option<(String, Vec<String>)>,
+    pub flavor: Option<String>,
+    /// The world profile over `test.profile`.
+    pub profile: Option<String>,
+    /// The clock moves only when asked.
+    pub manual: bool,
+    pub stop_on_entry: bool,
+    pub debug_blizzard_ui: bool,
 }
 
 /// Input as the user gives it, in screen pixels from the top left.
@@ -239,8 +324,23 @@ pub enum GameEvent {
     },
     /// Printed text and errors (`stdout`, `stderr`, `console`).
     Output { category: String, text: String },
-    /// The session ended (an error that ended it).
+    /// The session ended (an error that ended it), what it said at the end.
     Ended { error: Option<String> },
+    /// It stopped (S056): why (`breakpoint`, `step`, `pause`, `exception`,
+    /// `entry`, `functionBreakpoint`), the text, the breakpoints hit, an
+    /// exception's details.
+    Stopped {
+        reason: String,
+        text: Option<String>,
+        hit: Vec<u32>,
+        detail: Option<serde_json::Value>,
+    },
+    /// Running again after a stop.
+    Continued,
+    /// A breakpoint's state changed (its chunk loaded).
+    Breakpoint(serde_json::Value),
+    /// The UI reloaded (`/reload`).
+    Reloaded,
 }
 
 /// The game's screen as last drawn: its texture and size in pixels, and
@@ -250,6 +350,10 @@ pub struct GameScreen {
     pub texture: egui::TextureId,
     pub size: [u32; 2],
     pub drawn: u64,
+    /// The game's time (`GetTime`, seconds) and the frames run, as last
+    /// drawn.
+    pub time: f64,
+    pub frames: u64,
 }
 
 /// A test run (the tests page, S052): which tests (`path::name` filters,
@@ -698,10 +802,18 @@ pub trait System {
     fn copy_file(&self, from: &Path, _to: &Path) -> Result<(), String> {
         Err(format!("{} cannot be copied here", from.display()))
     }
-    /// Runs the workspace's addon as a game session (→ [`Event::Game`]):
-    /// session `session`, in the world profile `profile` over
-    /// `test.profile`; one at a time, a new one ends the last.
-    fn game_start(&self, _root: &Path, _session: u64, _profile: Option<String>) {}
+    /// Runs a session of the workspace's addon, or a test file (→
+    /// [`Event::Game`]): session `session` as `launch` says, `setup` (its
+    /// breakpoints, each with its request's id) asked before it runs; one at a time, a new one ends the
+    /// last.
+    fn game_start(
+        &self,
+        _root: &Path,
+        _session: u64,
+        _launch: Launch,
+        _setup: Vec<(u64, GameRequest)>,
+    ) {
+    }
     /// Asks the running session (→ [`GameEvent::Reply`] with `id`).
     fn game_request(&self, _id: u64, _request: GameRequest) {}
     /// Ends the running session.

@@ -7,6 +7,7 @@
 pub mod chrome;
 pub mod commands;
 pub mod coverage;
+pub mod debug;
 pub mod dock;
 pub mod editor;
 pub mod explorer;
@@ -111,6 +112,8 @@ pub struct Studio {
     tests: tests::TestsState,
     /// The game page (S055).
     game: game::GameState,
+    /// The debugger page (S056).
+    debug: debug::DebugState,
     /// The workspace's world profiles (`tests/profiles/*.json`), by name.
     profiles: Vec<String>,
     /// Background jobs (S044); the checks running, by package.
@@ -145,6 +148,12 @@ pub struct Studio {
     queued_pick: Option<(f64, f64)>,
     /// The game's settings once the addon runs (`gamesize:WxH[@scale]`).
     queued_size: Option<((u32, u32), Option<f32>)>,
+    /// Breakpoints to set and debugging to start once the workspace is
+    /// open (the screenshot's `bp:file:line`, `debug`).
+    queued_bps: Vec<(PathBuf, u32)>,
+    queued_debug: bool,
+    /// A test to debug once the workspace is open (`debugtest:file::test`).
+    queued_debug_test: Option<(PathBuf, Option<String>)>,
     /// A tab of the tests page's results to show once it is open.
     queued_tab: Option<tests::Tab>,
     /// Show the coverage in the gutter once the tests page is there.
@@ -210,6 +219,7 @@ impl Studio {
             problems_this_file: false,
             tests: tests::TestsState::default(),
             game: game::GameState::default(),
+            debug: debug::DebugState::default(),
             profiles: Vec::new(),
             jobs: jobs::Jobs::default(),
             checks: std::collections::HashMap::new(),
@@ -226,6 +236,9 @@ impl Studio {
             queued_game: false,
             queued_pick: None,
             queued_size: None,
+            queued_bps: Vec::new(),
+            queued_debug: false,
+            queued_debug_test: None,
             queued_tab: None,
             queued_gutter: false,
             menus_changed: false,
@@ -300,6 +313,24 @@ impl Studio {
     /// runs (the screenshot's `gamepick:x,y` step).
     pub fn game_pick(&mut self, x: f64, y: f64) {
         self.queued_pick = Some((x, y));
+    }
+
+    /// Sets a breakpoint once the workspace is open (the screenshot's
+    /// `bp:file:line` step).
+    pub fn set_breakpoint(&mut self, path: &Path, line: u32) {
+        self.queued_bps.push((path.to_path_buf(), line));
+    }
+
+    /// Debugs a test once the workspace is open (the screenshot's
+    /// `debugtest:file::test` step).
+    pub fn debug_test_later(&mut self, file: &Path, test: Option<&str>) {
+        self.queued_debug_test = Some((file.to_path_buf(), test.map(str::to_owned)));
+    }
+
+    /// Starts debugging once the workspace is open (the screenshot's
+    /// `debug` step).
+    pub fn start_debugging(&mut self) {
+        self.queued_debug = true;
     }
 
     /// Sets the game's settings once the addon runs (the screenshot's
@@ -383,6 +414,24 @@ impl Studio {
             if self.tests.files.is_some() && self.queued_game {
                 self.queued_game = false;
                 self.queue(Command::RunAddon);
+            }
+            if self.tests.files.is_some()
+                && !self.queued_bps.is_empty()
+                && let Some(w) = self.workspace.clone()
+            {
+                for (path, line) in std::mem::take(&mut self.queued_bps) {
+                    self.debug.toggle(&*self.host.system, &w, &path, line);
+                }
+            }
+            if self.tests.files.is_some()
+                && self.queued_bps.is_empty()
+                && let Some((file, test)) = self.queued_debug_test.take()
+            {
+                self.debug_test(&file, test.as_deref());
+            }
+            if self.tests.files.is_some() && self.queued_bps.is_empty() && self.queued_debug {
+                self.queued_debug = false;
+                self.queue(Command::StartDebugging);
             }
             if self.game.running()
                 && let Some((x, y)) = self.queued_pick.take()
@@ -553,6 +602,10 @@ impl Studio {
         let tests_state = &mut self.tests;
         let game_state = &mut self.game;
         let mut game_action = None;
+        let debug_state = &mut self.debug;
+        let mut debug_action = None;
+        let on_debug = self.layout_page == Page::Debug;
+        let game_status = game_state.status.clone();
         let profiles = &self.profiles;
         let mut tests_action = None;
         let mut search_action = None;
@@ -587,6 +640,17 @@ impl Studio {
                     .and_then(|path| tests_state.discovered.get(path))
                     .map(|tests| tests.iter().map(|t| t.line).collect())
                     .unwrap_or_default();
+                let breakpoints = active
+                    .as_deref()
+                    .map(|path| debug_state.marks(path))
+                    .unwrap_or_default();
+                let stopped = active
+                    .as_deref()
+                    .and_then(|path| debug_state.stopped_line(path, workspace));
+                // The session's bar and the stop's banner (the debugger's).
+                if on_debug && let Some(a) = debug::bar(ui, debug_state, system) {
+                    debug_action = Some(a);
+                }
                 let coverage = active.as_deref().and_then(|path| {
                     tests_state
                         .coverage
@@ -602,8 +666,14 @@ impl Studio {
                     lenses: &lenses,
                     tests_at: &tests_at,
                     coverage,
+                    breakpoints: &breakpoints,
+                    stopped,
                 };
-                actions.extend(editor::view::show(ui, editors, &cx));
+                // (below the debugger's bar, when it has one)
+                let rest = ui.available_rect_before_wrap();
+                ui.scope_builder(UiBuilder::new().max_rect(rest), |ui| {
+                    actions.extend(editor::view::show(ui, editors, &cx));
+                });
             }
             Panel::Problems => {
                 let only = editors.active().map(|t| t.canonical.clone());
@@ -664,6 +734,26 @@ impl Studio {
             Panel::Events => game::events(ui, game_state, system),
             Panel::Input => game::input(ui, game_state),
             Panel::Screenshots => game::screenshots(ui, game_state, system),
+            Panel::CallStack => {
+                if let Some(a) =
+                    debug::call_stack(ui, debug_state, workspace, system, game_status.as_deref())
+                {
+                    debug_action = Some(a);
+                }
+            }
+            Panel::Breakpoints => {
+                if let Some(a) = debug::breakpoints(ui, debug_state, workspace, system) {
+                    debug_action = Some(a);
+                }
+            }
+            Panel::Variables => debug::variables(ui, debug_state, system),
+            Panel::Watch => debug::watch(ui, debug_state, system),
+            Panel::Console => debug::console(ui, debug_state, system),
+            Panel::LiveWorld => {
+                if let Some(a) = debug::live_world(ui, debug_state, workspace, system) {
+                    debug_action = Some(a);
+                }
+            }
             _ => dock::placeholder(ui, panel),
         };
         let changed = dock::show(ui, area, layout, &mut self.dock, &mut content);
@@ -672,6 +762,35 @@ impl Studio {
         }
         if let Some(path) = opened {
             self.open_file(&path, ctx);
+        }
+        if let Some(w) = self.workspace.clone()
+            && let Some(a) = debug::dialogs(ctx, &mut self.debug, &w, &*self.host.system)
+        {
+            debug_action = Some(a);
+        }
+        if let Some(a) = debug_action {
+            self.debug_action(a, ctx);
+        }
+        // The stop's source, shown once.
+        if let Some((path, line)) = self.debug.show.take() {
+            let at = lsp::Wire {
+                line: line.saturating_sub(1),
+                character: 0,
+            };
+            let place = lsp::Location {
+                path,
+                start: at,
+                end: at,
+            };
+            self.show_place(&place, ctx);
+        }
+        if self.debug.running()
+            && let Some(s) = self.host.system.game_screen()
+        {
+            self.debug.clock = (s.time, s.frames);
+        }
+        if std::mem::take(&mut self.debug.changed) {
+            self.keep_debug();
         }
         match game_action {
             Some(game::Action::Start) => self.queue(Command::RunAddon),
@@ -692,6 +811,9 @@ impl Studio {
             Some(game::Action::ShowInspector) => {
                 self.queue(Command::ShowPanel(Panel::Inspector, dock::Dock::Right));
             }
+            Some(game::Action::BreakOn(names)) => {
+                self.debug.add_functions(&*self.host.system, names);
+            }
             None => {}
         }
         match tests_action {
@@ -707,6 +829,7 @@ impl Studio {
                 self.show_place(&place, ctx);
                 self.queue(Command::ShowPage(Page::Files));
             }
+            Some(tests::Action::Debug(file, test)) => self.debug_test(&file, test.as_deref()),
             Some(tests::Action::ShowCoverage) => {
                 self.queue(Command::ShowPanel(Panel::Coverage, dock::Dock::Main));
             }
@@ -756,6 +879,33 @@ impl Studio {
     /// What the editor asked for.
     fn editor_action(&mut self, action: editor::view::Action, ctx: &Context) {
         use editor::view::Action as A;
+        // The breakpoint column (S056).
+        if let A::ToggleBreakpoint(line) | A::EditBreakpoint(line) = action {
+            let (Some(w), Some(path)) = (
+                self.workspace.clone(),
+                self.editors.active().map(|t| t.doc.path.clone()),
+            ) else {
+                return;
+            };
+            let line = line as u32 + 1;
+            if let A::ToggleBreakpoint(_) = action {
+                self.debug.toggle(&*self.host.system, &w, &path, line);
+            } else {
+                let bp = self
+                    .debug
+                    .kept
+                    .lines
+                    .get(&path)
+                    .and_then(|l| l.iter().find(|b| b.line == line))
+                    .cloned()
+                    .unwrap_or(system::LineBp {
+                        line,
+                        ..system::LineBp::default()
+                    });
+                self.debug.editing_bp = Some((path, line, bp));
+            }
+            return;
+        }
         // A JSON file with a schema answers from the schema (S046).
         if let Some(kind) = self
             .editors
@@ -782,6 +932,8 @@ impl Studio {
         match action {
             A::Save(i) => self.save_tab(i, ctx),
             A::Close(i) => self.close_tab(i),
+            // (taken above)
+            A::ToggleBreakpoint(_) | A::EditBreakpoint(_) => {}
             A::Hover(at) => self.lsp.hover(doc, at, system),
             A::Complete(at) => self.lsp.complete(doc, at, system),
             A::Signature(at) => self.lsp.signature(doc, at, system),
@@ -1455,7 +1607,16 @@ impl Studio {
                 Event::Tests { run, event } => self.test_event(run, event, ctx),
                 Event::Game { session, event } => {
                     let now = ctx.input(|i| i.time);
-                    self.game.event(session, event, now);
+                    let debugger =
+                        matches!(&event, system::GameEvent::Reply { id, .. } if *id >= debug::IDS);
+                    if let Some(w) = self.workspace.clone()
+                        && (debugger || !matches!(event, system::GameEvent::Reply { .. }))
+                    {
+                        self.debug.event(session, &event, &*self.host.system, &w);
+                    }
+                    if !debugger {
+                        self.game.event(session, event, now);
+                    }
                     ctx.request_repaint();
                 }
                 Event::Searched { search, found } => {
@@ -1591,6 +1752,13 @@ impl Studio {
         {
             self.tests.restore(kept);
         }
+        // The debugger's breakpoints, watches and history (S056).
+        self.debug = debug::DebugState::default();
+        let kept = self
+            .kept_debug()
+            .remove(&workspace.root.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        self.debug.restore(kept);
         self.profiles = system
             .list(&workspace.root.join("tests").join("profiles"))
             .into_iter()
@@ -1625,6 +1793,121 @@ impl Studio {
         all.insert(key, self.tests.kept());
         if let Ok(text) = serde_json::to_string(&all) {
             self.host.store.save("tests.json", &text);
+        }
+    }
+
+    /// Debugs a test file, or one test of it, on the debugger page.
+    fn debug_test(&mut self, file: &Path, test: Option<&str>) {
+        let Some(w) = self.workspace.clone() else {
+            return;
+        };
+        let rel = tests::rel_of(&w, file);
+        let test = test.map(tests::declared);
+        self.start_session(debug::Config::test(&rel, test));
+        self.queue(Command::ShowPage(Page::Debug));
+    }
+
+    /// The configuration chosen on the debugger page, else the addon's.
+    fn chosen_config(&mut self) -> debug::Config {
+        let name = self
+            .workspace
+            .as_ref()
+            .map(|w| w.name.clone())
+            .unwrap_or_default();
+        if !self.debug.configs_read
+            && let Some(w) = &self.workspace
+        {
+            self.debug.configs_read = true;
+            self.debug.configs = debug::read_configs(&w.root, &*self.host.system);
+        }
+        let chosen = self.debug.kept.chosen.clone();
+        self.debug
+            .configs
+            .iter()
+            .find(|c| Some(&c.name) == chosen.as_ref())
+            .or_else(|| self.debug.configs.first())
+            .cloned()
+            .unwrap_or_else(|| debug::Config::addon(&format!("{name} · the addon")))
+    }
+
+    /// Starts a session of `config`, the debugger's breakpoints set first;
+    /// one at a time (S056).
+    fn start_session(&mut self, config: debug::Config) {
+        let Some(w) = self.workspace.clone() else {
+            return;
+        };
+        let session = self.game.begin();
+        let setup = self.debug.begin(session, config.clone(), &w);
+        self.host
+            .system
+            .game_start(&w.root, session, config.launch(), setup);
+    }
+
+    /// What the debugger page asked for.
+    fn debug_action(&mut self, action: debug::Action, ctx: &Context) {
+        match action {
+            debug::Action::Start(config) => {
+                self.start_session(config);
+            }
+            debug::Action::Stop => self.host.system.game_stop(),
+            debug::Action::Restart => self.queue(Command::RestartSession),
+            debug::Action::Open(path, line) => {
+                let at = lsp::Wire {
+                    line: line.saturating_sub(1),
+                    character: 0,
+                };
+                let place = lsp::Location {
+                    path,
+                    start: at,
+                    end: at,
+                };
+                self.show_place(&place, ctx);
+            }
+            debug::Action::SaveProfile(path, text) => {
+                let _ = self.host.system.write_file(&path, &text);
+            }
+            debug::Action::SaveConfigs(list) => {
+                if let Some(w) = &self.workspace {
+                    let path = w.root.join(".wowlua").join("launch.json");
+                    if let Err(e) = self
+                        .host
+                        .system
+                        .write_file(&path, &debug::configs_json(&list))
+                    {
+                        let now = ctx.input(|i| i.time);
+                        let note = Notification::new(Kind::Error, ".wowlua/launch.json", e);
+                        self.notes.push(note, now);
+                    }
+                }
+            }
+        }
+    }
+
+    /// The debugger's kept state, by workspace (the last ten).
+    fn kept_debug(&self) -> std::collections::BTreeMap<String, debug::Kept> {
+        self.host
+            .store
+            .load("debug.json")
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_default()
+    }
+
+    fn keep_debug(&self) {
+        let Some(w) = &self.workspace else {
+            return;
+        };
+        let mut all = self.kept_debug();
+        let key = w.root.to_string_lossy().into_owned();
+        all.remove(&key);
+        while all.len() >= 10 {
+            let Some(first) = all.keys().next().cloned() else {
+                break;
+            };
+            all.remove(&first);
+        }
+        all.insert(key, self.debug.kept.clone());
+        if let Ok(text) = serde_json::to_string(&all) {
+            self.host.store.save("debug.json", &text);
         }
     }
 
@@ -1727,6 +2010,7 @@ impl Studio {
                 self.tests.pin_callers(&w, &file, line);
                 self.queue(Command::ShowPage(Page::Tests));
             }
+            C::Debug { file, test } => self.debug_test(&file, test.as_deref()),
         }
     }
 
@@ -1953,15 +2237,41 @@ impl Studio {
                 self.close_tab(i);
             }
             Command::RunAddon => {
-                if let Some(w) = &self.workspace {
-                    let root = w.root.clone();
-                    let session = self.game.begin();
-                    self.host.system.game_start(&root, session, None);
-                    self.queue(Command::ShowPage(Page::Game));
-                }
+                let config = self.chosen_config();
+                self.start_session(config);
+                self.queue(Command::ShowPage(Page::Game));
             }
             Command::StopSession => {
                 self.host.system.game_stop();
+            }
+            Command::StartDebugging => {
+                if self.debug.stopped.is_some() {
+                    self.debug
+                        .send(&*self.host.system, system::GameRequest::Continue);
+                } else if !self.debug.running() {
+                    let config = self.chosen_config();
+                    self.start_session(config);
+                    self.queue(Command::ShowPage(Page::Debug));
+                }
+            }
+            Command::Pause => {
+                self.debug
+                    .send(&*self.host.system, system::GameRequest::Pause);
+            }
+            Command::StepOver | Command::StepInto | Command::StepOut => {
+                if self.debug.stopped.is_some() {
+                    let step = match command {
+                        Command::StepOver => system::GameRequest::Next,
+                        Command::StepInto => system::GameRequest::StepIn,
+                        _ => system::GameRequest::StepOut,
+                    };
+                    self.debug.send(&*self.host.system, step);
+                }
+            }
+            Command::RestartSession => {
+                if let Some(config) = self.debug.config.clone() {
+                    self.start_session(config);
+                }
             }
             Command::RunAllTests | Command::RunFailedTests => {
                 let filters = if command == Command::RunFailedTests {

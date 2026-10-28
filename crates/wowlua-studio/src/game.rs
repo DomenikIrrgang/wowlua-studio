@@ -19,7 +19,7 @@ use wowlua_driver::Session;
 use wowlua_driver::project::{LoadOptions, load_projects};
 use wowlua_manifest::model::PackageKind;
 use wowlua_render::client::ClientAssets;
-use wowlua_studio_app::system::{GameEvent, GameInput, GameRequest, GameScreen};
+use wowlua_studio_app::system::{GameEvent, GameInput, GameRequest, GameScreen, Launch};
 use wowlua_test::runs::{self, Switches};
 
 use crate::tests::first_error;
@@ -32,6 +32,9 @@ pub struct Frames {
     /// Scenes the session handed over.
     count: u64,
     assets: Option<ClientAssets>,
+    /// The game's time and frames run, as the hook last saw them.
+    time: f64,
+    frames_run: u64,
 }
 
 /// The running session, as the UI thread holds it.
@@ -83,6 +86,64 @@ fn to_debug(request: GameRequest) -> Request {
             frame: frame.map(|f| format!("#{f}")),
             scale: None,
         },
+        GameRequest::SetBreakpoints { source, lines } => Request::SetBreakpoints {
+            source,
+            breakpoints: lines
+                .into_iter()
+                .map(|b| protocol::LineBreakpoint {
+                    line: b.line,
+                    condition: b.condition,
+                    hit_condition: b.hit_condition,
+                    log_message: b.log_message,
+                })
+                .collect(),
+        },
+        GameRequest::SetFunctionBreakpoints(list) => Request::SetFunctionBreakpoints {
+            breakpoints: list
+                .into_iter()
+                .map(|b| protocol::FunctionBreakpoint {
+                    name: b.name,
+                    condition: b.condition,
+                })
+                .collect(),
+        },
+        GameRequest::SetStopOn(filters) => Request::SetExceptionBreakpoints { filters },
+        GameRequest::Continue => Request::Continue,
+        GameRequest::Next => Request::Next,
+        GameRequest::StepIn => Request::StepIn,
+        GameRequest::StepOut => Request::StepOut,
+        GameRequest::Pause => Request::Pause,
+        GameRequest::StackTrace => Request::StackTrace,
+        GameRequest::Scopes(frame) => Request::Scopes { frame },
+        GameRequest::Variables(reference) => Request::Variables { reference },
+        GameRequest::SetVariable {
+            reference,
+            name,
+            value,
+        } => Request::SetVariable {
+            reference,
+            name,
+            value,
+        },
+        GameRequest::Evaluate {
+            expression,
+            frame,
+            watch,
+        } => Request::Evaluate {
+            expression,
+            frame,
+            context: if watch {
+                protocol::EvalContext::Watch
+            } else {
+                protocol::EvalContext::Repl
+            },
+        },
+        GameRequest::Advance { frames, seconds } => Request::Advance { seconds, frames },
+        GameRequest::SetClock { manual } => Request::SetClock { manual },
+        GameRequest::Breakpoints => Request::Breakpoints,
+        GameRequest::World(script) => Request::World { script },
+        GameRequest::FireEvent { event, args } => Request::FireEvent { event, args },
+        GameRequest::SaveWorld => Request::SaveWorld,
         GameRequest::Input(input) => Request::Input {
             input: match input {
                 GameInput::Click { x, y, right } => protocol::Input::Click {
@@ -105,11 +166,13 @@ fn to_debug(request: GameRequest) -> Request {
     }
 }
 
-/// Starts the workspace's addon: its news to `tell`, its scenes to
-/// `frames` (`wake` asks for the UI's next frame).
+/// Starts a session as `launch` says, `setup` asked before it runs: its
+/// news to `tell`, its scenes to `frames` (`wake` asks for the UI's next
+/// frame).
 pub fn start(
     root: PathBuf,
-    profile: Option<String>,
+    launch: Launch,
+    setup: Vec<(u64, GameRequest)>,
     frames: Arc<Mutex<Frames>>,
     tell: impl Fn(GameEvent) + Send + Sync + Clone + 'static,
     wake: impl Fn() + Send + Sync + 'static,
@@ -127,6 +190,7 @@ pub fn start(
         std::thread::spawn(move || {
             for out in out_rx {
                 match out {
+                    // (the start's own)
                     Outgoing::Response(id, _) if id >= u64::MAX - 16 => {}
                     Outgoing::Response(id, r) => {
                         let to = shots.lock().ok().and_then(|mut s| {
@@ -150,6 +214,27 @@ pub fn start(
                             error: failed.then(|| summary.unwrap_or_default()),
                         });
                     }
+                    Outgoing::Event(DebugEvent::Stopped {
+                        reason,
+                        text,
+                        hit,
+                        detail,
+                    }) => tell(GameEvent::Stopped {
+                        reason: serde_json::to_value(reason)
+                            .ok()
+                            .and_then(|v| v.as_str().map(str::to_owned))
+                            .unwrap_or_default(),
+                        text,
+                        hit,
+                        detail: detail.and_then(|d| serde_json::to_value(d).ok()),
+                    }),
+                    Outgoing::Event(DebugEvent::Continued) => tell(GameEvent::Continued),
+                    Outgoing::Event(DebugEvent::Reloaded) => tell(GameEvent::Reloaded),
+                    Outgoing::Event(DebugEvent::Breakpoint { breakpoint }) => {
+                        if let Ok(v) = serde_json::to_value(breakpoint) {
+                            tell(GameEvent::Breakpoint(v));
+                        }
+                    }
                     Outgoing::Event(_) => {}
                 }
             }
@@ -163,7 +248,8 @@ pub fn start(
         .spawn(move || {
             let error = run(
                 &root,
-                profile,
+                launch,
+                setup,
                 frames,
                 &tell,
                 Arc::new(wake),
@@ -201,7 +287,10 @@ fn answer(r: Result<Response, String>, to: Option<&Path>, root: &Path) -> Result
             std::fs::write(&path, bytes).map_err(|e| format!("{}: {e}", path.display()))?;
             Ok(json!({ "path": path }))
         }
-        _ => Ok(Json::Null),
+        Response::Ok => Ok(Json::Null),
+        // (the debugger's answers as their JSON: frames, scopes, variables,
+        // a value, breakpoints)
+        other => serde_json::to_value(other).map_err(|e| e.to_string()),
     }
 }
 
@@ -239,7 +328,8 @@ fn base64_decode(text: &str) -> Option<Vec<u8>> {
 #[allow(clippy::too_many_arguments)]
 fn run(
     root: &Path,
-    profile: Option<String>,
+    launch: Launch,
+    setup: Vec<(u64, GameRequest)>,
     frames: Arc<Mutex<Frames>>,
     tell: &(dyn Fn(GameEvent) + Send + Sync),
     wake: Arc<dyn Fn() + Send + Sync>,
@@ -271,8 +361,14 @@ fn run(
     if let Ok(mut r) = package_root.lock() {
         *r = project.root().to_path_buf();
     }
-    let Some(flavor) = project.manifest.flavors.first().cloned() else {
-        return Some(format!("{} has no flavor", project.addon_name()));
+    // The launch's flavor, else the package's first.
+    let flavor = match &launch.flavor {
+        Some(f) if project.manifest.flavors.contains(f) => f.clone(),
+        Some(f) => return Some(format!("{} has no flavor {f}", project.addon_name())),
+        None => match project.manifest.flavors.first() {
+            Some(f) => f.clone(),
+            None => return Some(format!("{} has no flavor", project.addon_name())),
+        },
     };
     tell(GameEvent::Status(format!(
         "building {} for {flavor}",
@@ -347,7 +443,7 @@ fn run(
         Some(instrument),
         camera.clone(),
     );
-    if let Some(p) = profile {
+    if let Some(p) = launch.profile.clone() {
         suite.profile = Some(p);
     }
     let screenshot: Option<wowlua_debug::controller::Screenshotter> = camera.map(|camera| {
@@ -371,10 +467,20 @@ fn run(
         shoot
     });
     let opts = Options {
-        target: Target::Addon,
-        clock: ClockMode::Realtime,
-        stop_on_entry: false,
-        debug_blizzard_ui: false,
+        target: match &launch.test {
+            Some((file, filters)) => Target::Test {
+                file: file.clone(),
+                filters: filters.clone(),
+            },
+            None => Target::Addon,
+        },
+        clock: if launch.manual {
+            ClockMode::Manual
+        } else {
+            ClockMode::Realtime
+        },
+        stop_on_entry: launch.stop_on_entry,
+        debug_blizzard_ui: launch.debug_blizzard_ui,
         flavor: Some(flavor.clone()),
         profile: None,
     };
@@ -382,7 +488,13 @@ fn run(
     // still UI costs no drawing.
     let mut last: Option<wowlua_engine::scene::Scene> = None;
     let hook: session::FrameHook = Box::new(move |vm| {
+        let time = wowlua_engine::clock::now(vm);
+        let frames_run = wowlua_engine::engine(vm).timers.frames_run;
         let scene = wowlua_engine::scene::build(vm);
+        if let Ok(mut f) = frames.lock() {
+            f.time = time;
+            f.frames_run = frames_run;
+        }
         if last.as_ref() == Some(&scene) {
             return;
         }
@@ -393,7 +505,10 @@ fn run(
         }
         wake();
     });
-    // The session starts at once.
+    // Its breakpoints set, the session starts.
+    for (id, request) in setup {
+        let _ = tx.send((id, to_debug(request)));
+    }
     let _ = tx.send((u64::MAX - 1, Request::ConfigurationDone));
     tell(GameEvent::Started {
         addon: project.addon_name(),
@@ -435,7 +550,7 @@ impl Screen {
     /// Draws the session's newest scene, if it has one not drawn yet; the
     /// screen as it is.
     pub fn show(&mut self, frames: &Mutex<Frames>) -> Option<GameScreen> {
-        let (scene, count, mut assets) = {
+        let (scene, count, mut assets, time, frames_run) = {
             let mut f = frames.lock().ok()?;
             if f.count == self.drawn {
                 let (_, id, size) = self.target.as_ref()?;
@@ -443,9 +558,17 @@ impl Screen {
                     texture: *id,
                     size: *size,
                     drawn: self.drawn,
+                    time: f.time,
+                    frames: f.frames_run,
                 });
             }
-            (f.scene.take()?, f.count, f.assets.clone()?)
+            (
+                f.scene.take()?,
+                f.count,
+                f.assets.clone()?,
+                f.time,
+                f.frames_run,
+            )
         };
         let size = [scene.width.max(1), scene.height.max(1)];
         if self.target.as_ref().is_none_or(|(_, _, s)| *s != size) {
@@ -500,6 +623,8 @@ impl Screen {
             texture: *id,
             size,
             drawn: count,
+            time,
+            frames: frames_run,
         })
     }
 }

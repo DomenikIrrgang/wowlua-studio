@@ -196,6 +196,8 @@ pub enum Action {
     /// Opens a file at a line (from 1).
     Open(PathBuf, usize),
     ShowInspector,
+    /// Function breakpoints on a frame's scripts (`script:Frame:OnX`, S056).
+    BreakOn(Vec<String>),
 }
 
 impl GameState {
@@ -264,6 +266,11 @@ impl GameState {
                 };
                 self.answer(asked, result, now);
             }
+            // (the debugger's: the screen draws what the stop shows)
+            GameEvent::Stopped { .. }
+            | GameEvent::Continued
+            | GameEvent::Breakpoint(_)
+            | GameEvent::Reloaded => {}
         }
     }
 
@@ -1283,6 +1290,35 @@ pub fn inspector(
                         && let Some((path, line)) = code
                     {
                         action = Some(Action::Open(path, line));
+                    }
+                    // (by its global name: a frame without one can't be named)
+                    let named = info["name"].as_str().map(str::to_owned);
+                    let scripts: Vec<String> = info["scripts"]
+                        .as_array()
+                        .map(|l| {
+                            l.iter()
+                                .filter_map(|s| s["name"].as_str().map(str::to_owned))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let can = named.is_some() && !scripts.is_empty();
+                    let r = ui.add_enabled_ui(can, |ui| {
+                        widgets::button(ui, ButtonKind::Ghost, "break on its scripts", true, None)
+                    });
+                    if r.inner.clicked()
+                        && let Some(n) = &named
+                    {
+                        let mut names: Vec<String> =
+                            scripts.iter().map(|s| format!("script:{n}:{s}")).collect();
+                        names.dedup();
+                        action = Some(Action::BreakOn(names));
+                    }
+                    if !can {
+                        r.response.on_disabled_hover_text(if named.is_none() {
+                            "a frame without a global name can't be named in a breakpoint"
+                        } else {
+                            "it has no scripts"
+                        });
                     }
                     if widgets::button(ui, ButtonKind::Ghost, "screenshot it", true, None).clicked()
                     {

@@ -43,6 +43,14 @@ pub enum Command {
     /// Runs the workspace's addon on the game page, or stops it (S055).
     RunAddon,
     StopSession,
+    /// The debugger (S056): start the chosen configuration, or continue a
+    /// stopped session; pause; the steps; restart.
+    StartDebugging,
+    Pause,
+    StepOver,
+    StepInto,
+    StepOut,
+    RestartSession,
     /// The start page's new-addon form.
     NewAddon,
     /// The start page's adopt form.
@@ -214,7 +222,55 @@ pub fn entries(
             Command::StopSession,
             "run",
             "stop the session",
-            "the game page's running addon",
+            "the running session",
+            Some(Menu::Run),
+            Some(KeyboardShortcut::new(Modifiers::SHIFT, Key::F5)),
+        );
+        add(
+            Command::StartDebugging,
+            "run",
+            "start debugging, or continue",
+            "the chosen configuration; a stopped session goes on",
+            Some(Menu::Run),
+            Some(KeyboardShortcut::new(Modifiers::NONE, Key::F5)),
+        );
+        add(
+            Command::Pause,
+            "run",
+            "pause",
+            "the running session stops where it is",
+            Some(Menu::Run),
+            Some(KeyboardShortcut::new(Modifiers::NONE, Key::F6)),
+        );
+        add(
+            Command::StepOver,
+            "run",
+            "step over",
+            "to the next line",
+            Some(Menu::Run),
+            Some(KeyboardShortcut::new(Modifiers::NONE, Key::F10)),
+        );
+        add(
+            Command::StepInto,
+            "run",
+            "step into",
+            "into the call, or the handler a dispatch runs",
+            Some(Menu::Run),
+            Some(KeyboardShortcut::new(Modifiers::NONE, Key::F11)),
+        );
+        add(
+            Command::StepOut,
+            "run",
+            "step out",
+            "out of the function",
+            Some(Menu::Run),
+            Some(KeyboardShortcut::new(Modifiers::SHIFT, Key::F11)),
+        );
+        add(
+            Command::RestartSession,
+            "run",
+            "restart the session",
+            "the same configuration again",
             Some(Menu::Run),
             None,
         );

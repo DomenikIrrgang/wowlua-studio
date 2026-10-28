@@ -5,7 +5,7 @@
 //! by `;`: `open:<folder>`, `file:<file>`, `find:<query>`, `page:debug`, `theme:light`, `palette`,
 //! `about`, `new`, `adopt`, `stats`, `terminal`, `runtests`, `runcoverage`,
 //! `testtab:<tab>`, `coverage`, `gutter`, `rungame`, `gamepick:x,y`,
-//! `gamesize:WxH[@scale]`, `units`.
+//! `gamesize:WxH[@scale]`, `units`, `bp:file:line`, `debug`, `debugtest:file::test`.
 
 use std::{
     path::PathBuf,
@@ -40,6 +40,25 @@ impl Screenshot {
             }
             if let Some(tab) = step.strip_prefix("testtab:") {
                 studio.tests_tab(tab);
+                continue;
+            }
+            if let Some(rest) = step.strip_prefix("debugtest:") {
+                let (file, test) = match rest.split_once("::") {
+                    Some((f, t)) => (f, Some(t)),
+                    None => (rest, None),
+                };
+                studio.debug_test_later(std::path::Path::new(file), test);
+                continue;
+            }
+            if step == "debug" {
+                studio.start_debugging();
+                continue;
+            }
+            if let Some(rest) = step.strip_prefix("bp:")
+                && let Some((file, line)) = rest.rsplit_once(':')
+                && let Ok(line) = line.parse()
+            {
+                studio.set_breakpoint(std::path::Path::new(file), line);
                 continue;
             }
             if step == "rungame" {

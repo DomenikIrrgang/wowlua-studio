@@ -64,6 +64,30 @@ pub enum Action {
     ApplyFix(Fix),
     /// A lens of Studio's was clicked.
     Lens(LensClick),
+    /// The breakpoint column clicked on a line (from 0): set or remove its
+    /// breakpoint (S056).
+    ToggleBreakpoint(usize),
+    /// Right-clicked there: edit the line's breakpoint.
+    EditBreakpoint(usize),
+}
+
+/// A breakpoint in the gutter (S056).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BpMark {
+    /// Its line, from 0.
+    pub line: usize,
+    /// Placed on code (else not loaded yet, or no code there).
+    pub verified: bool,
+    pub kind: BpKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BpKind {
+    Plain,
+    /// With a condition or a hit count.
+    Conditional,
+    /// A log point: prints, does not stop.
+    Log,
 }
 
 /// What the editor needs from Studio.
@@ -80,6 +104,10 @@ pub struct Cx<'a> {
     pub tests_at: &'a [usize],
     /// The active file's coverage, shown in the gutter.
     pub coverage: Option<&'a crate::system::CoverageFile>,
+    /// The active file's breakpoints (S056).
+    pub breakpoints: &'a [BpMark],
+    /// The line (from 0) the debugger stopped at in the active file.
+    pub stopped: Option<usize>,
 }
 
 /// A lens over a line: the language server's references, a note (a test's
@@ -115,6 +143,8 @@ pub enum LensClick {
     Failure { file: PathBuf, test: String },
     /// Show the tests that call the function defined at `line` (from 1).
     Callers { file: PathBuf, line: u32 },
+    /// Debug a test file, or one test of it (S056).
+    Debug { file: PathBuf, test: Option<String> },
 }
 
 /// A line as it is drawn: tabs to the next stop of four. With it each
@@ -1084,7 +1114,10 @@ fn code(
                     .iter()
                     .filter(|d| d.start.line <= line && line <= d.end.line)
                     .collect();
-                if line_diags
+                if cx.stopped == Some(line) {
+                    ui.painter()
+                        .rect_filled(row_rect, CornerRadius::ZERO, p.amber_soft);
+                } else if line_diags
                     .iter()
                     .any(|d| d.is_error() && d.start.line == line)
                 {
@@ -1381,6 +1414,66 @@ fn code(
                 CornerRadius::ZERO,
                 color,
             );
+        }
+        // The breakpoint column: a line's breakpoint, the stopped line's
+        // arrow; a click sets or removes one, a right click edits it.
+        let bp_rect = Rect::from_min_size(
+            Pos2::new(gutter.left() + 6.0, cy - LINE_H / 2.0),
+            Vec2::new(14.0, LINE_H),
+        );
+        let bp_resp = ui.interact(bp_rect, id.with(("bp", line)), Sense::click());
+        let center = bp_rect.center();
+        match cx.breakpoints.iter().find(|b| b.line == line) {
+            Some(b) => {
+                let color = if b.verified { p.error } else { p.ink_faint };
+                match b.kind {
+                    BpKind::Log => {
+                        let r = 4.5;
+                        painter.add(egui::Shape::convex_polygon(
+                            vec![
+                                center + Vec2::new(0.0, -r),
+                                center + Vec2::new(r, 0.0),
+                                center + Vec2::new(0.0, r),
+                                center + Vec2::new(-r, 0.0),
+                            ],
+                            color,
+                            Stroke::NONE,
+                        ));
+                    }
+                    _ if !b.verified => {
+                        painter.circle_stroke(center, 4.0, Stroke::new(1.5, color));
+                    }
+                    BpKind::Plain => {
+                        painter.circle_filled(center, 4.5, color);
+                    }
+                    BpKind::Conditional => {
+                        painter.circle_filled(center, 4.5, color);
+                        painter.circle_filled(center, 1.6, p.bg_000);
+                    }
+                }
+            }
+            None if bp_resp.hovered() => {
+                painter.circle_filled(center, 4.0, p.error_soft);
+            }
+            None => {}
+        }
+        if cx.stopped == Some(line) {
+            let r = 4.5;
+            painter.add(egui::Shape::convex_polygon(
+                vec![
+                    center + Vec2::new(-r, -r),
+                    center + Vec2::new(r, 0.0),
+                    center + Vec2::new(-r, r),
+                ],
+                p.amber,
+                Stroke::NONE,
+            ));
+        }
+        let right = bp_resp.secondary_clicked();
+        if bp_resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
+            actions.push(Action::ToggleBreakpoint(line));
+        } else if right {
+            actions.push(Action::EditBreakpoint(line));
         }
         let color = if line == head_line {
             p.ink
