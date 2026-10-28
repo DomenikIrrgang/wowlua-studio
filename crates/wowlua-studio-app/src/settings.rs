@@ -104,6 +104,8 @@ pub struct SettingsState {
     claude_key: String,
     /// The wowlua built into Studio (the host's).
     pub wowlua_version: String,
+    /// The command whose keys are being recorded (S062).
+    pub recording: Option<String>,
     /// Text being typed into a text setting, by its label.
     buffers: std::collections::HashMap<&'static str, String>,
 }
@@ -713,7 +715,7 @@ pub fn studio(
     system: &dyn System,
     workspace: Option<&Workspace>,
     installation: Option<&Installation>,
-    keys: impl FnOnce(&mut Ui, &mut Settings) -> bool,
+    platform: crate::Platform,
 ) -> Option<Action> {
     let p = palette(ui.ctx());
     if !state.asked {
@@ -784,7 +786,7 @@ pub fn studio(
                             }
                         }
                         Section::Keybindings => {
-                            if keys(ui, settings) {
+                            if crate::keys::section(ui, settings, platform, &mut state.recording) {
                                 action = Some(Action::Changed);
                             }
                             return;

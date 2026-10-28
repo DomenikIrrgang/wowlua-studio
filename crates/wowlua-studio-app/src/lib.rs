@@ -14,6 +14,7 @@ pub mod editor;
 pub mod explorer;
 pub mod game;
 pub mod jobs;
+pub mod keys;
 pub mod lsp;
 pub mod notify;
 pub mod pages;
@@ -313,12 +314,20 @@ impl Studio {
 
     /// Every command, as the menus list them.
     pub fn entries(&self) -> Vec<Entry> {
-        commands::entries(
+        let mut entries = commands::entries(
             self.host.platform,
             self.settings.follow_presets,
             self.settings.frame_stats,
             self.workspace.is_some(),
-        )
+        );
+        // The keys recorded in the settings over the commands' own (S062).
+        for e in &mut entries {
+            let name = keys::name_of(&e.command);
+            if self.settings.keys.contains_key(&name) {
+                e.key = keys::key_of(&self.settings, &name, e.key);
+            }
+        }
+        entries
     }
 
     /// Whether the commands changed since the last call: the host's menu
@@ -608,7 +617,9 @@ impl Studio {
 
         let entries = self.entries();
         let mut commands = std::mem::take(&mut self.queued);
-        if !self.palette.open && self.ask.is_none() && self.pending.is_none() {
+        // (not while a key is recorded for a command, S062)
+        let recording = self.settings_page.recording.is_some();
+        if !self.palette.open && self.ask.is_none() && self.pending.is_none() && !recording {
             ctx.input_mut(|i| {
                 for e in &entries {
                     if let Some(key) = &e.key
@@ -765,6 +776,7 @@ impl Studio {
         let ship_state = &mut self.ship;
         let mut ship_action = None;
         let settings_page = &mut self.settings_page;
+        let platform = self.host.platform;
         settings_page.wowlua_version = self.host.wowlua_version.clone();
         let studio_settings = &mut self.settings;
         let mut settings_action = None;
@@ -957,7 +969,6 @@ impl Studio {
             Panel::SettingsSections => settings::sections(ui, settings_page, &[]),
             Panel::Settings => match settings_page.view {
                 settings::View::Studio(_) => {
-                    let keys = |_: &mut Ui, _: &mut state::Settings| false;
                     if let Some(a) = settings::studio(
                         ui,
                         settings_page,
@@ -965,7 +976,7 @@ impl Studio {
                         system,
                         Some(workspace),
                         installation,
-                        keys,
+                        platform,
                     ) {
                         settings_action = Some(a);
                     }
@@ -2413,6 +2424,10 @@ impl Studio {
 
     /// What a change of the settings changes (S062).
     fn settings_changed(&mut self, before: &state::Settings) {
+        if before.keys != self.settings.keys {
+            // (the menu bar shows the keys)
+            self.menus_changed = true;
+        }
         if (&before.stop_on, before.show_dispatch)
             != (&self.settings.stop_on, self.settings.show_dispatch)
         {

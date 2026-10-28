@@ -2416,10 +2416,12 @@ fn keyboard(ui: &Ui, tab: &mut Tab, mac: bool, page: usize, actions: &mut Vec<Ac
                 ..
             } => {
                 let head = tab.doc.selection.head;
+                // (the editor's keys, as the settings bind them, S062)
+                let is = |name: &str| crate::keys::pressed(&prefs, name, key, modifiers);
                 match key {
-                    Key::F12 if modifiers.shift => actions.push(Action::References(head)),
-                    Key::F12 => actions.push(Action::Definition(head)),
-                    Key::F2 => {
+                    _ if is("editor.references") => actions.push(Action::References(head)),
+                    _ if is("editor.definition") => actions.push(Action::Definition(head)),
+                    _ if is("editor.rename") => {
                         let (start, end) = word_at(tab.doc.line(head.line), head.col);
                         let word: String = tab
                             .doc
@@ -2430,8 +2432,8 @@ fn keyboard(ui: &Ui, tab: &mut Tab, mac: bool, page: usize, actions: &mut Vec<Ac
                             .collect();
                         tab.rename = Some((head, word));
                     }
-                    Key::Space if modifiers.ctrl => actions.push(Action::Complete(head)),
-                    Key::Period if modifiers.command => actions.push(Action::Fixes(head)),
+                    _ if is("editor.complete") => actions.push(Action::Complete(head)),
+                    _ if is("editor.fixes") => actions.push(Action::Fixes(head)),
                     _ => {
                         if key_press(&mut tab.doc, key, modifiers, mac, page) {
                             changed.moved = true;
