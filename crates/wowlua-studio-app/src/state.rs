@@ -42,7 +42,8 @@ pub struct Settings {
     pub check_profile: String,
     /// `manual` or `realtime`, for new launch configurations.
     pub default_clock: String,
-    /// The debugger stops on: `uncaught`, `error`, `taint`, `blocked`.
+    /// The debugger stops on: `uncaught`, `all` (every error), `taint`,
+    /// `blocked`.
     pub stop_on: Vec<String>,
     pub step_into_blizzard: bool,
     pub show_dispatch: bool,

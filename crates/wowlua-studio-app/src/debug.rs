@@ -286,6 +286,10 @@ pub struct Ended {
 
 #[derive(Default)]
 pub struct DebugState {
+    /// The settings' (S062): a secret's value shows; a new configuration's
+    /// clock is manual.
+    pub reveal_secrets: bool,
+    pub default_manual: bool,
     pub kept: Kept,
     pub configs: Vec<Config>,
     pub configs_read: bool,
@@ -628,7 +632,7 @@ impl DebugState {
                 if n.is_empty() || n.starts_with('(') || values.iter().any(|(k, _)| k == n) {
                     continue;
                 }
-                let mut text = value_text(v);
+                let mut text = value_text(v, self.reveal_secrets);
                 if text.chars().count() > 40 {
                     text = text.chars().take(39).collect::<String>() + "…";
                 }
@@ -912,13 +916,13 @@ impl DebugState {
                     .insert(r, data["variables"].as_array().cloned().unwrap_or_default());
             }
             Asked::Watch(i) => {
-                let text = value_text(&data["variable"]);
+                let text = value_text(&data["variable"], self.reveal_secrets);
                 if let Some(v) = self.watch_values.get_mut(i) {
                     *v = Some(Ok(text));
                 }
             }
             Asked::Eval => {
-                let text = value_text(&data["variable"]);
+                let text = value_text(&data["variable"], self.reveal_secrets);
                 self.push_console("result", &format!("= {text}"));
             }
             Asked::Units => self.units = data.as_array().cloned().unwrap_or_default(),
@@ -989,10 +993,15 @@ fn frame_path(f: &Json, workspace: &Workspace) -> Option<PathBuf> {
     f["file"].as_str().map(PathBuf::from)
 }
 
-/// A variable's value as shown: its text, secret and taint marked.
-fn value_text(v: &Json) -> String {
+/// A variable's value as shown: its text, secret and taint marked; a
+/// secret only as `secret` unless the settings show what it hides (S062).
+fn value_text(v: &Json, reveal: bool) -> String {
+    let secret = v["secret"].as_bool() == Some(true);
+    if secret && !reveal {
+        return "secret".into();
+    }
     let mut s = v["value"].as_str().unwrap_or("nil").to_owned();
-    if v["secret"].as_bool() == Some(true) {
+    if secret {
         s.push_str("  (secret)");
     }
     s
@@ -1440,7 +1449,13 @@ fn run_and_debug(
                         state.editing = Some((at, configs[chosen].clone()));
                     }
                     if forms::text_button(ui, "new").clicked() {
-                        state.editing = Some((None, Config::addon("a new configuration")));
+                        state.editing = Some((
+                            None,
+                            Config {
+                                manual: state.default_manual,
+                                ..Config::addon("a new configuration")
+                            },
+                        ));
                     }
                 });
                 if let Some(e) = &state.ended {
@@ -1833,7 +1848,7 @@ fn var_rows(
             open,
             child != 0,
             v["name"].as_str().unwrap_or(""),
-            &value_text(v),
+            &value_text(v, state.reveal_secrets),
             &meta,
             p,
         )
@@ -2394,6 +2409,16 @@ fn empty(ui: &mut Ui, text: &str, p: &Palette) {
 mod unit {
     use super::*;
     use crate::system::NoSystem;
+
+    /// A secret shows what it hides only when the settings say (S062).
+    #[test]
+    fn secrets_show_as_the_settings_say() {
+        let v = serde_json::json!({ "value": "5", "secret": true });
+        assert_eq!(value_text(&v, true), "5  (secret)");
+        assert_eq!(value_text(&v, false), "secret");
+        let plain = serde_json::json!({ "value": "5" });
+        assert_eq!(value_text(&plain, false), "5");
+    }
 
     fn workspace() -> Workspace {
         Workspace {

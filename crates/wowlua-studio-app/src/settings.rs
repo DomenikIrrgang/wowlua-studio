@@ -374,7 +374,7 @@ fn rows() -> Vec<Row> {
             Debugger,
             "stop on every error",
             "Caught ones too: pcall, xpcall, your own error handlers.",
-            Flag(|s| s.stops_on("error"), |s, v| stop(s, "error", v)),
+            Flag(|s| s.stops_on("all"), |s, v| stop(s, "all", v)),
         ),
         row(
             Debugger,

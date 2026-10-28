@@ -133,6 +133,9 @@ pub struct Studio {
     applied: Option<(wowlua_studio_ui::Theme, f32)>,
     /// The settings last applied (S062).
     prefs: Option<state::Settings>,
+    /// The debugger's stops and dispatch frames as last synced with the
+    /// settings: a change on the debugger page is kept in the settings.
+    debug_seen: (Vec<String>, bool),
     /// The workspace's world profiles (`tests/profiles/*.json`), by name.
     profiles: Vec<String>,
     /// Background jobs (S044); the checks running, by package.
@@ -259,6 +262,7 @@ impl Studio {
             settings_page: settings::SettingsState::default(),
             applied: None,
             prefs: None,
+            debug_seen: (Vec::new(), false),
             profiles: Vec::new(),
             jobs: jobs::Jobs::default(),
             checks: std::collections::HashMap::new(),
@@ -458,6 +462,8 @@ impl Studio {
         self.focused = focused;
         // The OS's theme can change under a `system` theme.
         self.apply_settings(&ctx);
+        self.debug.reveal_secrets = self.settings.reveal_secrets;
+        self.debug.default_manual = self.settings.default_clock == "manual";
 
         // Closing the window with unsaved edits asks first.
         if ctx.input(|i| i.viewport().close_requested())
@@ -806,7 +812,9 @@ impl Studio {
                     .and_then(|path| debug_state.stopped_line(path, workspace));
                 // The stop's values after its lines.
                 let inline = match (active.as_deref(), editors.active()) {
-                    (Some(path), Some(tab)) if stopped.is_some() => {
+                    (Some(path), Some(tab))
+                        if stopped.is_some() && studio_settings.inline_values =>
+                    {
                         let doc = &tab.doc;
                         debug_state.inline_values(path, workspace, &|l| {
                             (l < doc.line_count()).then(|| doc.line(l).to_owned())
@@ -1044,6 +1052,7 @@ impl Studio {
             self.settings_action(a, ctx);
         }
         world::flush_live(&mut self.world, &mut self.debug, &*self.host.system);
+        self.pull_debug_settings(ctx);
         // The stop's source, shown once.
         if let Some((path, line)) = self.debug.show.take() {
             let at = lsp::Wire {
@@ -2110,6 +2119,8 @@ impl Studio {
             .filter(|e| !e.is_dir && e.name.ends_with(".json"))
             .map(|e| e.name.trim_end_matches(".json").to_owned())
             .collect();
+        // (the settings' stops, not the workspace's, S062)
+        self.push_debug_settings();
     }
 
     /// The tests every workspace keeps (`tests.json`), by its root.
@@ -2148,7 +2159,11 @@ impl Studio {
         };
         let rel = tests::rel_of(&w, file);
         let test = test.map(tests::declared);
-        self.start_session(debug::Config::test(&rel, test));
+        let config = debug::Config {
+            manual: self.settings.default_clock == "manual",
+            ..debug::Config::test(&rel, test)
+        };
+        self.start_session(config);
         self.queue(Command::ShowPage(Page::Debug));
     }
 
@@ -2219,7 +2234,10 @@ impl Studio {
             .find(|c| Some(&c.name) == chosen.as_ref())
             .or_else(|| self.debug.configs.first())
             .cloned()
-            .unwrap_or_else(|| debug::Config::addon(&format!("{name} · the addon")))
+            .unwrap_or_else(|| debug::Config {
+                manual: self.settings.default_clock == "manual",
+                ..debug::Config::addon(&format!("{name} · the addon"))
+            })
     }
 
     /// Starts a session of `config`, the debugger's breakpoints set first;
@@ -2327,8 +2345,41 @@ impl Studio {
         }
     }
 
+    /// The debugger takes the settings' stops and dispatch frames (S062).
+    fn push_debug_settings(&mut self) {
+        let mut stops = self.settings.stop_on.clone();
+        stops.sort();
+        let hide = !self.settings.show_dispatch;
+        let changed = self.debug.kept.stop_on.iter().cloned().collect::<Vec<_>>() != stops;
+        self.debug.kept.stop_on = stops.iter().cloned().collect();
+        self.debug.kept.hide_dispatch = hide;
+        self.debug_seen = (stops.clone(), hide);
+        if changed && self.debug.running() {
+            self.debug
+                .send(&*self.host.system, system::GameRequest::SetStopOn(stops));
+        }
+    }
+
+    /// A change on the debugger page goes into the settings (S062).
+    fn pull_debug_settings(&mut self, ctx: &Context) {
+        let stops: Vec<String> = self.debug.kept.stop_on.iter().cloned().collect();
+        let hide = self.debug.kept.hide_dispatch;
+        if (stops.clone(), hide) == self.debug_seen {
+            return;
+        }
+        self.debug_seen = (stops.clone(), hide);
+        self.settings.stop_on = stops;
+        self.settings.show_dispatch = !hide;
+        self.touch(ctx);
+    }
+
     /// What a change of the settings changes (S062).
     fn settings_changed(&mut self, before: &state::Settings) {
+        if (&before.stop_on, before.show_dispatch)
+            != (&self.settings.stop_on, self.settings.show_dispatch)
+        {
+            self.push_debug_settings();
+        }
         let system = &*self.host.system;
         let options = lsp::options(&self.settings);
         if lsp::options(before) != options {
