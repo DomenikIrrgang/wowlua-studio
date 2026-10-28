@@ -1389,21 +1389,25 @@ fn code(
         }
     }
 
-    // The caret: 2 px of amber, blinking while nothing is typed.
+    // The caret: 2 px of amber, blinking while nothing is typed (steady
+    // with "reduce motion", S062).
     if has_focus && let Some(caret) = caret_screen {
+        let steady = crate::state::prefs(&ctx).reduce_motion;
         let typed: f64 = ctx.data(|d| d.get_temp(id.with("typed"))).unwrap_or(now);
-        let phase = (now - typed) % 1.0;
+        let phase = if steady { 0.0 } else { (now - typed) % 1.0 };
         if phase < 0.6 && text_rect.intersects(caret) {
             ui.painter()
                 .with_clip_rect(text_rect)
                 .rect_filled(caret, CornerRadius::ZERO, p.amber);
         }
-        let next = if phase < 0.6 {
-            0.6 - phase
-        } else {
-            1.0 - phase
-        };
-        ctx.request_repaint_after(std::time::Duration::from_secs_f64(next));
+        if !steady {
+            let next = if phase < 0.6 {
+                0.6 - phase
+            } else {
+                1.0 - phase
+            };
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(next));
+        }
         ctx.output_mut(|o| {
             o.ime = Some(egui::output::IMEOutput {
                 purpose: egui::IMEPurpose::Normal,

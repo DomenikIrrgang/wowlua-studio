@@ -136,6 +136,8 @@ pub struct Studio {
     /// The debugger's stops and dispatch frames as last synced with the
     /// settings: a change on the debugger page is kept in the settings.
     debug_seen: (Vec<String>, bool),
+    /// The coverage page's gutter switch as last synced with the settings.
+    gutter_seen: bool,
     /// The workspace's world profiles (`tests/profiles/*.json`), by name.
     profiles: Vec<String>,
     /// Background jobs (S044); the checks running, by package.
@@ -263,6 +265,7 @@ impl Studio {
             applied: None,
             prefs: None,
             debug_seen: (Vec::new(), false),
+            gutter_seen: false,
             profiles: Vec::new(),
             jobs: jobs::Jobs::default(),
             checks: std::collections::HashMap::new(),
@@ -741,7 +744,7 @@ impl Studio {
         let Some(workspace) = &self.workspace else {
             return;
         };
-        let key = workspace.root.to_string_lossy().into_owned();
+        let key = self.layout_key();
         let layout = layout_for(&mut self.layouts, &key, self.layout_page);
         let explorer = &mut self.explorer;
         let editors = &mut self.editors;
@@ -1053,6 +1056,7 @@ impl Studio {
         }
         world::flush_live(&mut self.world, &mut self.debug, &*self.host.system);
         self.pull_debug_settings(ctx);
+        self.sync_gutter(ctx);
         // The stop's source, shown once.
         if let Some((path, line)) = self.debug.show.take() {
             let at = lsp::Wire {
@@ -2083,6 +2087,9 @@ impl Studio {
     fn open_tests(&mut self, workspace: &Workspace) {
         let system = &*self.host.system;
         self.tests = tests::TestsState::default();
+        // (the gutter as the settings say, S062)
+        self.tests.cov.in_gutter = self.settings.coverage_gutter;
+        self.gutter_seen = self.settings.coverage_gutter;
         let mut files: Vec<PathBuf> = Vec::new();
         let roots: Vec<PathBuf> = if workspace.members.is_empty() {
             vec![workspace.root.clone()]
@@ -2373,6 +2380,20 @@ impl Studio {
             self.debug
                 .send(&*self.host.system, system::GameRequest::SetStopOn(stops));
         }
+    }
+
+    /// The coverage page's gutter switch and the setting are one (S062).
+    fn sync_gutter(&mut self, ctx: &Context) {
+        let page = self.tests.cov.in_gutter;
+        if page != self.gutter_seen {
+            // the coverage page changed it
+            self.settings.coverage_gutter = page;
+            self.touch(ctx);
+        } else if self.settings.coverage_gutter != page {
+            // the settings did
+            self.tests.cov.in_gutter = self.settings.coverage_gutter;
+        }
+        self.gutter_seen = self.tests.cov.in_gutter;
     }
 
     /// A change on the debugger page goes into the settings (S062).
@@ -3012,7 +3033,12 @@ impl Studio {
     }
 
     /// The key of the open workspace's layouts.
+    /// Whose layouts: the workspace's, or one for all of them (the
+    /// setting "keep layouts per workspace", S062).
     fn layout_key(&self) -> String {
+        if !self.settings.layouts_per_workspace {
+            return String::new();
+        }
         self.workspace
             .as_ref()
             .map(|w| w.root.to_string_lossy().into_owned())
