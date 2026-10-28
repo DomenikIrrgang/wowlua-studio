@@ -143,6 +143,8 @@ pub enum LensClick {
     Failure { file: PathBuf, test: String },
     /// Show the tests that call the function defined at `line` (from 1).
     Callers { file: PathBuf, line: u32 },
+    /// Debug a test file, or one test of it (S056).
+    Debug { file: PathBuf, test: Option<String> },
 }
 
 /// A line as it is drawn: tabs to the next stop of four. With it each

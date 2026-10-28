@@ -118,6 +118,8 @@ pub enum Action {
     Stop,
     /// Open a file at a line (from 0).
     Open(PathBuf, usize),
+    /// Debug a test (S056).
+    Debug(PathBuf, Option<String>),
     ShowCoverage,
 }
 
@@ -386,6 +388,14 @@ pub fn lenses(state: &TestsState, workspace: &Workspace, path: &Path) -> Vec<Len
                 test: None,
             },
         ));
+        out.push(click(
+            "debug",
+            0,
+            LensClick::Debug {
+                file: file.clone(),
+                test: None,
+            },
+        ));
         let n = tests.len();
         out.push(note(
             format!("{n} test{}", if n == 1 { "" } else { "s" }),
@@ -406,11 +416,22 @@ pub fn lenses(state: &TestsState, workspace: &Workspace, path: &Path) -> Vec<Len
                     },
                 )
             };
+            let debug = || {
+                click(
+                    "debug",
+                    line,
+                    LensClick::Debug {
+                        file: file.clone(),
+                        test: Some(t.name.clone()),
+                    },
+                )
+            };
             if results.is_empty() {
                 if t.skip {
                     out.push(note("skipped".into(), line, Tone::Muted));
                 }
                 out.push(run());
+                out.push(debug());
             } else if let Some(failed) = results
                 .iter()
                 .find(|r| matches!(r.outcome, TestOutcome::Fail { .. }))
@@ -433,6 +454,7 @@ pub fn lenses(state: &TestsState, workspace: &Workspace, path: &Path) -> Vec<Len
                     },
                 ));
                 out.push(run());
+                out.push(debug());
             } else if results
                 .iter()
                 .all(|r| matches!(r.outcome, TestOutcome::Skip(_)))
@@ -446,6 +468,7 @@ pub fn lenses(state: &TestsState, workspace: &Workspace, path: &Path) -> Vec<Len
                 };
                 out.push(note(passed, line, Tone::Ok));
                 out.push(run());
+                out.push(debug());
             }
         }
     }
@@ -1731,6 +1754,9 @@ fn failure_view(
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
         let idle = state.running.is_none();
+        if button(ui, ButtonKind::Primary, "debug this test", true, None).clicked() {
+            action = Some(Action::Debug(file.to_path_buf(), Some(name.to_owned())));
+        }
         if button(ui, ButtonKind::Secondary, "run it again", idle, None).clicked() {
             action = Some(Action::Run(request_for(&package, file, Some(name), state)));
         }
@@ -2098,13 +2124,17 @@ mod unit {
             titles(A),
             [
                 line(0, "run all tests"),
+                line(0, "debug"),
                 line(0, "3 tests"),
                 line(2, "passed"),
                 line(2, "run test"),
+                line(2, "debug"),
                 line(5, "failed at line 7"),
                 line(5, "show failure"),
                 line(5, "run test"),
+                line(5, "debug"),
                 line(8, "run test"),
+                line(8, "debug"),
             ]
         );
         assert_eq!(titles("/p/demo/src/math.wowlua"), [line(0, "2 tests")]);

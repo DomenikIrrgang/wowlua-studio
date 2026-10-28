@@ -152,6 +152,8 @@ pub struct Studio {
     /// open (the screenshot's `bp:file:line`, `debug`).
     queued_bps: Vec<(PathBuf, u32)>,
     queued_debug: bool,
+    /// A test to debug once the workspace is open (`debugtest:file::test`).
+    queued_debug_test: Option<(PathBuf, Option<String>)>,
     /// A tab of the tests page's results to show once it is open.
     queued_tab: Option<tests::Tab>,
     /// Show the coverage in the gutter once the tests page is there.
@@ -236,6 +238,7 @@ impl Studio {
             queued_size: None,
             queued_bps: Vec::new(),
             queued_debug: false,
+            queued_debug_test: None,
             queued_tab: None,
             queued_gutter: false,
             menus_changed: false,
@@ -316,6 +319,12 @@ impl Studio {
     /// `bp:file:line` step).
     pub fn set_breakpoint(&mut self, path: &Path, line: u32) {
         self.queued_bps.push((path.to_path_buf(), line));
+    }
+
+    /// Debugs a test once the workspace is open (the screenshot's
+    /// `debugtest:file::test` step).
+    pub fn debug_test_later(&mut self, file: &Path, test: Option<&str>) {
+        self.queued_debug_test = Some((file.to_path_buf(), test.map(str::to_owned)));
     }
 
     /// Starts debugging once the workspace is open (the screenshot's
@@ -413,6 +422,12 @@ impl Studio {
                 for (path, line) in std::mem::take(&mut self.queued_bps) {
                     self.debug.toggle(&*self.host.system, &w, &path, line);
                 }
+            }
+            if self.tests.files.is_some()
+                && self.queued_bps.is_empty()
+                && let Some((file, test)) = self.queued_debug_test.take()
+            {
+                self.debug_test(&file, test.as_deref());
             }
             if self.tests.files.is_some() && self.queued_bps.is_empty() && self.queued_debug {
                 self.queued_debug = false;
@@ -796,6 +811,9 @@ impl Studio {
             Some(game::Action::ShowInspector) => {
                 self.queue(Command::ShowPanel(Panel::Inspector, dock::Dock::Right));
             }
+            Some(game::Action::BreakOn(names)) => {
+                self.debug.add_functions(&*self.host.system, names);
+            }
             None => {}
         }
         match tests_action {
@@ -811,6 +829,7 @@ impl Studio {
                 self.show_place(&place, ctx);
                 self.queue(Command::ShowPage(Page::Files));
             }
+            Some(tests::Action::Debug(file, test)) => self.debug_test(&file, test.as_deref()),
             Some(tests::Action::ShowCoverage) => {
                 self.queue(Command::ShowPanel(Panel::Coverage, dock::Dock::Main));
             }
@@ -1777,6 +1796,17 @@ impl Studio {
         }
     }
 
+    /// Debugs a test file, or one test of it, on the debugger page.
+    fn debug_test(&mut self, file: &Path, test: Option<&str>) {
+        let Some(w) = self.workspace.clone() else {
+            return;
+        };
+        let rel = tests::rel_of(&w, file);
+        let test = test.map(tests::declared);
+        self.start_session(debug::Config::test(&rel, test));
+        self.queue(Command::ShowPage(Page::Debug));
+    }
+
     /// The configuration chosen on the debugger page, else the addon's.
     fn chosen_config(&mut self) -> debug::Config {
         let name = self
@@ -1980,6 +2010,7 @@ impl Studio {
                 self.tests.pin_callers(&w, &file, line);
                 self.queue(Command::ShowPage(Page::Tests));
             }
+            C::Debug { file, test } => self.debug_test(&file, test.as_deref()),
         }
     }
 
