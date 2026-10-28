@@ -198,9 +198,16 @@ the units, a click targeting one; the events told with their arguments,
 frames and time; the input given; screenshots; the window size and UI
 scale on the toolbar. SuuUI runs on it: 0.33 ms median frames with its UI
 live. The frame budget holds with 5,000 frames and 1,000 events: 0.07 ms
-median. Not yet: some frames take 20 to 60 ms while SuuUI runs (the cause
-not found yet); the frame tree's "Blizzard's" switch; checked by hand on
-macOS only.
+median. Each frame made two GPU buffers for egui's vertices and indices
+(wgpu's `write_buffer`), a wait in the GPU driver on macOS: egui-wgpu is
+patched to write them through memory kept between frames (S059,
+`patches/README.md`), and wowlua's renderer keeps its own (wowlua's pull
+request #98). The UI's slow frames while SuuUI runs (10 to 60 ms, some
+longer) took about 1 ms of the thread's time: it was not running, measured
+with the screen locked and other programs busy; to check with Studio in
+front (`WOWLUA_STUDIO_FRAME_STATS=1`). Checked by hand on macOS only. Before M8 (S058): the frame
+tree's "Blizzard's" switch (wowlua marks the frames the client and
+Blizzard's UI made).
 
 ## M6: Debugger
 
@@ -232,11 +239,14 @@ as a world profile); the recent sessions and the last one's summary
 adds pausing a running session, hit counts, stop details,
 the clock switched while running, the world as a profile and the frame
 hook at a stop. The frame budget holds with 2,000 console lines and 300
-breakpoints: 0.07 ms median. Not yet: inline values in the editor; the
-call stack's switches (dispatch frames, Blizzard's code) beyond the
-configuration's; watches without side effects; the start's checklist;
-editing a unit in the live world; turning a breakpoint off without
-removing it; checked by hand on macOS only.
+breakpoints: 0.07 ms median. Finished before M8 (S058): the stop's
+values after its lines in the editor (`s = 2`); the call stack's switches
+while a session runs (dispatch frames shown, Blizzard's code stepped into:
+wowlua's `setDebugBlizzardUi`); watches and hovers that only read
+(wowlua's T496); the start's checklist and the breakpoints placed; a
+breakpoint turned off without removing it, every breakpoint off at once.
+Editing a unit in the live world moved to M8. Checked by hand on macOS;
+Windows and Linux are on the checklist below.
 
 ## M7: Profiler
 
@@ -265,11 +275,13 @@ call, callers and callees, go to code, break on it (wowlua's breakpoint by
 definition, T495). wowlua's pull request #96 adds per-frame trees, the
 speedscope file that keeps the whole profile, the game's recordings in a
 library and breakpoints by definition (S057). The frame budget holds with
-3,000 functions, 20,000 nodes and 600 frame trees: 0.13 ms median. Not
-yet: functions named by the language server (a profile names them by
-where they are defined); a game recording's events and scripts beyond its
-dispatch roots, and its memory; the hints' explanations; checked by hand
-on macOS only; wowlua's pull request #96 is not released.
+3,000 functions, 20,000 nodes and 600 frame trees: 0.13 ms median.
+Finished before M8 (S058): functions named by their sources' outlines
+(`ThreatModule:Update`, the place beside it); a game recording's events,
+scripts, timers and slash commands with their frames over the budget, and
+its memory under the seconds; the hints' explanations (wowlua's, opened
+under each hint). Checked by hand on macOS; Windows and Linux are on the
+checklist below.
 
 ## M8: World profiles
 
@@ -278,6 +290,8 @@ Artboard: world profiles.
 - A form for every part of a profile over its schema, kept in step with the
   JSON; checks as you type (E4400 to E4402); the live world; profiles from
   a snapshot (`/stdtest snapshot`) or SavedVariables.
+- Editing a unit in the live world (moved from M6, S058): the profile
+  editor's units, applied to the running session.
 
 ## M9: Ship
 
@@ -327,6 +341,25 @@ a world renderer with models from the installation.
 Building AddOns with Claude inside Studio, through Studio's tools, every
 change approved.
 
+## Checked by hand on Windows and Linux
+
+Studio is checked by hand on macOS as each milestone is built; CI builds
+and tests it on Windows and Linux (S058). On each, with SuuUI's workspace:
+
+1. **M1**: the window's own title bar (drag, double click, the buttons),
+   its resize edges, dragging a panel to each dock and floating it.
+2. **M2**: open a folder from the file menu and by dropping it; make a new
+   addon and adopt one from the forms; the installation found.
+3. **M3**: type, undo, copy and paste in the editor; hover, completion, go
+   to definition; the terminal runs your shell (`cmd`, `bash`).
+4. **M4**: run all tests, a failure's source, accept a screenshot.
+5. **M5**: run the addon; click and type in the game's screen; change the
+   window size in the game's settings.
+6. **M6**: a breakpoint stops; step, watch, the console; turn a
+   breakpoint off; `/reload`.
+7. **M7**: record the session and stop; pick a spike; profile a test from
+   its lens; open a speedscope file.
+
 ## Open questions
 
 Asked when their milestone starts; nothing here is decided yet.
@@ -355,4 +388,5 @@ page's CI workflow path (S036), the debugger board's bar on two rows, the
 configuration as a dialog over the page and the watch panel's note (S056);
 the profile lenses and the tests page's "profile the selected test", the
 profiles kept in `.wowlua/profiles`, a game recording's timeline per second
-(S057).
+(S057) Before M8: the watch panel's note (watches only read) and a game
+recording's events, scripts, timers and commands, and its memory (S058).

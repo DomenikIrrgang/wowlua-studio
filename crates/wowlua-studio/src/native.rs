@@ -504,6 +504,15 @@ impl System for NativeSystem {
         crate::profiles::keep(root, name, speedscope)
     }
 
+    fn explain(&self, code: &str) -> Option<String> {
+        wowlua_diagnostics::explanation(code).map(|e| e.text.clone())
+    }
+
+    fn function_names(&self, root: &Path, files: Vec<String>) {
+        let root = root.to_path_buf();
+        self.spawn(move || Event::FunctionNames(crate::profiles::function_names(&root, &files)));
+    }
+
     fn game_recordings(&self, root: &Path) {
         let root = root.to_path_buf();
         self.spawn(move || Event::GameRecordings(crate::profiles::game_recordings(&root)));

@@ -169,6 +169,19 @@ struct Dispatch {
     worst: [u64; 3],
 }
 
+/// An event, a script, a timer or a slash command a game recording
+/// watched: how often, how long in all and at worst, the frames over the
+/// budget it was in.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Watched {
+    kind: &'static str,
+    name: String,
+    count: u64,
+    total: u64,
+    worst: u64,
+    over: u64,
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 struct Slow {
     ms: f64,
@@ -210,6 +223,14 @@ pub struct Model {
     hints: Vec<Hint>,
     /// The frame budget (a game recording's), nanoseconds.
     budget: u64,
+    /// A game recording's events, scripts, timers and commands.
+    watched: Vec<Watched>,
+    /// A game recording's memory: seconds from its start, kilobytes.
+    memory: Vec<(f64, f64)>,
+    /// Functions named by their sources' outlines (S057), by key.
+    names: HashMap<u32, String>,
+    /// The sources asked for names.
+    named: bool,
 }
 
 fn add(to: &mut [u64; 3], c: [u64; 3]) {
@@ -390,6 +411,31 @@ impl Model {
                 over: num(&get(&over)),
             });
         }
+        for (field, kind) in [
+            ("events", "event"),
+            ("scripts", "script"),
+            ("timers", "timer"),
+            ("commands", "command"),
+        ] {
+            for (name, s) in obj(&rec[field]) {
+                m.watched.push(Watched {
+                    kind,
+                    name: name.clone(),
+                    count: num(&s["count"]),
+                    total: ms(&s["total"]),
+                    worst: ms(&s["max"]),
+                    over: num(&s["over"]),
+                });
+            }
+        }
+        m.watched
+            .sort_by(|a, b| b.total.cmp(&a.total).then(a.name.cmp(&b.name)));
+        for s in list(&rec["memory"]) {
+            m.memory.push((
+                s["at"].as_f64().unwrap_or(0.0),
+                s["kb"].as_f64().unwrap_or(0.0),
+            ));
+        }
         for s in list(&rec["slow"]) {
             m.slow.push(Slow {
                 ms: s["ms"].as_f64().unwrap_or(0.0),
@@ -545,6 +591,30 @@ impl Model {
         out
     }
 
+    /// The sources of the package's functions, to name.
+    fn sources(&self) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .keys
+            .iter()
+            .filter(|k| k.kind.is_none() && k.line > 0)
+            .filter_map(|k| k.file.clone())
+            .filter(|f| !f.starts_with("Interface/") && !f.starts_with('['))
+            .collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// Names its functions: (source, line defined, name).
+    fn name(&mut self, names: &[(String, u32, String)]) {
+        for (i, k) in self.keys.iter().enumerate() {
+            let Some(f) = &k.file else { continue };
+            if let Some((_, _, n)) = names.iter().find(|(nf, nl, _)| nf == f && *nl == k.line) {
+                self.names.insert(i as u32, n.clone());
+            }
+        }
+    }
+
     /// A function's place, as the tables show it.
     fn place(&self, key: u32) -> String {
         let k = &self.keys[key as usize];
@@ -555,9 +625,12 @@ impl Model {
         }
     }
 
-    /// A function's name, as the tables show it: a profile names Lua
-    /// functions by their place.
+    /// A function's name, as the tables show it: its outline's, else its
+    /// place (a profile names Lua functions by where they are defined).
     fn title(&self, key: u32) -> String {
+        if let Some(n) = self.names.get(&key) {
+            return n.clone();
+        }
         let k = &self.keys[key as usize];
         k.name
             .strip_prefix("function ")
@@ -684,6 +757,8 @@ pub struct ProfilerState {
     error: Option<String>,
     /// The functions' order, by the measure (cached).
     order: Option<(Measure, Vec<usize>)>,
+    /// The hints whose explanation is open, by code: the text.
+    explained: HashMap<String, Option<String>>,
 }
 
 /// What the page asks of Studio.
@@ -784,6 +859,16 @@ impl ProfilerState {
                 self.game.clear();
                 self.game_read = Some(Err(e));
             }
+        }
+    }
+
+    /// Functions named: the profiles shown take them.
+    pub fn function_names(&mut self, names: Vec<(String, u32, String)>) {
+        for m in [self.current.as_mut(), self.baseline.as_mut()]
+            .into_iter()
+            .flatten()
+        {
+            m.name(&names);
         }
     }
 
@@ -914,6 +999,17 @@ pub fn show(
         state.refresh(workspace, system);
     }
     let mut action = None;
+    // Its functions named by their outlines, asked once a profile.
+    if let Some(m) = state.current.as_mut()
+        && !m.game
+        && !m.named
+    {
+        m.named = true;
+        let files = m.sources();
+        if !files.is_empty() {
+            system.function_names(&workspace.root, files);
+        }
+    }
     bar(ui, state, workspace, system, running, p);
     if let Some(e) = state.error.clone() {
         forms::padded(ui, 12, 6, |ui| {
@@ -948,7 +1044,7 @@ pub fn show(
                 None
             }
             View::Hints => {
-                hints(ui, state, p);
+                hints(ui, state, system, p);
                 None
             }
         };
@@ -1310,6 +1406,40 @@ fn frames(ui: &mut Ui, state: &mut ProfilerState, p: &Palette) {
             ui.painter()
                 .hline(rect.x_range(), y, egui::Stroke::new(1.0, p.warning));
         }
+        // A game recording's memory: a line over its seconds, and its
+        // start, end and peak.
+        if m.game && m.memory.len() > 1 {
+            let (first, last) = (m.memory[0].1, m.memory[m.memory.len() - 1].1);
+            let peak = m.memory.iter().map(|s| s.1).fold(0.0, f64::max);
+            let low = m.memory.iter().map(|s| s.1).fold(f64::INFINITY, f64::min);
+            let end = m.memory[m.memory.len() - 1].0.max(1.0);
+            let (line, _) =
+                ui.allocate_exact_size(Vec2::new(ui.available_width(), 18.0), Sense::hover());
+            let span = (peak - low).max(1.0);
+            let points: Vec<Pos2> = m
+                .memory
+                .iter()
+                .map(|&(at, kb)| {
+                    Pos2::new(
+                        line.left() + (at / end) as f32 * line.width(),
+                        line.bottom() - 2.0 - ((kb - low) / span) as f32 * (line.height() - 4.0),
+                    )
+                })
+                .collect();
+            ui.painter()
+                .add(egui::Shape::line(points, egui::Stroke::new(1.0, p.note)));
+            let mb = |kb: f64| format!("{:.1} MB", kb / 1024.0);
+            ui.label(
+                egui::RichText::new(format!(
+                    "memory {} → {} · peak {}",
+                    mb(first),
+                    mb(last),
+                    mb(peak)
+                ))
+                .font(Face::Plex.at(11.0))
+                .color(p.ink_muted),
+            );
+        }
     });
     if let Some(c) = clicked {
         state.frame = c;
@@ -1409,13 +1539,23 @@ fn functions(ui: &mut Ui, state: &mut ProfilerState, p: &Palette) -> Option<Acti
                 let y = rect.center().y;
                 let name = m.title(f.key);
                 let color = if m.own(f.key) { p.ink } else { p.ink_muted };
-                ui.painter().with_clip_rect(cols[0]).text(
+                let r = ui.painter().with_clip_rect(cols[0]).text(
                     Pos2::new(cols[0].left() + 10.0, y),
                     Align2::LEFT_CENTER,
                     &name,
                     Face::Plex.at(12.0),
                     color,
                 );
+                // A named function's place after its name.
+                if m.names.contains_key(&f.key) {
+                    ui.painter().with_clip_rect(cols[0]).text(
+                        Pos2::new(r.right() + 8.0, y),
+                        Align2::LEFT_CENTER,
+                        m.place(f.key),
+                        Face::Plex.at(11.0),
+                        p.ink_faint,
+                    );
+                }
                 let total = m.value(f.total, f.calls, measure);
                 for (c, text) in [
                     (1, amount(f.calls, Measure::Calls)),
@@ -1842,7 +1982,85 @@ fn flame(ui: &mut Ui, state: &mut ProfilerState, p: &Palette) -> Option<Action> 
 
 fn dispatches(ui: &mut Ui, state: &mut ProfilerState, p: &Palette) {
     let Some(m) = &state.current else { return };
-    let measure = match state.measure {
+    if m.game && !m.watched.is_empty() {
+        let half = (ui.available_height() / 2.0).max(ROW_H * 4.0);
+        ui.scope_builder(
+            egui::UiBuilder::new().max_rect(Rect::from_min_size(
+                ui.available_rect_before_wrap().min,
+                Vec2::new(ui.available_width(), half),
+            )),
+            |ui| dispatch_table(ui, m, state.measure, p),
+        );
+        ui.add_space(half);
+        watched(ui, m, p);
+        return;
+    }
+    dispatch_table(ui, m, state.measure, p);
+}
+
+/// A game recording's events, scripts, timers and commands.
+fn watched(ui: &mut Ui, m: &Model, p: &Palette) {
+    header(
+        ui,
+        &[
+            "event, script, timer, command",
+            "kind",
+            "times",
+            "total",
+            "worst",
+            "over budget",
+        ],
+        p,
+    );
+    egui::ScrollArea::vertical()
+        .id_salt("prof-watched")
+        .auto_shrink(false)
+        .show_rows(ui, ROW_H, m.watched.len(), |ui, range| {
+            for w in &m.watched[range] {
+                let (rect, resp) =
+                    ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::hover());
+                if resp.hovered() {
+                    ui.painter().rect_filled(rect, CornerRadius::ZERO, p.bg_200);
+                }
+                let cols = columns(rect);
+                let y = rect.center().y;
+                ui.painter().with_clip_rect(cols[0]).text(
+                    Pos2::new(cols[0].left() + 10.0, y),
+                    Align2::LEFT_CENTER,
+                    &w.name,
+                    Face::Plex.at(12.0),
+                    p.ink,
+                );
+                for (c, text, color) in [
+                    (1, w.kind.to_owned(), p.ink_muted),
+                    (2, amount(w.count, Measure::Calls), p.ink),
+                    (3, amount(w.total, Measure::Time), p.ink),
+                    (
+                        4,
+                        amount(w.worst, Measure::Time),
+                        if w.worst > m.budget { p.error } else { p.ink },
+                    ),
+                    (
+                        5,
+                        amount(w.over, Measure::Calls),
+                        if w.over > 0 { p.error } else { p.ink_muted },
+                    ),
+                ] {
+                    ui.painter().text(
+                        Pos2::new(cols[c].right() - 8.0, y),
+                        Align2::RIGHT_CENTER,
+                        text,
+                        Face::Plex.at(12.0),
+                        color,
+                    );
+                }
+            }
+        });
+}
+
+/// The dispatches: their times, total, worst run and share.
+fn dispatch_table(ui: &mut Ui, m: &Model, measure: Measure, p: &Palette) {
+    let measure = match measure {
         Measure::Calls => {
             if m.game {
                 Measure::Time
@@ -1930,8 +2148,9 @@ fn slow(ui: &mut Ui, state: &mut ProfilerState, p: &Palette) {
         });
 }
 
-fn hints(ui: &mut Ui, state: &mut ProfilerState, p: &Palette) {
+fn hints(ui: &mut Ui, state: &mut ProfilerState, system: &dyn System, p: &Palette) {
     let Some(m) = &state.current else { return };
+    let mut toggle = None;
     egui::ScrollArea::vertical()
         .id_salt("prof-hints")
         .auto_shrink(false)
@@ -1961,10 +2180,33 @@ fn hints(ui: &mut Ui, state: &mut ProfilerState, p: &Palette) {
                     });
                     forms::paragraph(ui, &h.evidence, 12.0, 18.0, p.ink_muted);
                     forms::paragraph(ui, &format!("= help: {}", h.fix), 12.0, 18.0, p.ink_muted);
+                    // wowlua's explanation of the code, opened under it.
+                    let open = state.explained.get(&h.code);
+                    let label = if open.is_some() {
+                        format!("hide {}", h.code)
+                    } else {
+                        format!("explain {}", h.code)
+                    };
+                    if forms::text_button(ui, &label).clicked() {
+                        toggle = Some(h.code.clone());
+                    }
+                    if let Some(text) = open {
+                        let text = text
+                            .as_deref()
+                            .unwrap_or("wowlua has no explanation of this code.");
+                        ui.add_space(4.0);
+                        forms::paragraph(ui, text, 12.0, 18.0, p.ink);
+                    }
                     ui.add_space(10.0);
                 }
             });
         });
+    if let Some(code) = toggle
+        && state.explained.remove(&code).is_none()
+    {
+        let text = system.explain(&code);
+        state.explained.insert(code, text);
+    }
 }
 
 /// The function panel: the picked function's sums, its callers and
@@ -2240,7 +2482,10 @@ mod unit {
             "roots": { "OnUpdate MyFrame": { "kind": "update", "calls": 600, "total": 145.7, "max": 6.8 } },
             "seconds": { "frames": [60, 60], "time": [10, 12], "max": [0.4, 6.8], "over": [0, 3], "garbage": [38, 412] },
             "slow": [{ "at": 112, "ms": 6.8, "name": "ThreatModule:Update", "stack": "readRows ← ThreatModule:Update" }],
-            "hints": [{ "code": "P7301", "subject": "ThreatModule:Update", "evidence": "took 6.8 ms", "fix": "spread the work" }]
+            "hints": [{ "code": "P7301", "subject": "ThreatModule:Update", "evidence": "took 6.8 ms", "fix": "spread the work" }],
+            "events": { "UNIT_HEALTH": { "count": 1480, "total": 24.1, "max": 0.3, "over": 0 } },
+            "scripts": { "SuuUIFrame:OnUpdate": { "count": 9660, "total": 145.7, "max": 6.8, "over": 3 } },
+            "memory": [{ "at": 0, "kb": 10240 }, { "at": 60, "kb": 12288 }]
         });
         let m = Model::of_game(&rec, "_classic_beta_", "ACCOUNT");
         assert!(m.game);
@@ -2260,6 +2505,15 @@ mod unit {
         assert_eq!(m.dispatches[0].worst[2], 6_800_000);
         assert_eq!((m.slow.len(), m.hints.len()), (1, 1));
         assert!(m.note.contains("Call paths were on"), "{}", m.note);
+        // Its events and scripts, the costliest first; its memory.
+        assert_eq!(
+            m.watched
+                .iter()
+                .map(|w| (w.kind, w.over))
+                .collect::<Vec<_>>(),
+            [("script", 3), ("event", 0)]
+        );
+        assert_eq!(m.memory, [(0.0, 10240.0), (60.0, 12288.0)]);
     }
 
     /// In a frame's scope (no root of its own) the boxes fill the width:
