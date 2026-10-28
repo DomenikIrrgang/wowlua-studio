@@ -1968,6 +1968,12 @@ impl Studio {
         }
         if !again {
             self.open_tests(&workspace);
+            // The ship page's package and its dev loop are the last
+            // workspace's.
+            if self.ship.dev_on {
+                self.host.system.ship_dev(&workspace.root, None);
+            }
+            self.ship = ship::ShipState::default();
         }
         self.branch = self.host.system.branch(&workspace.root);
         self.reload_recents();
