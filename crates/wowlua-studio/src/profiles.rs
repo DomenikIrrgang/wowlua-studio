@@ -141,6 +141,71 @@ pub fn of(s: &Saved) -> Profile {
     }
 }
 
+/// The functions defined in these sources (from the package's root, the
+/// workspace's or a member's), named by the language server's outline:
+/// top-level functions, and classes' methods as `Class:method`.
+pub fn function_names(root: &Path, files: &[String]) -> Vec<(String, u32, String)> {
+    // The outline's kinds (the protocol's).
+    const CLASS: u64 = 5;
+    const METHOD: u64 = 6;
+    const FUNCTION: u64 = 12;
+    fn walk(
+        list: &[serde_json::Value],
+        class: Option<&str>,
+        file: &str,
+        out: &mut Vec<(String, u32, String)>,
+    ) {
+        for s in list {
+            let name = s["name"].as_str().unwrap_or("");
+            let line = s["range"]["start"]["line"].as_u64().unwrap_or(0) as u32 + 1;
+            match s["kind"].as_u64() {
+                Some(FUNCTION | METHOD) if !name.is_empty() => {
+                    let full = match class {
+                        Some(c) if !name.contains([':', '.']) => format!("{c}:{name}"),
+                        _ => name.to_owned(),
+                    };
+                    out.push((file.to_owned(), line, full));
+                }
+                Some(CLASS) => {
+                    if let Some(c) = s["children"].as_array() {
+                        walk(c, Some(name), file, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let members = member_dirs(root);
+    let mut out = Vec::new();
+    for file in files {
+        let text = std::iter::once(root.to_path_buf())
+            .chain(members.iter().cloned())
+            .find_map(|dir| std::fs::read_to_string(dir.join(file)).ok());
+        if let Some(text) = text {
+            walk(&wowlua_lsp::symbols::symbols(&text), None, file, &mut out);
+        }
+    }
+    out
+}
+
+/// The workspace's members' folders (`workspace.members`), if any.
+fn member_dirs(root: &Path) -> Vec<PathBuf> {
+    let Ok(text) = std::fs::read_to_string(root.join("wowlua.json")) else {
+        return Vec::new();
+    };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return Vec::new();
+    };
+    json["workspace"]["members"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|m| m.as_str())
+        .filter(|m| !m.contains('*'))
+        .map(|m| root.join(m))
+        .collect()
+}
+
 /// The recordings the workspace's addon exported in the game, each client
 /// folder's and account's, their locations in the source.
 pub fn game_recordings(root: &Path) -> Result<Vec<GameRecordings>, String> {
@@ -181,6 +246,32 @@ pub fn game_recordings(root: &Path) -> Result<Vec<GameRecordings>, String> {
 #[cfg(test)]
 mod unit {
     use super::*;
+
+    /// A source's functions named by its outline: top-level ones, and a
+    /// class's methods as `Class:method`.
+    #[test]
+    fn functions_are_named_by_their_outline() {
+        let root = std::env::temp_dir().join(format!("wl-names-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/meter.wowlua"),
+            "local function sample(i: number): number\n    return i\nend\n\nclass Meter\n    function Update()\n    end\nend\n",
+        )
+        .unwrap();
+        let names = function_names(&root, &["src/meter.wowlua".to_owned()]);
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(
+            names.contains(&("src/meter.wowlua".into(), 1, "sample".into())),
+            "{names:?}"
+        );
+        assert!(
+            names
+                .iter()
+                .any(|(_, line, n)| *line == 6 && n == "Meter:Update"),
+            "{names:?}"
+        );
+    }
 
     #[test]
     fn names_work_on_every_system() {

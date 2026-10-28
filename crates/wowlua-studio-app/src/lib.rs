@@ -724,6 +724,16 @@ impl Studio {
                 let stopped = active
                     .as_deref()
                     .and_then(|path| debug_state.stopped_line(path, workspace));
+                // The stop's values after its lines.
+                let inline = match (active.as_deref(), editors.active()) {
+                    (Some(path), Some(tab)) if stopped.is_some() => {
+                        let doc = &tab.doc;
+                        debug_state.inline_values(path, workspace, &|l| {
+                            (l < doc.line_count()).then(|| doc.line(l).to_owned())
+                        })
+                    }
+                    _ => Vec::new(),
+                };
                 // The session's bar and the stop's banner (the debugger's).
                 if on_debug && let Some(a) = debug::bar(ui, debug_state, system) {
                     debug_action = Some(a);
@@ -745,6 +755,7 @@ impl Studio {
                     coverage,
                     breakpoints: &breakpoints,
                     stopped,
+                    inline: &inline,
                 };
                 // (below the debugger's bar, when it has one)
                 let rest = ui.available_rect_before_wrap();
@@ -1733,6 +1744,7 @@ impl Studio {
                 }
                 Event::Profile { path, result } => self.profiler.profile_read(&path, result),
                 Event::GameRecordings(result) => self.profiler.game_recordings(result),
+                Event::FunctionNames(names) => self.profiler.function_names(names),
                 Event::Installation(_) | Event::Ui { .. } => {}
             }
             ctx.request_repaint();

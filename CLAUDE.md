@@ -70,6 +70,13 @@ the pinned one (0.13.x for `v0.13.0`); otherwise it warns that the patch
 was not used. A change Studio needs in wowlua is made in wowlua, by its own
 rules, and Studio moves its pin to the release that has it.
 
+## Patched dependencies
+
+`patches/` holds copies of published crates with a change Studio needs
+before their authors release it, patched in with `[patch.crates-io]` and
+kept out of the workspace (`exclude`), so Studio's checks leave them alone.
+`patches/README.md` says what each changes and when to drop it.
+
 ## Checks
 
 Before a commit: `cargo fmt --all -- --check`,

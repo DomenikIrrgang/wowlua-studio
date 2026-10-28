@@ -163,6 +163,9 @@ pub enum Event {
     },
     /// The game's recordings read.
     GameRecordings(Result<Vec<GameRecordings>, String>),
+    /// Functions named (a profile's): the source, the line a function is
+    /// defined on, its name.
+    FunctionNames(Vec<(String, u32, String)>),
 }
 
 /// What the game page asks a running session (S055): the debugger's UI
@@ -235,6 +238,10 @@ pub enum GameRequest {
     SetClock {
         manual: bool,
     },
+    /// Stepping into Blizzard's UI code from now on (wowlua T496).
+    SetDebugBlizzardUi {
+        on: bool,
+    },
     /// Every breakpoint with its hit count.
     Breakpoints,
     /// Lua with `mock` the engine's controls (the live world).
@@ -258,6 +265,9 @@ pub enum GameRequest {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct LineBp {
     pub line: u32,
+    /// Turned off: kept, not set in a session.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub disabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub condition: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -271,6 +281,9 @@ pub struct LineBp {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct FunctionBp {
     pub name: String,
+    /// Turned off: kept, not set in a session.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub disabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub condition: Option<String>,
 }
@@ -919,6 +932,15 @@ pub trait System {
     ) -> Result<(PathBuf, Profile), String> {
         Err("profiles cannot be kept here".into())
     }
+    /// What a code means and how to fix it (wowlua's explanation, in
+    /// Markdown): a profiler hint's `P7301`.
+    fn explain(&self, _code: &str) -> Option<String> {
+        None
+    }
+    /// Names the functions defined in these sources (from the package's
+    /// root) by their outlines: `ThreatModule:Update` (→
+    /// [`Event::FunctionNames`]).
+    fn function_names(&self, _root: &Path, _files: Vec<String>) {}
     /// Reads the recordings exported in the game for the workspace's
     /// addon, in the installation's SavedVariables (→
     /// [`Event::GameRecordings`]).

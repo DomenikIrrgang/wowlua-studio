@@ -144,6 +144,7 @@ fn to_debug(request: GameRequest) -> Request {
         GameRequest::World(script) => Request::World { script },
         GameRequest::FireEvent { event, args } => Request::FireEvent { event, args },
         GameRequest::SaveWorld => Request::SaveWorld,
+        GameRequest::SetDebugBlizzardUi { on } => Request::SetDebugBlizzardUi { on },
         GameRequest::ProfileStart => Request::ProfileStart,
         GameRequest::ProfileStop => Request::ProfileStop,
         GameRequest::Input(input) => Request::Input {

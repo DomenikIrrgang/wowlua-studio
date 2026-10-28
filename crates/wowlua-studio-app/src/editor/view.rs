@@ -79,6 +79,8 @@ pub struct BpMark {
     /// Placed on code (else not loaded yet, or no code there).
     pub verified: bool,
     pub kind: BpKind,
+    /// Turned off: kept, not set.
+    pub disabled: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -108,6 +110,8 @@ pub struct Cx<'a> {
     pub breakpoints: &'a [BpMark],
     /// The line (from 0) the debugger stopped at in the active file.
     pub stopped: Option<usize>,
+    /// Values shown after lines at a stop (from 0): `name = value`, …
+    pub inline: &'a [(usize, String)],
 }
 
 /// A lens over a line: the language server's references, a note (a test's
@@ -1221,6 +1225,19 @@ fn code(
                         unfold = Some(line);
                     }
                 }
+                // The stop's values after the line (`st-inval`).
+                if let Some((_, text)) = cx.inline.iter().find(|v| v.0 == line) {
+                    let x = origin.x + laid.galley.size().x + 16.0;
+                    let r = ui.painter().text(
+                        Pos2::new(x + 6.0, y + LINE_H / 2.0),
+                        Align2::LEFT_CENTER,
+                        text,
+                        Face::PlexItalic.at(11.5),
+                        p.ink_muted,
+                    );
+                    ui.painter()
+                        .vline(x, r.top()..=r.bottom(), Stroke::new(2.0, p.amber_ink));
+                }
                 // The problems, underlined in waves (`st-sq-err`, `st-sq-warn`).
                 for d in line_diags {
                     let from = if d.start.line == line {
@@ -1427,7 +1444,11 @@ fn code(
         let center = bp_rect.center();
         match cx.breakpoints.iter().find(|b| b.line == line) {
             Some(b) => {
-                let color = if b.verified { p.error } else { p.ink_faint };
+                let color = if b.verified && !b.disabled {
+                    p.error
+                } else {
+                    p.ink_faint
+                };
                 match b.kind {
                     BpKind::Log => {
                         let r = 4.5;

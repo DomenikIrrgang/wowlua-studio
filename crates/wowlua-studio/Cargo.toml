@@ -28,6 +28,8 @@ serde_json = { workspace = true, features = ["preserve_order"] }
 # A game session hosted in process, its screen drawn on eframe's device
 # (M5, S055).
 wowlua-debug.workspace = true
+# The explanations of the profiler's hints (M7).
+wowlua-diagnostics.workspace = true
 wowlua-engine.workspace = true
 wowlua-render.workspace = true
 wowlua-vm.workspace = true

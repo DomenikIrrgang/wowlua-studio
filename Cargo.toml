@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
+# egui-wgpu with one change, patched in below; not a member.
+exclude = ["patches/egui-wgpu"]
 
 [workspace.package]
 version = "0.1.0"
@@ -32,21 +34,24 @@ wowlua-studio-app = { path = "crates/wowlua-studio-app" }
 # hosted in process, with the event log, the inspector and the units (M5).
 # The debugger page's pause, hit counts, stop details, clock, the world as a
 # profile and the frame hook at a stop (M6).
-# Until it is released: the commit of wowlua's pull request #96 (on 0.13.6),
-# the profiler's per-frame call trees, the speedscope file that keeps the whole
-# profile, the game's recordings in a library and function breakpoints by
-# definition (M7).
-wowlua-debug = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "45ec4d900b0b668c4cb68d9d3b1fe8d8a27ae0e0" }
-wowlua-engine = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "45ec4d900b0b668c4cb68d9d3b1fe8d8a27ae0e0" }
-wowlua-render = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "45ec4d900b0b668c4cb68d9d3b1fe8d8a27ae0e0" }
-wowlua-vm = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "45ec4d900b0b668c4cb68d9d3b1fe8d8a27ae0e0" }
-wowlua-driver = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "45ec4d900b0b668c4cb68d9d3b1fe8d8a27ae0e0" }
-wowlua-flavors = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "45ec4d900b0b668c4cb68d9d3b1fe8d8a27ae0e0" }
-wowlua-manifest = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "45ec4d900b0b668c4cb68d9d3b1fe8d8a27ae0e0" }
-wowlua-test = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "45ec4d900b0b668c4cb68d9d3b1fe8d8a27ae0e0" }
-wowlua-lsp = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "45ec4d900b0b668c4cb68d9d3b1fe8d8a27ae0e0" }
-wowlua-span = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "45ec4d900b0b668c4cb68d9d3b1fe8d8a27ae0e0" }
-wowlua-syntax = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "45ec4d900b0b668c4cb68d9d3b1fe8d8a27ae0e0" }
+# Until it is released: wowlua's main after pull request #98 (on 0.13.6).
+# #96: the profiler's per-frame call trees, the speedscope file that keeps the
+# whole profile, the game's recordings in a library and function breakpoints
+# by definition (M7). #97: watches that only read, Blizzard's code stepped
+# into while a session runs, Blizzard's frames marked (before M8). #98: the
+# renderer writes through a staging belt (S059).
+wowlua-debug = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "98343794d27162bd116b0f84f6c2a063b11ce17b" }
+wowlua-diagnostics = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "98343794d27162bd116b0f84f6c2a063b11ce17b" }
+wowlua-engine = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "98343794d27162bd116b0f84f6c2a063b11ce17b" }
+wowlua-render = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "98343794d27162bd116b0f84f6c2a063b11ce17b" }
+wowlua-vm = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "98343794d27162bd116b0f84f6c2a063b11ce17b" }
+wowlua-driver = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "98343794d27162bd116b0f84f6c2a063b11ce17b" }
+wowlua-flavors = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "98343794d27162bd116b0f84f6c2a063b11ce17b" }
+wowlua-manifest = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "98343794d27162bd116b0f84f6c2a063b11ce17b" }
+wowlua-test = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "98343794d27162bd116b0f84f6c2a063b11ce17b" }
+wowlua-lsp = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "98343794d27162bd116b0f84f6c2a063b11ce17b" }
+wowlua-span = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "98343794d27162bd116b0f84f6c2a063b11ce17b" }
+wowlua-syntax = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "98343794d27162bd116b0f84f6c2a063b11ce17b" }
 
 [workspace.lints.rust]
 # Denied, not forbidden: one macOS module may allow it (decision S022).
@@ -54,6 +59,12 @@ unsafe_code = "deny"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
+
+[patch.crates-io]
+# egui-wgpu 0.37.0 writing its vertices and indices through a staging belt
+# kept between frames (patches/README.md, S059): `write_buffer_with` makes a
+# GPU buffer per write, and on macOS that call can wait for milliseconds.
+egui-wgpu = { path = "patches/egui-wgpu" }
 
 [profile.release]
 lto = "thin"

@@ -162,9 +162,11 @@ pub struct GameState {
     tree: Option<Json>,
     tree_generation: u64,
     pub hidden: bool,
+    /// Blizzard's frames left out (those that hold none of the addon's).
+    pub mine_only: bool,
     pub query: String,
     open: BTreeSet<usize>,
-    rows: Option<((u64, String, usize), Vec<Row>)>,
+    rows: Option<(RowsKey, Vec<Row>)>,
     pub selected: Option<usize>,
     inspected: Option<Json>,
     /// The workspace's files the inspector named, as found (once each).
@@ -187,6 +189,10 @@ pub struct GameState {
     pub ui_scale: f32,
     toast: Option<(String, f64)>,
 }
+
+/// What the frame tree's rows were made from: the tree's read, the
+/// query, the nodes open, Blizzard's frames left out.
+type RowsKey = (u64, String, usize, bool);
 
 /// What the game page asks Studio to do.
 #[derive(Clone, Debug, PartialEq)]
@@ -211,6 +217,7 @@ impl GameState {
             self.size,
             self.use_ui_scale,
             self.ui_scale,
+            self.mine_only,
         );
         let next = self.next_session;
         *self = GameState {
@@ -223,6 +230,7 @@ impl GameState {
             size: keep.3,
             use_ui_scale: keep.4,
             ui_scale: keep.5,
+            mine_only: keep.6,
             shots: std::mem::take(&mut self.shots),
             ..GameState::default()
         };
@@ -401,13 +409,21 @@ impl GameState {
 
     /// The frame tree's rows: open nodes' children, the query's matches.
     fn rows(&mut self) -> &[Row] {
-        let key = (self.tree_generation, self.query.clone(), self.open.len());
+        let key = (
+            self.tree_generation,
+            self.query.clone(),
+            self.open.len(),
+            self.mine_only,
+        );
         if self.rows.as_ref().is_none_or(|(k, _)| *k != key) {
             let mut out = Vec::new();
             let query = self.query.trim().to_lowercase();
             if let Some(Json::Array(roots)) = &self.tree {
                 for n in roots {
-                    flatten(n, 0, &self.open, &query, &mut out);
+                    if self.mine_only && !holds_mine(n) {
+                        continue;
+                    }
+                    flatten(n, 0, &self.open, &query, self.mine_only, &mut out);
                 }
             }
             self.rows = Some((key, out));
@@ -416,7 +432,22 @@ impl GameState {
     }
 }
 
-fn flatten(n: &Json, depth: usize, open: &BTreeSet<usize>, query: &str, out: &mut Vec<Row>) {
+/// Whether a frame is the addon's, or holds one of the addon's.
+fn holds_mine(n: &Json) -> bool {
+    n["blizzard"].as_bool() != Some(true)
+        || n["children"]
+            .as_array()
+            .is_some_and(|c| c.iter().any(holds_mine))
+}
+
+fn flatten(
+    n: &Json,
+    depth: usize,
+    open: &BTreeSet<usize>,
+    query: &str,
+    mine_only: bool,
+    out: &mut Vec<Row>,
+) {
     let id = n["id"].as_u64().unwrap_or(0) as usize;
     let name = n["name"].as_str().unwrap_or("").to_owned();
     let class = n["type"].as_str().unwrap_or("").to_owned();
@@ -438,8 +469,8 @@ fn flatten(n: &Json, depth: usize, open: &BTreeSet<usize>, query: &str, out: &mu
         if open.contains(&id)
             && let Some(c) = children
         {
-            for child in c {
-                flatten(child, depth + 1, open, query, out);
+            for child in c.iter().filter(|c| !mine_only || holds_mine(c)) {
+                flatten(child, depth + 1, open, query, mine_only, out);
             }
         }
         return;
@@ -453,8 +484,8 @@ fn flatten(n: &Json, depth: usize, open: &BTreeSet<usize>, query: &str, out: &mu
         out.push(Row { depth: 0, ..row });
     }
     if let Some(c) = children {
-        for child in c {
-            flatten(child, 0, open, query, out);
+        for child in c.iter().filter(|c| !mine_only || holds_mine(c)) {
+            flatten(child, 0, open, query, mine_only, out);
         }
     }
 }
@@ -913,6 +944,10 @@ pub fn frames(ui: &mut Ui, state: &mut GameState, system: &dyn System) {
         ui.horizontal(|ui| {
             if forms::checkbox(ui, &mut state.hidden, "hidden", None) {
                 state.polled.remove("tree");
+            }
+            let mut blizzards = !state.mine_only;
+            if forms::checkbox(ui, &mut blizzards, "Blizzard's", None) {
+                state.mine_only = !blizzards;
             }
             if forms::text_button(ui, "refresh").clicked() {
                 state.polled.remove("tree");
@@ -1558,6 +1593,35 @@ mod unit {
     use super::*;
     use crate::system::NoSystem;
     use serde_json::json;
+
+    /// Without Blizzard's frames: a Blizzard frame that holds the addon's
+    /// stays (the way to them), one that holds none goes.
+    #[test]
+    fn the_tree_leaves_blizzards_frames_out() {
+        let tree = json!([
+            { "id": 1, "name": "UIParent", "type": "Frame", "blizzard": true, "children": [
+                { "id": 2, "name": "MyMeter", "type": "Frame" },
+                { "id": 3, "name": "MinimapCluster", "type": "Frame", "blizzard": true }
+            ] },
+            { "id": 4, "name": "WorldFrame", "type": "Frame", "blizzard": true }
+        ]);
+        let open: BTreeSet<usize> = [1].into_iter().collect();
+        let names = |mine_only: bool| -> Vec<String> {
+            let mut out = Vec::new();
+            for n in tree.as_array().unwrap() {
+                if mine_only && !holds_mine(n) {
+                    continue;
+                }
+                flatten(n, 0, &open, "", mine_only, &mut out);
+            }
+            out.into_iter().map(|r| r.name).collect()
+        };
+        assert_eq!(
+            names(false),
+            ["UIParent", "MyMeter", "MinimapCluster", "WorldFrame"]
+        );
+        assert_eq!(names(true), ["UIParent", "MyMeter"]);
+    }
 
     #[test]
     fn keys_are_named_as_bindings_name_them() {
