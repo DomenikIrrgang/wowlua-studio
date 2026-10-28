@@ -209,6 +209,35 @@ Artboards: debugger, sessions.
 - Sessions of the addon or a test file, launch configurations, every kind
   of breakpoint, stepping through dispatch, the stack, variables with taint
   and secrets, watches, the console, the clock, `/reload`, the live world.
+- One session for the game page and the debugger; configurations in
+  `.wowlua/launch.json`; breakpoints, watches and history kept (S056).
+
+Built 2026-10-28: sessions of the addon or a test file from launch
+configurations (`.wowlua/launch.json`, VS Code's wowlua entries, a form
+that writes Studio's), their breakpoints set before they run; breakpoints
+in the editor's gutter (placed, not loaded yet, conditional, log points;
+a right click edits one) and in the breakpoints panel with their hits,
+function, event, script and timer breakpoints, what stops the session;
+the session's bar over the editor (continue, pause, the steps, restart,
+stop, `/reload`, the clock switched and advanced, the game's time) and
+the stop's banner (an error's message and stack, a blocked action's or a
+taint's chain, with help); the call stack with dispatch frames and
+Blizzard's code; variables by scope, opened as they are needed, taint and
+secrets marked; watches; the console (output, expressions in the
+selected frame, slash commands, history); the live world (units with
+threat, targeting, Lua with `wowlua:mock`, events fired, the world saved
+as a world profile); the recent sessions and the last one's summary
+(time, frames, stops, log lines, errors); debug lenses over tests,
+"debug this test", the inspector's "break on its scripts". wowlua's pull
+request #94 adds pausing a running session, hit counts, stop details,
+the clock switched while running, the world as a profile and the frame
+hook at a stop. The frame budget holds with 2,000 console lines and 300
+breakpoints: 0.52 ms median. Not yet: inline values in the editor; the
+call stack's switches (dispatch frames, Blizzard's code) beyond the
+configuration's; watches without side effects; the start's checklist;
+editing a unit in the live world; turning a breakpoint off without
+removing it; checked by hand on macOS only; wowlua's pull request #94 is
+not released.
 
 ## M7: Profiler
 
@@ -301,6 +330,9 @@ missing a part; the canvas is updated to match.
   workflow at `.github/workflows/ci.yml` (S036).
 - A recent workspace that can't be checked opens with `open` until the
   editor (M3) can open its `wowlua.json`.
+- The debugger board's bar on two rows (the buttons; what runs and the
+  clock), the configuration form as a dialog over the page, the watch
+  panel's note that a watch calling a function runs it (S056).
 
 Brought up to date on 2026-10-27: the panels board's presets
 for every page (S017), the palette's prompt (S018), the menus (S019), the

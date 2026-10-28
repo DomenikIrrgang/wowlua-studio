@@ -425,3 +425,87 @@ fn the_game_page_stays_within_the_budget() {
         assert!(at(0.99) <= BUDGET, "p99 {:.3} ms", ms(at(0.99)));
     }
 }
+
+/// The debugger page's console full (2,000 lines) and 300 breakpoints,
+/// the session running: scrolled through.
+#[test]
+fn the_debugger_page_stays_within_the_budget() {
+    use egui::UiBuilder;
+    use wowlua_studio_app::debug::{self, Config, DebugState, Kept};
+    use wowlua_studio_app::system::{GameEvent, NoSystem, Workspace};
+    let ctx = egui::Context::default();
+    let _ = common::studio(&ctx);
+    let w = Workspace {
+        root: "/p/suuui".into(),
+        name: "SuuUI".into(),
+        members: Vec::new(),
+        flavors: vec!["camelot".into()],
+        cannot_check: None,
+    };
+    let mut state = DebugState::default();
+    state.restore(Kept::default());
+    for f in 0..30 {
+        let file = w.root.join(format!("src/Module{f}.wowlua"));
+        for line in 1..=10 {
+            state.toggle(&NoSystem, &w, &file, line * 7);
+        }
+    }
+    let _ = state.begin(1, Config::addon("SuuUI"), &w);
+    for i in 0..2000 {
+        state.event(
+            1,
+            &GameEvent::Output {
+                category: "stdout".into(),
+                text: format!("SuuUI: line {i} of the session's output, as the chat shows it\n"),
+            },
+            &NoSystem,
+            &w,
+        );
+    }
+    let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(1440.0, 900.0));
+    let left = Rect::from_min_max(Pos2::ZERO, Pos2::new(330.0, 900.0));
+    let bottom = Rect::from_min_max(Pos2::new(330.0, 600.0), Pos2::new(1440.0, 900.0));
+    let mut times = Vec::new();
+    for frame in 0..300u32 {
+        let mut input = RawInput {
+            screen_rect: Some(screen),
+            ..Default::default()
+        };
+        input.events.push(Event::PointerMoved(Pos2::new(
+            160.0,
+            (frame * 3 % 900) as f32,
+        )));
+        input.events.push(Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: Vec2::new(0.0, -300.0),
+            modifiers: egui::Modifiers::NONE,
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Wheel,
+        });
+        let started = Instant::now();
+        let mut output = ctx.run_ui(input, |ui| {
+            ui.scope_builder(UiBuilder::new().max_rect(left), |ui| {
+                debug::breakpoints(ui, &mut state, &w, &NoSystem);
+            });
+            ui.scope_builder(UiBuilder::new().max_rect(bottom), |ui| {
+                debug::console(ui, &mut state, &NoSystem);
+            });
+        });
+        let _ = ctx.tessellate(output.shapes, output.pixels_per_point);
+        output.textures_delta.clear();
+        if frame >= 20 {
+            times.push(started.elapsed());
+        }
+    }
+    times.sort_unstable();
+    let at = |q: f64| times[((times.len() - 1) as f64 * q) as usize];
+    let ms = |d: Duration| d.as_secs_f64() * 1000.0;
+    eprintln!(
+        "debugger page: median {:.3} ms · p99 {:.3} ms",
+        ms(at(0.5)),
+        ms(at(0.99))
+    );
+    if !cfg!(debug_assertions) {
+        assert!(at(0.99) <= BUDGET, "p99 {:.3} ms", ms(at(0.99)));
+    }
+}

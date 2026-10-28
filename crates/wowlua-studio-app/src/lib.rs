@@ -1609,10 +1609,10 @@ impl Studio {
                     let now = ctx.input(|i| i.time);
                     let debugger =
                         matches!(&event, system::GameEvent::Reply { id, .. } if *id >= debug::IDS);
-                    if let Some(w) = self.workspace.clone() {
-                        if debugger || !matches!(event, system::GameEvent::Reply { .. }) {
-                            self.debug.event(session, &event, &*self.host.system, &w);
-                        }
+                    if let Some(w) = self.workspace.clone()
+                        && (debugger || !matches!(event, system::GameEvent::Reply { .. }))
+                    {
+                        self.debug.event(session, &event, &*self.host.system, &w);
                     }
                     if !debugger {
                         self.game.event(session, event, now);

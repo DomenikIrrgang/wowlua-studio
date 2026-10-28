@@ -841,9 +841,7 @@ fn value_text(v: &Json) -> String {
 pub fn bar(ui: &mut Ui, state: &mut DebugState, system: &dyn System) -> Option<Action> {
     let p = palette(ui.ctx());
     let mut action = None;
-    let Some(config) = state.config.clone().filter(|_| state.running()) else {
-        return None;
-    };
+    let config = state.config.clone().filter(|_| state.running())?;
     let stopped = state.stopped.is_some();
     forms::padded(ui, 10, 6, |ui| {
         ui.horizontal(|ui| {
@@ -923,7 +921,7 @@ pub fn bar(ui: &mut Ui, state: &mut DebugState, system: &dyn System) -> Option<A
         });
     });
     if let Some(stop) = state.stopped.clone() {
-        banner(ui, &stop, &p);
+        banner(ui, &stop, p);
     }
     let (r, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), Sense::hover());
     ui.painter().rect_filled(r, CornerRadius::ZERO, p.line);
@@ -1042,14 +1040,14 @@ pub fn call_stack(
         state.configs = read_configs(&workspace.root, system);
     }
     if !state.running() {
-        return run_and_debug(ui, state, workspace, &p);
+        return run_and_debug(ui, state, workspace, p);
     }
     if let Some(s) = status {
-        empty(ui, &format!("{s}…"), &p);
+        empty(ui, &format!("{s}…"), p);
         return None;
     }
     if state.stopped.is_none() {
-        empty(ui, "running · pause (f6) to see where", &p);
+        empty(ui, "running · pause (f6) to see where", p);
         return None;
     }
     let frames = state.frames.clone();
@@ -1171,8 +1169,7 @@ fn run_and_debug(
                         state.changed = true;
                     }
                     if resp.double_clicked() {
-                        state.editing =
-                            Some((Some(i).filter(|_| !state.configs.is_empty()), c.clone()));
+                        state.editing = Some(((!state.configs.is_empty()).then_some(i), c.clone()));
                     }
                 }
                 ui.add_space(8.0);
@@ -1186,7 +1183,7 @@ fn run_and_debug(
                             .color(p.ink_faint),
                     );
                     if forms::text_button(ui, "edit").clicked() {
-                        let at = Some(chosen).filter(|_| !state.configs.is_empty());
+                        let at = (!state.configs.is_empty()).then_some(chosen);
                         state.editing = Some((at, configs[chosen].clone()));
                     }
                     if forms::text_button(ui, "new").clicked() {
@@ -1425,7 +1422,7 @@ pub fn breakpoints(
 pub fn variables(ui: &mut Ui, state: &mut DebugState, system: &dyn System) {
     let p = palette(ui.ctx());
     if state.stopped.is_none() {
-        empty(ui, "The variables of the frame the session stopped in.", &p);
+        empty(ui, "The variables of the frame the session stopped in.", p);
         return;
     }
     let scopes = state.scopes.clone();
@@ -1445,23 +1442,23 @@ pub fn variables(ui: &mut Ui, state: &mut DebugState, system: &dyn System) {
                     s["name"].as_str().unwrap_or(""),
                     "",
                     "",
-                    &p,
+                    p,
                 )
                 .clicked()
                 {
                     toggle = Some(r);
                 }
                 if open {
-                    var_rows(ui, state, r, 1, &mut toggle, &p);
+                    var_rows(ui, state, r, 1, &mut toggle, p);
                 }
             }
         });
-    if let Some(r) = toggle {
-        if !state.open.remove(&r) {
-            state.open.insert(r);
-            if !state.vars.contains_key(&r) {
-                state.ask(system, Asked::Vars(r), GameRequest::Variables(r));
-            }
+    if let Some(r) = toggle
+        && !state.open.remove(&r)
+    {
+        state.open.insert(r);
+        if !state.vars.contains_key(&r) {
+            state.ask(system, Asked::Vars(r), GameRequest::Variables(r));
         }
     }
 }
@@ -1729,11 +1726,7 @@ pub fn live_world(
 ) -> Option<Action> {
     let p = palette(ui.ctx());
     if !state.running() {
-        empty(
-            ui,
-            "No session: the live world is the running client's.",
-            &p,
-        );
+        empty(ui, "No session: the live world is the running client's.", p);
         return None;
     }
     let now = ui.input(|i| i.time);
@@ -2052,4 +2045,167 @@ fn empty(ui: &mut Ui, text: &str, p: &Palette) {
     forms::padded(ui, 12, 12, |ui| {
         forms::paragraph(ui, text, 12.5, 19.0, p.ink_muted);
     });
+}
+
+#[cfg(test)]
+mod unit {
+    use super::*;
+    use crate::system::NoSystem;
+
+    fn workspace() -> Workspace {
+        Workspace {
+            root: "/p/demo".into(),
+            name: "demo".into(),
+            members: Vec::new(),
+            flavors: vec!["camelot".into()],
+            cannot_check: None,
+        }
+    }
+
+    #[test]
+    fn launch_json_with_comments_reads() {
+        let text = r#"{
+            // VS Code writes comments
+            "configurations": [
+                { "type": "wowlua", "request": "launch", "name": "SuuUI", "addon": true, },
+                /* a test, filtered */
+                { "type": "wowlua", "name": "secret // not a comment", "test": "tests/a.test.wowlua",
+                  "filter": "secret", "clock": "manual", "flavor": "camelot" },
+                { "type": "node", "name": "not ours" },
+            ],
+        }"#;
+        let j: Json = serde_json::from_str(&strip_jsonc(text)).expect("JSON");
+        let configs: Vec<Config> = j["configurations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|c| Config::of(c, true))
+            .collect();
+        assert_eq!(configs.len(), 2);
+        assert_eq!(configs[0].test, None);
+        assert_eq!(configs[1].name, "secret // not a comment");
+        assert_eq!(configs[1].filters, ["secret"]);
+        assert!(configs[1].manual);
+        // Written as `.wowlua/launch.json`, read back the same.
+        let written = configs_json(&configs);
+        let back: Json = serde_json::from_str(&written).unwrap();
+        let again: Vec<Config> = back["configurations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|c| Config::of(c, true))
+            .collect();
+        assert_eq!(again, configs);
+    }
+
+    #[test]
+    fn event_arguments_are_read_as_typed() {
+        assert_eq!(
+            parse_args(r#""player", 2, true, nil, 1.5, target"#),
+            [
+                json!("player"),
+                json!(2.0),
+                json!(true),
+                Json::Null,
+                json!(1.5),
+                json!("target")
+            ]
+        );
+    }
+
+    /// Breakpoints set and removed; a session starts with them, its
+    /// answers placing them; a stop asks for the stack and shows its frame.
+    #[test]
+    fn a_session_starts_with_the_breakpoints_and_stops() {
+        let w = workspace();
+        let file = Path::new("/p/demo/src/a.wowlua");
+        let mut state = DebugState::default();
+        state.restore(Kept::default());
+        assert!(state.kept.stop_on.contains("uncaught") && state.kept.stop_on.contains("blocked"));
+        state.toggle(&NoSystem, &w, file, 5);
+        state.toggle(&NoSystem, &w, file, 9);
+        state.toggle(&NoSystem, &w, file, 5);
+        state.set_line(
+            &NoSystem,
+            &w,
+            file,
+            LineBp {
+                line: 12,
+                log_message: Some("x {x}".into()),
+                ..LineBp::default()
+            },
+        );
+        let marks = state.marks(file);
+        assert_eq!(
+            marks.iter().map(|m| (m.line, m.kind)).collect::<Vec<_>>(),
+            [(8, BpKind::Plain), (11, BpKind::Log)]
+        );
+
+        let setup = state.begin(1, Config::addon("demo"), &w);
+        let (lines_id, first) = &setup[0];
+        assert_eq!(
+            *first,
+            GameRequest::SetBreakpoints {
+                source: "src/a.wowlua".into(),
+                lines: state.kept.lines[file].clone(),
+            }
+        );
+        assert!(*lines_id >= IDS);
+        // Placed: line 9 on code, line 12 not loaded yet.
+        state.event(
+            1,
+            &GameEvent::Reply {
+                id: *lines_id,
+                result: Ok(json!({ "kind": "breakpoints", "breakpoints": [
+                    { "id": 1, "verified": true, "line": 9 },
+                    { "id": 2, "verified": false, "line": 12 }
+                ] })),
+            },
+            &NoSystem,
+            &w,
+        );
+        let marks = state.marks(file);
+        assert_eq!(
+            marks.iter().map(|m| m.verified).collect::<Vec<_>>(),
+            [true, false]
+        );
+
+        // A stop: the stack asked (the next id), its frame shown.
+        state.event(
+            1,
+            &GameEvent::Stopped {
+                reason: "breakpoint".into(),
+                text: None,
+                hit: vec![1],
+                detail: None,
+            },
+            &NoSystem,
+            &w,
+        );
+        let stack_id = IDS + state.next;
+        state.event(
+            1,
+            &GameEvent::Reply {
+                id: stack_id,
+                result: Ok(json!({ "kind": "stackTrace", "frames": [
+                    { "id": 1, "name": "update", "kind": "lua", "source": "src/a.wowlua", "line": 9 },
+                    { "id": 2, "name": "event PLAYER_LOGIN", "kind": "dispatch", "line": 0 }
+                ] })),
+            },
+            &NoSystem,
+            &w,
+        );
+        assert_eq!(state.frame, Some(1));
+        assert_eq!(state.show, Some((file.to_path_buf(), 9)));
+        assert_eq!(state.stopped_line(file, &w), Some(8));
+
+        // Going on clears the stop; the end sums the session up.
+        state.event(1, &GameEvent::Continued, &NoSystem, &w);
+        assert_eq!(state.stopped_line(file, &w), None);
+        state.event(1, &GameEvent::Ended { error: None }, &NoSystem, &w);
+        assert!(!state.running());
+        let ended = state.ended.clone().expect("the summary");
+        assert_eq!(ended.stops, 1);
+        assert_eq!(state.kept.recent[0].0, "demo");
+    }
 }
