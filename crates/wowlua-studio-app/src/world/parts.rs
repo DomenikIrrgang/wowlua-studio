@@ -7,9 +7,9 @@ use std::collections::HashMap;
 
 use egui::{Align2, CornerRadius, Rect, Sense, Stroke, Ui, Vec2};
 use serde_json::{Value as Json, json};
-use wowlua_studio_ui::forms;
 use wowlua_studio_ui::widgets::{self, ButtonKind};
 use wowlua_studio_ui::{Face, palette};
+use wowlua_studio_ui::{controls, forms};
 
 use super::json::Key;
 use super::schema::{self, Form, Kind};
@@ -187,6 +187,46 @@ fn input(
         forms::label(ui, label);
         field(ui, cx, path, kind, width, hint);
     });
+}
+
+/// A number one step at a time under its label, with presets beside it
+/// (S065); `default` while unset.
+#[allow(clippy::too_many_arguments)]
+fn stepped(
+    ui: &mut Ui,
+    cx: &mut Cx<'_>,
+    label: &str,
+    path: Vec<Key>,
+    width: f32,
+    (min, max): (Option<f64>, Option<f64>),
+    unit: &str,
+    presets: &[(String, f64)],
+    default: f64,
+) {
+    ui.vertical(|ui| {
+        ui.set_width(width);
+        forms::label(ui, label);
+        let before = at(cx.root, &path).and_then(Json::as_f64).unwrap_or(default);
+        let mut v = before;
+        // (the presets on their own row: the columns are narrow)
+        controls::stepper(ui, &path_of(&path), &mut v, min, max, 1.0, unit);
+        let options: Vec<(&str, f64)> = presets.iter().map(|(l, n)| (l.as_str(), *n)).collect();
+        if let Some(picked) = controls::presets(ui, &options, v) {
+            v = picked;
+        }
+        if (v - before).abs() > 1e-9 {
+            cx.set(path, Some(number(v)));
+        }
+    });
+}
+
+/// A level's presets: 1, 10, the flavor's highest.
+fn level_presets(max: u32) -> Vec<(String, f64)> {
+    vec![
+        ("1".into(), 1.0),
+        ("10".into(), 10.0),
+        (format!("max · {max}"), f64::from(max)),
+    ]
 }
 
 /// A field without its label.
@@ -551,7 +591,18 @@ fn character(ui: &mut Ui, cx: &mut Cx<'_>) {
             "WoW Forever only",
         );
         input(ui, cx, "realm", p("realm"), Kind::Text, w, "Realm");
-        input(ui, cx, "level", p("level"), Kind::Number, w, "1");
+        let max = crate::flavors::max_level(look.flavor);
+        stepped(
+            ui,
+            cx,
+            &format!("level · 1 to {max}"),
+            p("level"),
+            w,
+            (Some(1.0), Some(f64::from(max))),
+            "",
+            &level_presets(max),
+            1.0,
+        );
     });
     ui.add_space(10.0);
     forms::label(ui, "class");
@@ -825,23 +876,29 @@ fn units(ui: &mut Ui, cx: &mut Cx<'_>) {
                                 w,
                                 "Player",
                             );
-                            input(
+                            let classes: Vec<&str> = classes(cx.look.flavor)
+                                .iter()
+                                .map(|(file, _)| *file)
+                                .collect();
+                            choice(
                                 ui,
                                 cx,
                                 "class",
                                 vec![name("character"), name("class")],
-                                Kind::Text,
+                                &classes,
                                 w,
-                                "WARRIOR",
                             );
-                            input(
+                            let max = crate::flavors::max_level(cx.look.flavor);
+                            stepped(
                                 ui,
                                 cx,
                                 "level",
                                 vec![name("character"), name("level")],
-                                Kind::Number,
                                 w,
-                                "1",
+                                (Some(1.0), Some(f64::from(max))),
+                                "",
+                                &level_presets(max),
+                                1.0,
                             );
                             choice(
                                 ui,
@@ -896,23 +953,27 @@ fn units(ui: &mut Ui, cx: &mut Cx<'_>) {
                                 w,
                                 "Unit",
                             );
-                            input(
-                                ui,
-                                cx,
-                                "class",
-                                unit_path(&key, "class"),
-                                Kind::Text,
-                                w,
-                                "ROGUE",
-                            );
-                            input(
+                            // (the flavor's classes; none: a creature)
+                            let classes: Vec<&str> = classes(cx.look.flavor)
+                                .iter()
+                                .map(|(file, _)| *file)
+                                .collect();
+                            choice(ui, cx, "class", unit_path(&key, "class"), &classes, w);
+                            let max = crate::flavors::max_level(cx.look.flavor);
+                            let yours = cx.root["character"]["level"].as_f64().unwrap_or(1.0);
+                            let mut presets = vec![(format!("yours · {yours}"), yours)];
+                            presets.extend(level_presets(max));
+                            presets.push(("?? (boss)".into(), -1.0));
+                            stepped(
                                 ui,
                                 cx,
                                 "level",
                                 unit_path(&key, "level"),
-                                Kind::Number,
                                 w,
-                                "1",
+                                (Some(-1.0), Some(f64::from(max) + 3.0)),
+                                "",
+                                &presets,
+                                1.0,
                             );
                             choice(ui, cx, "role", unit_path(&key, "role"), ROLES, w);
                         });
@@ -928,14 +989,18 @@ fn units(ui: &mut Ui, cx: &mut Cx<'_>) {
                                 &["hostile", "neutral", "friendly"],
                                 w,
                             );
-                            input(
+                            let yards =
+                                [("5 · melee", 5.0), ("10", 10.0), ("30", 30.0), ("40", 40.0)];
+                            stepped(
                                 ui,
                                 cx,
-                                "distance (yd)",
+                                "distance",
                                 unit_path(&key, "distance"),
-                                Kind::Number,
                                 w,
-                                "unknown",
+                                (Some(0.0), None),
+                                "yd",
+                                &yards.map(|(l, n)| (l.to_owned(), n)),
+                                20.0,
                             );
                             ui.vertical(|ui| {
                                 ui.set_width(w);

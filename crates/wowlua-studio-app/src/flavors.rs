@@ -33,6 +33,12 @@ pub fn label(id: &str) -> String {
     }
 }
 
+/// The highest level a character reaches on the flavor (the table's; 60
+/// for one wowlua doesn't know).
+pub fn max_level(id: &str) -> u32 {
+    table().resolve(id).map_or(60, |f| f.max_level)
+}
+
 /// The supported flavors' ids.
 pub fn supported_ids() -> Vec<String> {
     all()

@@ -163,7 +163,13 @@ pub fn button(
             (p.ink, p.amber_ink)
         }
     };
-    let text = galley(ui, label, font, ink, spacing);
+    // (the icon says "add": a label's own "+ " goes)
+    let shown = if icon.is_some() {
+        label.trim_start_matches("+ ")
+    } else {
+        label
+    };
+    let text = galley(ui, shown, font, ink, spacing);
     let icon_w = if icon.is_some() { icon_s + gap } else { 0.0 };
     let width = pad_l + icon_w + text.size().x + pad_r;
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::click());
