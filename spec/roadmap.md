@@ -371,8 +371,10 @@ section: newer versions when it opens, the registry searched, added,
 updated, removed, a new requirement, yanked versions. The settings page is
 Studio's own settings only. Flavors come from wowlua's flavor table
 everywhere (S064); build profiles are edited in wowlua.json's build
-section, the coverage minimums and the test screen as fields. The frame
-budget holds: 0.05 ms median,
+section, the coverage minimums and the test screen as fields. Buttons lead
+with their verb's icon (Option D) and settings are picked, not typed from
+blank: sliders, steppers with presets, tags, chips and pickers (S065). The
+frame budget holds: 0.05 ms median,
 0.12 ms p99. GitHub's sign-in uses
 the "wowlua studio" OAuth App (its client ID built in; no secret). Not yet:
 checked by hand on macOS only.
