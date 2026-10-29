@@ -492,12 +492,41 @@ impl StartPage {
                     });
                     grid(ui, w, 2, |ui, col, cw| match col {
                         0 => field(ui, "folder", |ui| {
-                            if forms::text_input(ui, &mut form.folder, cw, "~/Projects/pull-timer")
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 8.0;
+                                let choose_w = 84.0;
+                                if forms::text_input(
+                                    ui,
+                                    &mut form.folder,
+                                    cw - choose_w - 8.0,
+                                    "~/Projects/pull-timer",
+                                )
                                 .changed()
-                            {
-                                form.folder_typed = true;
-                                form.error = None;
-                            }
+                                {
+                                    form.folder_typed = true;
+                                    form.error = None;
+                                }
+                                // (the folder it goes in, picked; its own
+                                // name kept)
+                                if widgets::button(
+                                    ui,
+                                    ButtonKind::Secondary,
+                                    "choose…",
+                                    false,
+                                    None,
+                                )
+                                .clicked()
+                                    && let Some(dir) = cx.system.pick_folder("where the addon goes")
+                                {
+                                    let own = std::path::Path::new(&form.folder)
+                                        .file_name()
+                                        .map(|n| n.to_string_lossy().into_owned())
+                                        .unwrap_or_else(|| "addon".into());
+                                    form.folder = recents::tilde(&dir.join(own), cx.home);
+                                    form.folder_typed = true;
+                                    form.error = None;
+                                }
+                            });
                         }),
                         _ => field(ui, "git", |ui| {
                             forms::select(
