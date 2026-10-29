@@ -2151,7 +2151,11 @@ impl Studio {
             if self.ship.dev_on {
                 self.host.system.ship_dev(&workspace.root, None);
             }
+            // (the tab and profile chosen stay)
+            let (tab, selected) = (self.ship.tab, self.ship.selected.take());
             self.ship = ship::ShipState::default();
+            self.ship.tab = tab;
+            self.ship.selected = selected;
         }
         self.read_line_width(&workspace.root);
         self.branch = self.host.system.branch(&workspace.root);

@@ -578,6 +578,13 @@ fn stop(s: &mut Settings, kind: &str, on: bool) {
 
 /// The left panel: Studio's sections, `wowlua.json`'s, the dependencies.
 pub fn sections(ui: &mut Ui, state: &mut SettingsState, manifest_sections: &[&str]) {
+    egui::ScrollArea::vertical()
+        .id_salt("settings-sections")
+        .auto_shrink([false, false])
+        .show(ui, |ui| sections_list(ui, state, manifest_sections));
+}
+
+fn sections_list(ui: &mut Ui, state: &mut SettingsState, manifest_sections: &[&str]) {
     let p = palette(ui.ctx());
     forms::padded(ui, 14, 6, |ui| {
         ui.horizontal(|ui| {
