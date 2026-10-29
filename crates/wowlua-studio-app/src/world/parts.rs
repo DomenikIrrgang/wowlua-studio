@@ -822,7 +822,7 @@ pub fn classes(flavor: &str) -> Vec<(&'static str, &'static str)> {
 /// The races a flavor has (wowlua's flavor table), by file name.
 pub fn races(flavor: &str) -> Vec<&'static str> {
     flavor_of(flavor)
-        .map(|f| f.races.iter().map(String::as_str).collect())
+        .map(|f| f.race_files().collect())
         .unwrap_or_default()
 }
 
@@ -913,6 +913,24 @@ fn character(ui: &mut Ui, cx: &mut Cx<'_>) {
         .unwrap_or("")
         .to_string();
     let look = cx.look;
+    let race = data
+        .as_ref()
+        .and_then(|d| d["race"].as_str())
+        .unwrap_or("")
+        .to_string();
+    let chosen = data
+        .as_ref()
+        .and_then(|d| d["faction"].as_str())
+        .and_then(wowlua_flavors::Faction::parse);
+    let flavor = flavor_of(look.flavor);
+    let either = flavor
+        .and_then(|f| f.race(&race))
+        .is_some_and(wowlua_flavors::Race::is_either);
+    let faction = flavor.and_then(|f| f.faction_of(&race, chosen));
+    // (the classes the race can be, of its faction: every one without a race)
+    let allowed: Option<Vec<&str>> = flavor
+        .filter(|f| f.has_race(&race))
+        .map(|f| f.classes_for(&race, faction));
     ui.horizontal(|ui| {
         let pic = look.pic(
             if class.is_empty() { "class" } else { &class },
@@ -953,6 +971,7 @@ fn character(ui: &mut Ui, cx: &mut Cx<'_>) {
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
         for (file, short) in &list {
+            let can = allowed.as_ref().is_none_or(|a| a.contains(file));
             if tile(
                 ui,
                 w,
@@ -960,24 +979,79 @@ fn character(ui: &mut Ui, cx: &mut Cx<'_>) {
                 file,
                 "",
                 class == *file,
-                false,
-            ) {
+                !can,
+            ) && can
+            {
                 cx.set(p("class"), Some(Json::String((*file).to_string())));
             }
         }
     });
+    if allowed
+        .as_ref()
+        .is_some_and(|a| !class.is_empty() && !a.contains(&class.as_str()))
+    {
+        caption(
+            ui,
+            &format!(
+                "A {race} can't be a {class} in this flavor's client: pick another class or race."
+            ),
+        );
+    }
     caption(
         ui,
-        "By file name, as the client names classes; the icons are the installation's (CLASS_ICON_TCOORDS on the class sheet).",
+        "By file name, as the client names classes; the icons are the installation's (CLASS_ICON_TCOORDS on the class sheet). Only the classes the race can be, as the flavor's client pairs them.",
     );
     ui.add_space(10.0);
     ui.horizontal(|ui| {
         let w = col(ui, 4);
         let races = races(look.flavor);
-        choice(ui, cx, "race", p("race"), &races, w);
+        // The race; a race of one faction takes the chosen one away.
+        ui.vertical(|ui| {
+            ui.set_width(w);
+            forms::label(ui, "race");
+            let mut list: Vec<&str> = vec!["(none)"];
+            list.extend(races.iter().copied());
+            if !race.is_empty() && !list.contains(&race.as_str()) {
+                list.push(&race);
+            }
+            let mut index = list.iter().position(|r| *r == race).unwrap_or(0);
+            let opts: Vec<(&str, bool)> = list.iter().map(|r| (*r, true)).collect();
+            if forms::select(ui, &path_of(&p("race")), &opts, &mut index, w) {
+                let picked = (index > 0).then(|| list[index].to_owned());
+                let keeps = picked.as_deref().is_some_and(|r| {
+                    flavor
+                        .and_then(|f| f.race(r))
+                        .is_some_and(wowlua_flavors::Race::is_either)
+                });
+                cx.set(p("race"), picked.map(Json::String));
+                if !keeps && chosen.is_some() {
+                    cx.set(p("faction"), None);
+                }
+            }
+        });
         choice(ui, cx, "sex", p("sex"), SEX, w);
         choice(ui, cx, "role", p("role"), ROLES, w);
-        choice(ui, cx, "faction", p("faction"), &["Alliance", "Horde"], w);
+        // The faction: the race's, chosen only where the race lets you.
+        if either {
+            choice(ui, cx, "faction", p("faction"), &["Alliance", "Horde"], w);
+        } else {
+            ui.vertical(|ui| {
+                ui.set_width(w);
+                forms::label(ui, "faction");
+                let shown = match faction {
+                    Some(f) => format!("{f} · from {race}"),
+                    None => "from the race".to_owned(),
+                };
+                ui.add_sized(
+                    Vec2::new(w, forms::CONTROL_H),
+                    egui::Label::new(
+                        egui::RichText::new(shown)
+                            .font(Face::Plex.at(12.0))
+                            .color(palette(ui.ctx()).ink_muted),
+                    ),
+                );
+            });
+        }
     });
     ui.add_space(10.0);
     let health_max = max_key(data.as_ref(), "maxHealth", "healthMax");
@@ -1750,6 +1824,52 @@ fn spells(ui: &mut Ui, cx: &mut Cx<'_>) {
         }
         cx.set(vec![name("trained")], Some(json!(ids)));
     };
+
+    // The race's spells (T513): known with the race, not listed.
+    let race = root["character"]["race"].as_str().unwrap_or("");
+    if let Some(f) = flavor_of(cx.look.flavor)
+        && f.has_race(race)
+    {
+        let faction = f.faction_of(
+            race,
+            root["character"]["faction"]
+                .as_str()
+                .and_then(wowlua_flavors::Faction::parse),
+        );
+        let class_file = (!class.is_empty()).then_some(class.as_str());
+        let racials: Vec<&wowlua_flavors::Racial> = f.racials(race, faction, class_file).collect();
+        ui.label(
+            egui::RichText::new(format!("From the race · {race}"))
+                .font(Face::PlexMedium.at(12.0))
+                .color(p.ink),
+        );
+        if racials.is_empty() {
+            caption(
+                ui,
+                "This flavor's racial spells weren't read from its client: the race's spells come from the game's tables.",
+            );
+        } else {
+            ui.horizontal_wrapped(|ui| {
+                for r in &racials {
+                    egui::Frame::new()
+                        .stroke(Stroke::new(1.0, p.line))
+                        .inner_margin(egui::Margin::symmetric(8, 4))
+                        .show(ui, |ui| {
+                            ui.label(
+                                egui::RichText::new(format!("{} · {}", r.name, r.spell))
+                                    .font(Face::Plex.at(12.0))
+                                    .color(p.ink),
+                            );
+                        });
+                }
+            });
+            caption(
+                ui,
+                "Known with the race, without training: not in the profile.",
+            );
+        }
+        ui.add_space(10.0);
+    }
 
     // The class's spells.
     if class.is_empty() {
