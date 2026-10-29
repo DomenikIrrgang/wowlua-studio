@@ -9,7 +9,6 @@ pub mod page;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
 
 use model::{BlameLine, Branch, Change, Commit, CommitFile, Diff, DiffOf, RemoteError, Status};
 
@@ -85,7 +84,8 @@ pub struct GitState {
     pub harness: Option<String>,
     asked: HashSet<String>,
     stale: bool,
-    last_fetch: Option<Instant>,
+    /// When Studio last fetched (egui's clock, seconds).
+    last_fetch: Option<f64>,
     /// Who last changed each line of a file (path relative to the root),
     /// for the editor's blame (S070).
     pub blame: HashMap<String, (u64, Vec<BlameLine>)>,
@@ -95,7 +95,7 @@ pub struct GitState {
     pub marks: HashMap<String, (u64, Vec<(usize, crate::editor::view::GitMark)>)>,
     /// When a file's blame was last asked for (asked again at most every
     /// 1.5 s while it is edited).
-    pub blame_at: HashMap<String, Instant>,
+    pub blame_at: HashMap<String, f64>,
     /// A gutter mark's hunk shown: the file, its line, where.
     pub mark_popup: Option<(String, usize, egui::Pos2)>,
     head_asked: HashSet<String>,
@@ -193,7 +193,7 @@ impl GitState {
 
     /// Each frame: the status read when stale, Studio's own fetch every
     /// `fetch_minutes` (0: never; S070).
-    pub fn tick(&mut self, system: &dyn System, fetch_minutes: u32) {
+    pub fn tick(&mut self, system: &dyn System, fetch_minutes: u32, now: f64) {
         if self.root.is_none() {
             return;
         }
@@ -203,13 +203,10 @@ impl GitState {
         }
         let due = match self.last_fetch {
             None => true,
-            Some(at) => {
-                fetch_minutes > 0
-                    && at.elapsed() >= Duration::from_secs(u64::from(fetch_minutes) * 60)
-            }
+            Some(at) => fetch_minutes > 0 && now - at >= f64::from(fetch_minutes) * 60.0,
         };
         if due && self.status.as_ref().is_some_and(|s| s.upstream.is_some()) {
-            self.last_fetch = Some(Instant::now());
+            self.last_fetch = Some(now);
             if let Some(root) = &self.root {
                 system.git(root, GitRequest::Fetch { quiet: true });
             }

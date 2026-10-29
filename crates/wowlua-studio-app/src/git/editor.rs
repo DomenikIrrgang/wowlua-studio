@@ -3,7 +3,6 @@
 //! cursor's line, and a merge conflict's lenses.
 
 use std::path::Path;
-use std::time::{Duration, Instant};
 
 use egui::{Align2, Id, Order, Pos2, Stroke};
 use wowlua_studio_ui::widgets::{self, ButtonKind};
@@ -17,8 +16,8 @@ use crate::editor::doc::Document;
 use crate::editor::view::{GitMark, Lens, LensAct, LensClick, Take, Tone};
 use crate::system::{GitRequest, System};
 
-/// How often blame is asked again while a file is edited.
-const BLAME_EVERY: Duration = Duration::from_millis(1500);
+/// How often blame is asked again while a file is edited (seconds).
+const BLAME_EVERY: f64 = 1.5;
 
 /// The marks of `text` against `head` (the file at the last commit):
 /// added, changed, and where lines were removed.
@@ -171,6 +170,7 @@ pub fn of(
     path: &Path,
     doc: &Document,
     blame: bool,
+    now: f64,
 ) -> (Vec<(usize, GitMark)>, Vec<Conflict>, Option<String>) {
     let list = conflicts(doc);
     let Some(rel) = state.relative(path) else {
@@ -209,9 +209,9 @@ pub fn of(
         let due = state
             .blame_at
             .get(&rel)
-            .is_none_or(|at| at.elapsed() >= BLAME_EVERY);
+            .is_none_or(|at| now - at >= BLAME_EVERY);
         let lines = if due {
-            state.blame_at.insert(rel.clone(), Instant::now());
+            state.blame_at.insert(rel.clone(), now);
             state.blame_of(system, &rel, doc.version, || doc.text())
         } else {
             state.blame.get(&rel).map(|(_, l)| l.as_slice())

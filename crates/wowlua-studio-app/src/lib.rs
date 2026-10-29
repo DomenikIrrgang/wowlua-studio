@@ -475,8 +475,11 @@ impl Studio {
     pub fn ui(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
         self.events(&ctx);
-        self.git
-            .tick(&*self.host.system, self.settings.git_fetch_minutes);
+        self.git.tick(
+            &*self.host.system,
+            self.settings.git_fetch_minutes,
+            ctx.input(|i| i.time),
+        );
         let focused = ctx.input(|i| i.focused);
         if focused && !self.focused {
             // Another window may have changed the recents, Git the branch.
@@ -866,6 +869,7 @@ impl Studio {
                             path,
                             &tab.doc,
                             studio_settings.blame,
+                            ui.ctx().input(|i| i.time),
                         );
                         lenses.extend(git::editor::conflict_lenses(path, &conflicts));
                         let line = tab.doc.selection.head.line;
