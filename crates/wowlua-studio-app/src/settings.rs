@@ -782,7 +782,16 @@ pub fn studio(
                             if let Some(GithubSignIn::Code { code, url }) = &state.github {
                                 forms::callout(ui, CalloutKind::Note, |ui| {
                                     ui.horizontal_wrapped(|ui| {
-                                        forms::paragraph(ui, &format!("Enter {code} at {url} · waiting for GitHub…"), 12.5, 19.0, p.ink);
+                                        forms::paragraph(
+                                            ui,
+                                            &format!("Enter {code} at {url} (opened in your browser; the code is copied) · waiting for GitHub…"),
+                                            12.5,
+                                            19.0,
+                                            p.ink,
+                                        );
+                                        if forms::text_button(ui, "open github.com").clicked() {
+                                            ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+                                        }
                                         if forms::text_button(ui, "copy the code").clicked() {
                                             ui.ctx().copy_text(code.clone());
                                         }

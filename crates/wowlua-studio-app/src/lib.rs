@@ -2058,7 +2058,15 @@ impl Studio {
                 Event::Deps(event) => self.settings_page.deps.event(event),
                 Event::Settings(info) => self.settings_page.info(info),
                 Event::Updates(check) => self.settings_page.updates(check),
-                Event::Github(event) => self.settings_page.github(event),
+                Event::Github(event) => {
+                    // GitHub's code: its page opens in the browser, the code
+                    // on the clipboard to paste there (S062).
+                    if let system::GithubSignIn::Code { code, url } = &event {
+                        ctx.open_url(egui::OpenUrl::new_tab(url));
+                        ctx.copy_text(code.clone());
+                    }
+                    self.settings_page.github(event)
+                }
                 Event::Installation(_) | Event::Ui { .. } => {}
             }
             ctx.request_repaint();
