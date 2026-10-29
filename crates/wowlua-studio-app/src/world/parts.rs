@@ -1369,17 +1369,36 @@ fn units(ui: &mut Ui, cx: &mut Cx<'_>) {
                                         half,
                                         "—",
                                     );
+                                    // (UnitClassification's answers)
                                     field(
                                         ui,
                                         cx,
                                         unit_path(&key, "classification"),
-                                        Kind::Text,
+                                        Kind::Choice(
+                                            [
+                                                "normal",
+                                                "elite",
+                                                "rare",
+                                                "rareelite",
+                                                "worldboss",
+                                                "trivial",
+                                                "minus",
+                                            ]
+                                            .map(str::to_owned)
+                                            .to_vec(),
+                                        ),
                                         half,
                                         "normal",
                                     );
                                 });
                             });
                         });
+                        // A unit with a class has every power it has (T512).
+                        if let Some(class) = data["class"].as_str().filter(|c| !c.is_empty()) {
+                            ui.add_space(6.0);
+                            let w = col(ui, 4);
+                            class_powers(ui, cx, &[name("units"), key.clone()], class, w);
+                        }
                         ui.add_space(6.0);
                         ui.horizontal_wrapped(|ui| {
                             let player = data["player"] == Json::Bool(true);
