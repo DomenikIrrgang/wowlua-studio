@@ -14,9 +14,9 @@ use wowlua_driver::project::{LoadOptions, find_manifest, load_projects};
 use wowlua_driver::scaffold::{InitRequest, NewRequest};
 use wowlua_manifest::model::{CheckMode, PackageKind};
 use wowlua_studio_app::system::{
-    Adopt, AdoptPreview, ClientFolder, Entry, Event, FileChange, Found, FoundIn, Highlight, Hit,
-    Installation, MOST_FOUND, Member, NewAddon, Opened, PackageNames, Search, ShipEvent, Syntax,
-    System, UiState, Workspace,
+    Adopt, AdoptPreview, ClientFolder, DepsEvent, Entry, Event, FileChange, Found, FoundIn,
+    Highlight, Hit, Installation, MOST_FOUND, Member, NewAddon, Opened, PackageNames, Search,
+    ShipEvent, Syntax, System, UiState, Workspace,
 };
 
 /// Folders the explorer and the watcher leave out: build output and the
@@ -44,6 +44,8 @@ pub struct NativeSystem {
     gamedata: std::sync::Arc<crate::gamedata::GameData>,
     /// The ship page's dev loop (S061).
     dev: RefCell<crate::ship::Dev>,
+    /// Set to stop a GitHub sign-in under way (S062).
+    github_stop: RefCell<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl NativeSystem {
@@ -66,6 +68,7 @@ impl NativeSystem {
             game_screen: RefCell::new(None),
             gamedata: std::sync::Arc::default(),
             dev: RefCell::default(),
+            github_stop: RefCell::default(),
         }
     }
 
@@ -246,7 +249,7 @@ impl System for NativeSystem {
         let watcher = watcher.and_then(|mut w| w.watch(root, RecursiveMode::Recursive).map(|()| w));
         match watcher {
             Ok(w) => *self.watcher.borrow_mut() = Some(w),
-            Err(e) => eprintln!("wowlua studio: cannot watch {}: {e}", root.display()),
+            Err(e) => crate::log::line(&format!("cannot watch {}: {e}", root.display())),
         }
     }
 
@@ -347,7 +350,7 @@ impl System for NativeSystem {
             command.arg(path);
         }
         if let Err(e) = command.spawn() {
-            eprintln!("wowlua studio: cannot open a new window: {e}");
+            crate::log::line(&format!("cannot open a new window: {e}"));
         }
     }
 
@@ -570,6 +573,34 @@ impl System for NativeSystem {
         });
     }
 
+    fn find(&self, what: wowlua_studio_app::system::Find, flavor: &str, query: &str) {
+        let data = self.gamedata.clone();
+        let (flavor, query) = (flavor.to_string(), query.to_string());
+        self.spawn(move || {
+            let rows = match what {
+                wowlua_studio_app::system::Find::Spell => data.search_spells(&flavor, &query),
+                wowlua_studio_app::system::Find::Item => data.search_items(&flavor, &query),
+            };
+            Event::Found(what, flavor, query, rows)
+        });
+    }
+
+    fn binding_actions(&self, flavor: &str) -> Vec<(String, String)> {
+        crate::bindings::actions(flavor)
+    }
+
+    fn cvars(&self, flavor: &str) -> Vec<wowlua_studio_app::system::CVarInfo> {
+        wowlua_engine::cvars(flavor)
+            .into_iter()
+            .map(|c| wowlua_studio_app::system::CVarInfo {
+                name: c.name,
+                default: c.default,
+                secure: c.secure,
+                read_only: c.read_only,
+            })
+            .collect()
+    }
+
     fn world_profiles(&self, root: &Path) -> Vec<wowlua_studio_app::system::WorldProfile> {
         crate::world::profiles(root)
     }
@@ -603,13 +634,111 @@ impl System for NativeSystem {
             "xdg-open"
         };
         if let Err(e) = Command::new(opener).arg(path).spawn() {
-            eprintln!("wowlua studio: cannot show {}: {e}", path.display());
+            crate::log::line(&format!("cannot show {}: {e}", path.display()));
         }
+    }
+
+    fn settings_info(&self) {
+        self.spawn(|| Event::Settings(crate::settings::info()));
+    }
+
+    fn log_file(&self) -> Option<PathBuf> {
+        crate::log::path()
+    }
+
+    fn clear_check_cache(&self) {
+        crate::settings::clear_check_cache();
+    }
+
+    fn clear_art_cache(&self) {
+        crate::settings::clear_art_cache();
+    }
+
+    fn check_updates(&self) {
+        self.spawn(|| Event::Updates(crate::settings::check_updates()));
+    }
+
+    fn refresh_ui(&self, flavor: &str) {
+        if let Err(e) = wowlua_test::forget_ui_source(flavor) {
+            crate::log::line(&e);
+        }
+        self.download_ui(flavor);
+    }
+
+    fn github_sign_in(&self, on: bool) {
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let old = std::mem::replace(&mut *self.github_stop.borrow_mut(), stop.clone());
+        old.store(true, std::sync::atomic::Ordering::Relaxed);
+        if !on {
+            crate::settings::github_sign_out();
+            return;
+        }
+        let send = std::sync::Mutex::new(self.send.clone());
+        let ctx = self.ctx.clone();
+        std::thread::spawn(move || {
+            crate::settings::github_sign_in(stop, |event| {
+                if let Ok(send) = send.lock() {
+                    let _ = send.send(Event::Github(event));
+                }
+                ctx.request_repaint();
+            });
+        });
+    }
+
+    fn claude_key(&self, key: Option<String>) {
+        crate::settings::claude_key(key.as_deref());
+    }
+
+    fn deps_read(&self, dir: &Path) {
+        let dir = dir.to_path_buf();
+        self.spawn(move || Event::Deps(DepsEvent::Read(Box::new(crate::deps::read(&dir)))));
+    }
+
+    fn deps_outdated(&self, dir: &Path) {
+        let dir = dir.to_path_buf();
+        self.spawn(move || Event::Deps(DepsEvent::Outdated(crate::deps::outdated(&dir))));
+    }
+
+    fn deps_search(&self, _dir: &Path, query: &str) {
+        let query = query.to_owned();
+        self.spawn(move || {
+            let found = crate::deps::search(&query);
+            Event::Deps(DepsEvent::Searched { query, found })
+        });
+    }
+
+    fn deps_versions(&self, _dir: &Path, name: &str) {
+        let name = name.to_owned();
+        self.spawn(move || {
+            let versions = crate::deps::versions(&name);
+            Event::Deps(DepsEvent::Versions { name, versions })
+        });
+    }
+
+    fn deps_run(&self, dir: &Path, job: u64, command: wowlua_studio_app::system::DepsCommand) {
+        let dir = dir.to_path_buf();
+        self.spawn(move || {
+            let (ok, output) = crate::deps::run(&dir, &command);
+            Event::Deps(DepsEvent::Ran {
+                job,
+                command: command.line(),
+                ok,
+                output,
+            })
+        });
     }
 
     fn ship_read(&self, root: &Path) {
         let root = root.to_path_buf();
         self.spawn(move || Event::Ship(ShipEvent::Read(Box::new(crate::ship::read(&root)))));
+    }
+
+    fn profiles_read(&self, dir: &Path) {
+        let dir = dir.to_path_buf();
+        self.spawn(move || {
+            let read = crate::ship::read(&dir).map(|facts| facts.profiles);
+            Event::Profiles { dir, read }
+        });
     }
 
     fn ship_tokens(&self, targets: Vec<wowlua_studio_app::system::ShipTarget>) {

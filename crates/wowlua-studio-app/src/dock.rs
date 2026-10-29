@@ -805,8 +805,28 @@ fn draw_floating(
     actions: &mut Vec<Action>,
 ) {
     let ctx = ui.ctx().clone();
+    // (the setting "floating panels as OS windows" off: windows of Studio's
+    // own, S062)
+    let os_windows = crate::state::prefs(&ctx).float_windows;
     for f in &layout.floating {
         let panel = f.panel;
+        if !os_windows {
+            let mut open = true;
+            egui::Window::new(panel.title())
+                .id(egui::Id::unique(("wowlua-studio-float-in", panel)))
+                .default_size(f.size)
+                .open(&mut open)
+                .show(&ctx, |ui| {
+                    let rect = ui.available_rect_before_wrap();
+                    let group = Group::of(&[panel]);
+                    draw_group(ui, rect, Dock::Main, None, &group, state, content, actions);
+                    ui.allocate_rect(rect, egui::Sense::hover());
+                });
+            if !open {
+                actions.push(Action::Place(panel, Target::Dock(Dock::Main)));
+            }
+            continue;
+        }
         let builder = ViewportBuilder::default()
             .with_title(format!("{} · wowlua studio", panel.title()))
             .with_inner_size(f.size)

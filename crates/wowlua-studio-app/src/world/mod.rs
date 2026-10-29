@@ -139,6 +139,9 @@ const DESIGNED: &[&str] = &[
     "equipment",
     "bags",
     "savedVariables",
+    "money",
+    "position",
+    "screen",
 ];
 
 /// Game art read from the installation, as textures (S060): asked for
@@ -233,6 +236,10 @@ pub struct WorldState {
     pub(crate) spell_query: String,
     spell_asked: String,
     pub(crate) spells: Option<(String, Vec<SpellRow>)>,
+    /// What the ID pickers found, by what, flavor and query; the
+    /// questions asked.
+    pub(crate) found: HashMap<(crate::system::Find, String, String), Vec<SpellRow>>,
+    found_asked: std::collections::HashSet<(crate::system::Find, String, String)>,
     /// The class's spells from the client, as asked for a class.
     class_asked: String,
     pub(crate) class_spells: Option<(String, Vec<ClassSpell>)>,
@@ -270,6 +277,8 @@ impl Default for WorldState {
             spells: None,
             class_asked: String::new(),
             class_spells: None,
+            found: HashMap::new(),
+            found_asked: std::collections::HashSet::new(),
             all_ranks: false,
             pending: Vec::new(),
         }
@@ -908,6 +917,7 @@ pub fn editor(
                     state.class_spells = None;
                     system.class_spells(&flavor, &class);
                 }
+                let mut asks: Vec<(crate::system::Find, String)> = Vec::new();
                 let mut cx = parts::Cx {
                     root: &root,
                     changes: &mut changes,
@@ -926,6 +936,8 @@ pub fn editor(
                     spells: state.spells.as_ref(),
                     class_spells: state.class_spells.as_ref(),
                     all_ranks: &mut state.all_ranks,
+                    found: &state.found,
+                    ask: &mut asks,
                 };
                 if DESIGNED.contains(&part.as_str()) {
                     if let Some(a) = parts::designed(ui, &mut cx, &part) {
@@ -933,6 +945,15 @@ pub fn editor(
                     }
                 } else {
                     parts::generic(ui, &mut cx, &part, schema.as_ref());
+                }
+                // What the ID pickers asked for, each once.
+                for (what, query) in asks {
+                    if state
+                        .found_asked
+                        .insert((what, flavor.clone(), query.clone()))
+                    {
+                        system.find(what, &flavor, &query);
+                    }
                 }
             });
         });
@@ -1371,7 +1392,7 @@ pub fn live(
                         // (the panel is narrow: the name, then the button)
                         ui.vertical(|ui| {
                             forms::text_input(ui, &mut state.snapshot_name, ui.available_width().min(220.0), "raid-pull");
-                            if widgets::button(ui, ButtonKind::Ghost, "save the running world as a profile", true, None)
+                            if widgets::button(ui, ButtonKind::Tertiary, "save the running world as a profile", true, None)
                                 .clicked()
                                 && valid_name(&state.snapshot_name)
                             {

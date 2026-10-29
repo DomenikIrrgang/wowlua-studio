@@ -110,6 +110,28 @@ icons! {
     Minimize = "minimize", "M3 8.5h10";
     Maximize = "maximize", "M3.25 3.25h9.5v9.5h-9.5z";
     Close = "close", "M3.5 3.5l9 9 M12.5 3.5l-9 9";
+    // Verbs: every button leads with one (Option D, the design system's
+    // VerbIcons; the others are above: add, close, watch, run, stop, …)
+    Subtract = "subtract", "M2.75 8h10.5";
+    Edit = "edit", "M10.5 2.5l3 3-8 8h-3v-3z M8.5 4.5l3 3";
+    Remove = "remove", "M2.75 4.5h10.5 M6.25 4.5v-1.75h3.5v1.75 M4.25 4.5l.75 9h6l.75-9";
+    Reset = "reset", "M5.5 2.75L2.75 5.5l2.75 2.75 M2.75 5.5h8.5v7.75h-7";
+    Confirm = "confirm", "M2.75 8.5l3.5 3.5 7-7.25";
+    Copy = "copy", "M5.75 5.75h7.5v7.5h-7.5z M10.25 5.75v-3h-7.5v7.5h3";
+    Open = "open", "M2.75 8h10 M9 4.25L12.75 8 9 11.75";
+    External = "external", "M9.25 2.75h4v4 M13.25 2.75l-6 6 M11.25 9.5v3.75h-8.5v-8.5h3.75";
+    Replace = "replace", "M2.75 5.25h8 M8.25 2.75l2.5 2.5-2.5 2.5 M13.25 10.75h-8 M7.75 8.25l-2.5 2.5 2.5 2.5";
+    Refresh = "refresh", "M13.25 8v2.25l-3 3h-4.5l-3-3v-4.5l3-3h5 M8.75.75l2 2-2 2";
+    Update = "update", "M2.75 2.75h10.5 M8 13.25V5.75 M4.75 9L8 5.75 11.25 9";
+    Explain = "explain", "M5.25 5.5V2.75h5.5v4L8 8.75v1.75 M8 12.5v.75";
+    SignIn = "sign-in", "M7.25 2.75h6v10.5h-6 M1.75 8h7.5 M6.5 5.25L9.25 8 6.5 10.75";
+    SignOut = "sign-out", "M8.75 2.75h-6v10.5h6 M6.25 8h7.5 M11 5.25L13.75 8 11 10.75";
+    Send = "send", "M2.25 2.75l11.5 5.25-11.5 5.25 2-5.25z M4.25 8h4";
+    Reply = "reply", "M6.25 3.75l-3.5 3.5 3.5 3.5 M2.75 7.25h7.5l3 3v2.5";
+    Float = "float", "M1.75 5.75h8.5v7.5h-8.5z M5.75 5.75v-3h8.5v7.5h-4";
+    Move = "move", "M8 1.75v12.5 M1.75 8h12.5 M5.75 4L8 1.75 10.25 4 M5.75 12L8 14.25 10.25 12 M4 5.75L1.75 8 4 10.25 M12 5.75L14.25 8 12 10.25";
+    Previous = "previous", "M8 13.25v-10.5 M4.25 6.5L8 2.75l3.75 3.75";
+    Next = "next", "M8 2.75v10.5 M4.25 9.5L8 13.25l3.75-3.75";
 }
 
 /// A run of straight lines in the 16 × 16 box.

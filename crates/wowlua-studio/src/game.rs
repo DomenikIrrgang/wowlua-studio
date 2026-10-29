@@ -31,7 +31,7 @@ pub struct Frames {
     scene: Option<wowlua_engine::scene::Scene>,
     /// Scenes the session handed over.
     count: u64,
-    assets: Option<ClientAssets>,
+    assets: Option<crate::art::CachedAssets>,
     /// The game's time and frames run, as the hook last saw them.
     time: f64,
     frames_run: u64,
@@ -410,8 +410,10 @@ fn run(
         .flat_map(|c| c.folders.iter().cloned())
         .collect();
     let install = wowlua_driver::install::find_wow(None).ok();
+    // (the settings can leave the installation's art out, S062)
     let casc = install
         .as_ref()
+        .filter(|_| launch.art)
         .and_then(|i| wowlua_render::client::open_client(i, &folders).ok());
     let installation = casc
         .as_ref()
@@ -425,7 +427,11 @@ fn run(
         }
     }
     if let Ok(mut f) = frames.lock() {
-        f.assets = Some(ClientAssets::new(casc, &addons));
+        f.assets = Some(crate::art::CachedAssets::new(
+            ClientAssets::new(casc, &addons),
+            install.as_deref(),
+            &folders,
+        ));
     }
     let camera = wowlua_test::camera::camera(project, &build, &flavor);
     // Each client made (the first, a `/reload`'s) under the debugger, its
@@ -442,12 +448,20 @@ fn run(
         &build,
         &flavor,
         blizzard_ui,
-        Switches::default(),
+        Switches {
+            game_data: launch.game_data,
+            ..Switches::default()
+        },
         Some(instrument),
         camera.clone(),
     );
     if let Some(p) = launch.profile.clone() {
         suite.profile = Some(p);
+    }
+    // The settings' screen, where the package's `test.screen` sets none.
+    if let (None, Some((width, height))) = (&test_settings.screen, launch.screen) {
+        suite.screen.width = width;
+        suite.screen.height = height;
     }
     let screenshot: Option<wowlua_debug::controller::Screenshotter> = camera.map(|camera| {
         let shoot: wowlua_debug::controller::Screenshotter = Box::new(

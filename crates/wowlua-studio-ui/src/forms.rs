@@ -47,6 +47,55 @@ pub fn help(ui: &mut Ui, text: &str) -> Response {
     paragraph(ui, text, 12.0, 18.0, p.ink_muted)
 }
 
+/// A page's bar: one row `CONTROL_H` tall, its title and controls centred
+/// on it (a plain horizontal row centres only on its first item's height).
+pub fn bar<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+    ui.allocate_ui_with_layout(
+        Vec2::new(ui.available_width(), CONTROL_H),
+        egui::Layout::left_to_right(egui::Align::Center),
+        add,
+    )
+    .inner
+}
+
+/// A row of two columns, `left` and `control` wide, centred on each other:
+/// the shorter pads by half of what it lacks, by their heights of the last
+/// frame (one more frame when a height changes). `id` names the row.
+pub fn centred_row(
+    ui: &mut Ui,
+    id: impl std::hash::Hash + std::fmt::Debug,
+    left: f32,
+    control: f32,
+    add_left: impl FnOnce(&mut Ui),
+    add_control: impl FnOnce(&mut Ui),
+) {
+    let id = egui::Id::unique(("wowlua-studio-centred-row", id));
+    let (left_h, control_h): (f32, f32) = ui.data(|d| d.get_temp(id)).unwrap_or_default();
+    let tall = left_h.max(control_h);
+    let mut measured = (0.0, 0.0);
+    ui.horizontal(|ui| {
+        ui.vertical(|ui| {
+            ui.set_width(left);
+            ui.add_space(((tall - left_h) / 2.0).max(0.0));
+            let top = ui.cursor().top();
+            add_left(ui);
+            measured.0 = ui.min_rect().bottom() - top;
+        });
+        ui.vertical(|ui| {
+            ui.set_width(control);
+            ui.set_max_width(control);
+            ui.add_space(((tall - control_h) / 2.0).max(0.0));
+            let top = ui.cursor().top();
+            add_control(ui);
+            measured.1 = ui.min_rect().bottom() - top;
+        });
+    });
+    if (measured.0 - left_h).abs() > 0.5 || (measured.1 - control_h).abs() > 0.5 {
+        ui.data_mut(|d| d.insert_temp(id, measured));
+        ui.ctx().request_repaint();
+    }
+}
+
 /// A one-line text input, `width` wide; `hint` shows while it is empty.
 pub fn text_input(ui: &mut Ui, text: &mut String, width: f32, hint: &str) -> Response {
     let p = palette(ui.ctx());
@@ -145,11 +194,24 @@ pub fn select(
     );
     widgets::focus_ring(ui, rect, &response);
     let mut changed = false;
+    // (the list is as wide as its longest option, never narrower than the
+    // box)
+    let widest = options
+        .iter()
+        .map(|(text, _)| {
+            ui.fonts_mut(|f| {
+                f.layout_no_wrap((*text).to_owned(), Face::Plex.at(13.0), p.ink)
+                    .size()
+                    .x
+            })
+        })
+        .fold(0.0_f32, f32::max);
+    let list_w = width.max(widest + 8.0 + 16.0);
     egui::Popup::menu(&response)
         .id(egui::Id::unique(("wowlua-studio-select", id)))
-        .width(width)
+        .width(list_w)
         .show(|ui| {
-            ui.set_min_width(width - 8.0);
+            ui.set_min_width(list_w - 8.0);
             for (i, &(text, can)) in options.iter().enumerate() {
                 let w = ui.available_width();
                 let (r, row) = ui.allocate_exact_size(
@@ -252,36 +314,10 @@ pub fn checkbox(ui: &mut Ui, checked: &mut bool, label: &str, help: Option<&str>
     toggled
 }
 
-/// A text button: `[ label ]`, `amber-ink` under the pointer.
+/// An inline action (Option D): its verb's icon, then the label,
+/// underlined under the pointer; a removing one is danger.
 pub fn text_button(ui: &mut Ui, label: &str) -> Response {
-    let p = palette(ui.ctx());
-    let (font, spacing) = widgets::label_font(12.0);
-    let open = widgets::galley(ui, "[ ", font.clone(), p.ink_muted, 0.0);
-    let close = widgets::galley(ui, " ]", font.clone(), p.ink_muted, 0.0);
-    let probe = widgets::galley(ui, label, font.clone(), p.ink, spacing);
-    let w = open.size().x + probe.size().x + close.size().x;
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(w, 20.0), Sense::click());
-    response.widget_info(|| WidgetInfo::labeled(Role::Button, ui.is_enabled(), label));
-    let ink = if response.hovered() {
-        p.amber_ink
-    } else {
-        p.ink
-    };
-    let text = widgets::galley(ui, label, font, ink, spacing);
-    let cy = rect.center().y;
-    let painter = ui.painter();
-    let mut x = rect.left();
-    painter.galley(
-        Pos2::new(x, cy - open.size().y / 2.0),
-        open.clone(),
-        p.ink_muted,
-    );
-    x += open.size().x;
-    painter.galley(Pos2::new(x, cy - text.size().y / 2.0), text.clone(), ink);
-    x += text.size().x;
-    painter.galley(Pos2::new(x, cy - close.size().y / 2.0), close, p.ink_muted);
-    widgets::focus_ring(ui, rect, &response);
-    response.on_hover_cursor(CursorIcon::PointingHand)
+    widgets::button(ui, widgets::ButtonKind::Inline, label, true, None)
 }
 
 /// A card: a `bg-200` box with a 36 px head (`title`, then `head` from the

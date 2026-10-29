@@ -18,7 +18,10 @@ use crate::editor::view::{Lens, LensAct, LensClick, Tone};
 use crate::lsp::Discovered;
 use crate::system::{System, TestDone, TestEvent, TestFile, TestOutcome, TestRequest, Workspace};
 
-const ROW_H: f32 = 24.0;
+/// A row, at the settings' density (S062).
+fn row_h() -> f32 {
+    wowlua_studio_ui::row(24.0)
+}
 
 /// The results panel's tabs.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -685,12 +688,12 @@ pub fn explorer(ui: &mut Ui, state: &mut TestsState, workspace: &Workspace) -> O
     }
     egui::ScrollArea::vertical().auto_shrink(false).show_rows(
         ui,
-        ROW_H,
+        row_h(),
         rows.len(),
         |ui, range| {
             for row in &rows[range] {
-                let (r, resp) =
-                    ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::click());
+                let (r, resp) = ui
+                    .allocate_exact_size(Vec2::new(ui.available_width(), row_h()), Sense::click());
                 let selected = match row {
                     Row::File { path, .. } => state.selected == Some((path.clone(), None)),
                     Row::Test { path, name, .. } => {
@@ -1748,7 +1751,7 @@ fn failure_view(
         ui.spacing_mut().item_spacing.y = 0.0;
         for (function, path, n) in &places {
             let (r, resp) =
-                ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::click());
+                ui.allocate_exact_size(Vec2::new(ui.available_width(), row_h()), Sense::click());
             if resp.hovered() {
                 ui.painter().rect_filled(r, CornerRadius::ZERO, p.bg_300);
             }
@@ -1801,10 +1804,10 @@ fn failure_view(
         if button(ui, ButtonKind::Secondary, "run it again", idle, None).clicked() {
             action = Some(Action::Run(request_for(&package, file, Some(name), state)));
         }
-        if button(ui, ButtonKind::Ghost, "profile it", idle, None).clicked() {
+        if button(ui, ButtonKind::Tertiary, "profile it", idle, None).clicked() {
             action = Some(Action::Profile(file.to_path_buf(), Some(name.to_owned())));
         }
-        if button(ui, ButtonKind::Ghost, "open the test", true, None).clicked() {
+        if button(ui, ButtonKind::Tertiary, "open the test", true, None).clicked() {
             action = Some(Action::Open(file.to_path_buf(), test_line.unwrap_or(0)));
         }
     });
@@ -1877,7 +1880,7 @@ fn snapshot_view(
         }
         if button(
             ui,
-            ButtonKind::Ghost,
+            ButtonKind::Tertiary,
             "accept every changed snapshot (wowlua test -u)",
             idle,
             None,

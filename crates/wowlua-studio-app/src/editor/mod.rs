@@ -9,7 +9,7 @@ pub mod find;
 pub mod json;
 pub mod view;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::system::{Highlight, Syntax, System};
@@ -55,6 +55,9 @@ pub struct Tab {
     highlights: Option<(u64, LineHighlights)>,
     /// The longest line's width in characters, for the version.
     widest: Option<(u64, usize)>,
+    /// Each line's rows when lines wrap: for the version and the columns
+    /// (S062).
+    wraps: Option<(u64, usize, Vec<usize>)>,
     /// The columns of the lines too long to lay out whole (a data file on
     /// one line), for the version: they are drawn where they are seen.
     pub long: Option<(u64, HashMap<usize, view::Columns>)>,
@@ -137,6 +140,14 @@ pub struct Editors {
     pub focus: bool,
     /// The find bar, the window's (S051).
     pub finder: find::Finder,
+    /// The wowlua.json files shown as json, not their form (S063): kept
+    /// for the session, the tab closed or not.
+    pub as_json: HashSet<PathBuf>,
+}
+
+/// Whether the file is a package's manifest, shown as its form (S063).
+pub fn is_manifest(path: &Path) -> bool {
+    path.file_name().is_some_and(|n| n == "wowlua.json")
 }
 
 impl Editors {
@@ -305,6 +316,7 @@ impl Tab {
             doc,
             highlights: None,
             widest: None,
+            wraps: None,
             long: None,
             clash: None,
             reveal: true,
@@ -400,6 +412,19 @@ impl Tab {
             self.widest = Some((version, w));
         }
         self.widest.expect("made").1
+    }
+
+    /// Each line's rows wrapped at `columns` (S062).
+    pub fn wrap_parts(&mut self, columns: usize) -> Vec<usize> {
+        let version = self.doc.version;
+        if self
+            .wraps
+            .as_ref()
+            .is_none_or(|(v, c, _)| *v != version || *c != columns)
+        {
+            self.wraps = Some((version, columns, view::parts_of(&self.doc, columns)));
+        }
+        self.wraps.as_ref().expect("made").2.clone()
     }
 }
 
@@ -529,6 +554,14 @@ mod tests {
         assert_eq!(lines[0], [(0, 5, Syntax::Comment)]);
         // Characters: the tab is one.
         assert_eq!(lines[1], [(0, 4, Syntax::Comment)]);
+    }
+
+    #[test]
+    fn manifests_are_the_files_named_wowlua_json() {
+        assert!(is_manifest(Path::new("/w/wowlua.json")));
+        assert!(is_manifest(Path::new("/w/libs/lib/wowlua.json")));
+        assert!(!is_manifest(Path::new("/w/tests/profiles/raid.json")));
+        assert!(!is_manifest(Path::new("/w/wowlua.lock")));
     }
 
     #[test]

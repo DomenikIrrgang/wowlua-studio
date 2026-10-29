@@ -19,7 +19,10 @@ use crate::system::{FunctionBp, GameEvent, GameRequest, Launch, LineBp, System, 
 
 /// The debugger's requests' ids: apart from the game page's.
 pub const IDS: u64 = 1 << 40;
-const ROW_H: f32 = 22.0;
+/// A row, at the settings' density (S062).
+fn row_h() -> f32 {
+    wowlua_studio_ui::row(22.0)
+}
 /// The most console lines kept.
 const CONSOLE_KEPT: usize = 2000;
 
@@ -80,6 +83,7 @@ impl Config {
             manual: self.manual,
             stop_on_entry: self.stop_on_entry,
             debug_blizzard_ui: self.debug_blizzard_ui,
+            ..Launch::default()
         }
     }
 
@@ -286,6 +290,10 @@ pub struct Ended {
 
 #[derive(Default)]
 pub struct DebugState {
+    /// The settings' (S062): a secret's value shows; a new configuration's
+    /// clock is manual.
+    pub reveal_secrets: bool,
+    pub default_manual: bool,
     pub kept: Kept,
     pub configs: Vec<Config>,
     pub configs_read: bool,
@@ -628,7 +636,7 @@ impl DebugState {
                 if n.is_empty() || n.starts_with('(') || values.iter().any(|(k, _)| k == n) {
                     continue;
                 }
-                let mut text = value_text(v);
+                let mut text = value_text(v, self.reveal_secrets);
                 if text.chars().count() > 40 {
                     text = text.chars().take(39).collect::<String>() + "…";
                 }
@@ -912,13 +920,13 @@ impl DebugState {
                     .insert(r, data["variables"].as_array().cloned().unwrap_or_default());
             }
             Asked::Watch(i) => {
-                let text = value_text(&data["variable"]);
+                let text = value_text(&data["variable"], self.reveal_secrets);
                 if let Some(v) = self.watch_values.get_mut(i) {
                     *v = Some(Ok(text));
                 }
             }
             Asked::Eval => {
-                let text = value_text(&data["variable"]);
+                let text = value_text(&data["variable"], self.reveal_secrets);
                 self.push_console("result", &format!("= {text}"));
             }
             Asked::Units => self.units = data.as_array().cloned().unwrap_or_default(),
@@ -989,10 +997,15 @@ fn frame_path(f: &Json, workspace: &Workspace) -> Option<PathBuf> {
     f["file"].as_str().map(PathBuf::from)
 }
 
-/// A variable's value as shown: its text, secret and taint marked.
-fn value_text(v: &Json) -> String {
+/// A variable's value as shown: its text, secret and taint marked; a
+/// secret only as `secret` unless the settings show what it hides (S062).
+fn value_text(v: &Json, reveal: bool) -> String {
+    let secret = v["secret"].as_bool() == Some(true);
+    if secret && !reveal {
+        return "secret".into();
+    }
     let mut s = v["value"].as_str().unwrap_or("nil").to_owned();
-    if v["secret"].as_bool() == Some(true) {
+    if secret {
         s.push_str("  (secret)");
     }
     s
@@ -1024,15 +1037,15 @@ pub fn bar(ui: &mut Ui, state: &mut DebugState, system: &dyn System) -> Option<A
                     ("step into", GameRequest::StepIn),
                     ("step out", GameRequest::StepOut),
                 ] {
-                    if widgets::button(ui, ButtonKind::Ghost, label, true, None).clicked() {
+                    if widgets::button(ui, ButtonKind::Tertiary, label, true, None).clicked() {
                         state.send(system, r);
                     }
                 }
             });
-            if widgets::button(ui, ButtonKind::Ghost, "restart", true, None).clicked() {
+            if widgets::button(ui, ButtonKind::Tertiary, "restart", true, None).clicked() {
                 action = Some(Action::Restart);
             }
-            if widgets::button(ui, ButtonKind::Ghost, "stop", true, None).clicked() {
+            if widgets::button(ui, ButtonKind::Tertiary, "stop", true, None).clicked() {
                 action = Some(Action::Stop);
             }
             if forms::text_button(ui, "/reload").clicked() {
@@ -1064,7 +1077,7 @@ pub fn bar(ui: &mut Ui, state: &mut DebugState, system: &dyn System) -> Option<A
                         ("+100 ms", None, Some(0.1)),
                         ("+1 frame", Some(1), None),
                     ] {
-                        if widgets::button(ui, ButtonKind::Ghost, label, true, None).clicked() {
+                        if widgets::button(ui, ButtonKind::Tertiary, label, true, None).clicked() {
                             state.send(system, GameRequest::Advance { frames, seconds });
                         }
                     }
@@ -1440,7 +1453,13 @@ fn run_and_debug(
                         state.editing = Some((at, configs[chosen].clone()));
                     }
                     if forms::text_button(ui, "new").clicked() {
-                        state.editing = Some((None, Config::addon("a new configuration")));
+                        state.editing = Some((
+                            None,
+                            Config {
+                                manual: state.default_manual,
+                                ..Config::addon("a new configuration")
+                            },
+                        ));
                     }
                 });
                 if let Some(e) = &state.ended {
@@ -1584,7 +1603,7 @@ pub fn breakpoints(
             }
         });
     }
-    let list_h = (ui.available_height() - 200.0).max(ROW_H * 2.0);
+    let list_h = (ui.available_height() - 200.0).max(row_h() * 2.0);
     if rows.is_empty() {
         forms::padded(ui, 10, 8, |ui| {
             forms::paragraph(
@@ -1601,10 +1620,10 @@ pub fn breakpoints(
             .id_salt("debug-bps")
             .auto_shrink(false)
             .max_height(list_h)
-            .show_rows(ui, ROW_H, rows.len(), |ui, range| {
+            .show_rows(ui, row_h(), rows.len(), |ui, range| {
                 for r in &rows[range] {
                     let (rect, resp) = ui.allocate_exact_size(
-                        Vec2::new(ui.available_width(), ROW_H),
+                        Vec2::new(ui.available_width(), row_h()),
                         Sense::click(),
                     );
                     if resp.hovered() {
@@ -1833,7 +1852,7 @@ fn var_rows(
             open,
             child != 0,
             v["name"].as_str().unwrap_or(""),
-            &value_text(v),
+            &value_text(v, state.reveal_secrets),
             &meta,
             p,
         )
@@ -1860,7 +1879,7 @@ fn row(
     p: &Palette,
 ) -> egui::Response {
     let (rect, resp) =
-        ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::click());
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), row_h()), Sense::click());
     if resp.hovered() {
         ui.painter().rect_filled(rect, CornerRadius::ZERO, p.bg_200);
     }
@@ -2212,6 +2231,8 @@ pub fn dialogs(
     state: &mut DebugState,
     workspace: &Workspace,
     system: &dyn System,
+    tests: &std::collections::BTreeMap<PathBuf, Vec<crate::lsp::Discovered>>,
+    profiles: &[String],
 ) -> Option<Action> {
     let mut action = None;
     if let Some((at, mut c)) = state.editing.take() {
@@ -2233,27 +2254,99 @@ pub fn dialogs(
                     c.test = (k == 1).then(String::new);
                 }
                 if kind == 1 {
-                    let mut t = c.test.clone().unwrap_or_default();
-                    forms::text_input(ui, &mut t, 320.0, "tests/unit/x.test.wowlua");
-                    c.test = Some(t);
-                    let mut f = c.filters.join(", ");
-                    forms::label(ui, "only tests whose names contain");
-                    forms::text_input(ui, &mut f, 320.0, "secret");
-                    c.filters = f
-                        .split(',')
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty())
-                        .map(str::to_owned)
+                    // The workspace's test files (S065), by their path in it.
+                    let files: Vec<(String, &PathBuf)> = tests
+                        .keys()
+                        .map(|p| {
+                            let shown = p.strip_prefix(&workspace.root).unwrap_or(p);
+                            (shown.to_string_lossy().replace('\\', "/"), p)
+                        })
                         .collect();
+                    let current = c.test.clone().unwrap_or_default();
+                    let mut names: Vec<String> = vec!["pick a test file".into()];
+                    names.extend(files.iter().map(|(n, _)| n.clone()));
+                    let mut at = files
+                        .iter()
+                        .position(|(n, _)| *n == current)
+                        .map_or(0, |i| i + 1);
+                    let opts: Vec<(&str, bool)> =
+                        names.iter().map(|n| (n.as_str(), true)).collect();
+                    if forms::select(ui, "cfg-test-file", &opts, &mut at, 320.0) && at > 0 {
+                        c.test = Some(files[at - 1].0.clone());
+                        c.filters.clear();
+                    }
+                    // Its tests: all, one, or those whose names contain…
+                    forms::label(ui, "only tests");
+                    let in_file: Vec<&str> = files
+                        .iter()
+                        .find(|(n, _)| Some(n) == c.test.as_ref())
+                        .and_then(|(_, p)| tests.get(*p))
+                        .map(|list| list.iter().map(|t| t.name.as_str()).collect())
+                        .unwrap_or_default();
+                    let mut choices: Vec<String> = vec!["all tests".into()];
+                    choices.extend(in_file.iter().map(|n| (*n).to_owned()));
+                    choices.push("names containing…".into());
+                    let custom = choices.len() - 1;
+                    let mut at = match c.filters.as_slice() {
+                        [] => 0,
+                        [one] => in_file
+                            .iter()
+                            .position(|n| n == one)
+                            .map_or(custom, |i| i + 1),
+                        _ => custom,
+                    };
+                    let opts: Vec<(&str, bool)> =
+                        choices.iter().map(|n| (n.as_str(), true)).collect();
+                    if forms::select(ui, "cfg-test-filter", &opts, &mut at, 320.0) {
+                        c.filters = if at == 0 {
+                            Vec::new()
+                        } else if at == custom {
+                            vec![String::new()]
+                        } else {
+                            vec![choices[at].clone()]
+                        };
+                    }
+                    if at == custom {
+                        let mut f = c.filters.join(", ");
+                        forms::text_input(ui, &mut f, 320.0, "secret");
+                        c.filters = f.split(',').map(str::trim).map(str::to_owned).collect();
+                    }
                 }
-                let mut flavor = c.flavor.clone().unwrap_or_default();
-                forms::label(ui, "flavor (empty: the package's first)");
-                forms::text_input(ui, &mut flavor, 320.0, "camelot");
-                c.flavor = Some(flavor.trim().to_owned()).filter(|f| !f.is_empty());
-                let mut profile = c.profile.clone().unwrap_or_default();
-                forms::label(ui, "world profile (empty: test.profile)");
-                forms::text_input(ui, &mut profile, 320.0, "raid-pull");
-                c.profile = Some(profile.trim().to_owned()).filter(|f| !f.is_empty());
+                // The package's flavors (S064); one coming soon is named, not
+                // picked: the emulated client doesn't run it yet.
+                forms::label(ui, "flavor");
+                let first = workspace.flavors.first().cloned().unwrap_or_default();
+                let mut labels = vec![format!("the package's first · {first}")];
+                labels.extend(workspace.flavors.iter().map(|f| crate::flavors::label(f)));
+                let mut opts: Vec<(&str, bool)> = vec![(labels[0].as_str(), true)];
+                opts.extend(
+                    workspace
+                        .flavors
+                        .iter()
+                        .zip(&labels[1..])
+                        .map(|(f, l)| (l.as_str(), crate::flavors::supported(f))),
+                );
+                let mut picked = c
+                    .flavor
+                    .as_ref()
+                    .and_then(|f| workspace.flavors.iter().position(|w| w == f))
+                    .map_or(0, |i| i + 1);
+                if forms::select(ui, "launch-flavor", &opts, &mut picked, 320.0) {
+                    c.flavor = (picked > 0).then(|| workspace.flavors[picked - 1].clone());
+                }
+                // The package's world profiles (S065).
+                forms::label(ui, "world profile");
+                let mut names: Vec<String> = vec!["test.profile · the package's".into()];
+                names.extend(profiles.iter().cloned());
+                let mut picked = c
+                    .profile
+                    .as_ref()
+                    .and_then(|p| profiles.iter().position(|n| n == p))
+                    .map_or(0, |i| i + 1);
+                let opts: Vec<(&str, bool)> = names.iter().map(|n| (n.as_str(), true)).collect();
+                if forms::select(ui, "cfg-profile", &opts, &mut picked, 320.0) {
+                    c.profile = profiles.get(picked.wrapping_sub(1)).cloned();
+                }
                 forms::checkbox(
                     ui,
                     &mut c.manual,
@@ -2277,11 +2370,11 @@ pub fn dialogs(
                     if widgets::button(ui, ButtonKind::Primary, "save", true, None).clicked() {
                         done = Some(true);
                     }
-                    if widgets::button(ui, ButtonKind::Ghost, "cancel", true, None).clicked() {
+                    if widgets::button(ui, ButtonKind::Tertiary, "cancel", true, None).clicked() {
                         done = Some(false);
                     }
                     if at.is_some()
-                        && widgets::button(ui, ButtonKind::Ghost, "remove", true, None).clicked()
+                        && widgets::button(ui, ButtonKind::Tertiary, "remove", true, None).clicked()
                     {
                         done = Some(false);
                         if let Some(i) = at {
@@ -2360,7 +2453,7 @@ pub fn dialogs(
                     if widgets::button(ui, ButtonKind::Primary, "save", true, None).clicked() {
                         done = Some(true);
                     }
-                    if widgets::button(ui, ButtonKind::Ghost, "cancel", true, None).clicked() {
+                    if widgets::button(ui, ButtonKind::Tertiary, "cancel", true, None).clicked() {
                         done = Some(false);
                     }
                 });
@@ -2394,6 +2487,16 @@ fn empty(ui: &mut Ui, text: &str, p: &Palette) {
 mod unit {
     use super::*;
     use crate::system::NoSystem;
+
+    /// A secret shows what it hides only when the settings say (S062).
+    #[test]
+    fn secrets_show_as_the_settings_say() {
+        let v = serde_json::json!({ "value": "5", "secret": true });
+        assert_eq!(value_text(&v, true), "5  (secret)");
+        assert_eq!(value_text(&v, false), "secret");
+        let plain = serde_json::json!({ "value": "5" });
+        assert_eq!(value_text(&plain, false), "5");
+    }
 
     fn workspace() -> Workspace {
         Workspace {

@@ -8,12 +8,16 @@ pub mod chrome;
 pub mod commands;
 pub mod coverage;
 pub mod debug;
+pub mod deps;
 pub mod dock;
 pub mod editor;
 pub mod explorer;
+pub mod flavors;
 pub mod game;
 pub mod jobs;
+pub mod keys;
 pub mod lsp;
+pub mod manifest;
 pub mod notify;
 pub mod pages;
 pub mod palette;
@@ -22,6 +26,7 @@ pub mod problems;
 pub mod profiler;
 pub mod recents;
 pub mod search;
+pub mod settings;
 pub mod ship;
 pub mod start;
 pub mod state;
@@ -125,6 +130,22 @@ pub struct Studio {
     world: world::WorldState,
     /// The ship page (M9, S061).
     ship: ship::ShipState,
+    /// The settings page (M10, S062).
+    settings_page: settings::SettingsState,
+    /// The wowlua.json tabs' forms (S063).
+    manifests: manifest::Manifests,
+    /// A wowlua.json to open on a section, as json or not (the screenshot
+    /// harness's `manifest:`).
+    queued_manifest: Option<(String, bool)>,
+    /// The theme and scale last applied (S062).
+    applied: Option<(wowlua_studio_ui::Theme, f32)>,
+    /// The settings last applied (S062).
+    prefs: Option<state::Settings>,
+    /// The debugger's stops and dispatch frames as last synced with the
+    /// settings: a change on the debugger page is kept in the settings.
+    debug_seen: (Vec<String>, bool),
+    /// The coverage page's gutter switch as last synced with the settings.
+    gutter_seen: bool,
     /// The workspace's world profiles (`tests/profiles/*.json`), by name.
     profiles: Vec<String>,
     /// Background jobs (S044); the checks running, by package.
@@ -248,6 +269,13 @@ impl Studio {
             profiler: profiler::ProfilerState::default(),
             world: world::WorldState::default(),
             ship: ship::ShipState::default(),
+            settings_page: settings::SettingsState::default(),
+            manifests: manifest::Manifests::default(),
+            queued_manifest: None,
+            applied: None,
+            prefs: None,
+            debug_seen: (Vec::new(), false),
+            gutter_seen: false,
             profiles: Vec::new(),
             jobs: jobs::Jobs::default(),
             checks: std::collections::HashMap::new(),
@@ -295,12 +323,20 @@ impl Studio {
 
     /// Every command, as the menus list them.
     pub fn entries(&self) -> Vec<Entry> {
-        commands::entries(
+        let mut entries = commands::entries(
             self.host.platform,
             self.settings.follow_presets,
             self.settings.frame_stats,
             self.workspace.is_some(),
-        )
+        );
+        // The keys recorded in the settings over the commands' own (S062).
+        for e in &mut entries {
+            let name = keys::name_of(&e.command);
+            if self.settings.keys.contains_key(&name) {
+                e.key = keys::key_of(&self.settings, &name, e.key);
+            }
+        }
+        entries
     }
 
     /// Whether the commands changed since the last call: the host's menu
@@ -445,6 +481,10 @@ impl Studio {
             }
         }
         self.focused = focused;
+        // The OS's theme can change under a `system` theme.
+        self.apply_settings(&ctx);
+        self.debug.reveal_secrets = self.settings.reveal_secrets;
+        self.debug.default_manual = self.settings.default_clock == "manual";
 
         // Closing the window with unsaved edits asks first.
         if ctx.input(|i| i.viewport().close_requested())
@@ -455,6 +495,16 @@ impl Studio {
             self.pending = Some(Pending::Quit);
         }
 
+        if let Some(w) = &self.workspace
+            && let Some((section, json)) = self.queued_manifest.take()
+        {
+            let path = w.root.join("wowlua.json");
+            self.manifests.show_section(&path, &section);
+            if json {
+                self.editors.as_json.insert(path.clone());
+            }
+            self.queued_files.push(path);
+        }
         if self.workspace.is_some() {
             for path in std::mem::take(&mut self.queued_files) {
                 self.open_file(&path, &ctx);
@@ -586,7 +636,9 @@ impl Studio {
 
         let entries = self.entries();
         let mut commands = std::mem::take(&mut self.queued);
-        if !self.palette.open && self.ask.is_none() && self.pending.is_none() {
+        // (not while a key is recorded for a command, S062)
+        let recording = self.settings_page.recording.is_some();
+        if !self.palette.open && self.ask.is_none() && self.pending.is_none() && !recording {
             ctx.input_mut(|i| {
                 for e in &entries {
                     if let Some(key) = &e.key
@@ -722,7 +774,7 @@ impl Studio {
         let Some(workspace) = &self.workspace else {
             return;
         };
-        let key = workspace.root.to_string_lossy().into_owned();
+        let key = self.layout_key();
         let layout = layout_for(&mut self.layouts, &key, self.layout_page);
         let explorer = &mut self.explorer;
         let editors = &mut self.editors;
@@ -742,6 +794,14 @@ impl Studio {
         let mut world_action = None;
         let ship_state = &mut self.ship;
         let mut ship_action = None;
+        let settings_page = &mut self.settings_page;
+        let manifests = &mut self.manifests;
+        let mut manifest_action = None;
+        let platform = self.host.platform;
+        settings_page.wowlua_version = self.host.wowlua_version.clone();
+        let wowlua_version = self.host.wowlua_version.clone();
+        let studio_settings = &mut self.settings;
+        let mut settings_action = None;
         let installation = self.start.installation();
         let on_world = self.layout_page == Page::World;
         let on_debug = self.layout_page == Page::Debug;
@@ -789,7 +849,9 @@ impl Studio {
                     .and_then(|path| debug_state.stopped_line(path, workspace));
                 // The stop's values after its lines.
                 let inline = match (active.as_deref(), editors.active()) {
-                    (Some(path), Some(tab)) if stopped.is_some() => {
+                    (Some(path), Some(tab))
+                        if stopped.is_some() && studio_settings.inline_values =>
+                    {
                         let doc = &tab.doc;
                         debug_state.inline_values(path, workspace, &|l| {
                             (l < doc.line_count()).then(|| doc.line(l).to_owned())
@@ -823,7 +885,39 @@ impl Studio {
                 // (below the debugger's bar, when it has one)
                 let rest = ui.available_rect_before_wrap();
                 ui.scope_builder(UiBuilder::new().max_rect(rest), |ui| {
-                    actions.extend(editor::view::show(ui, editors, &cx));
+                    let mut shown = editor::view::show(ui, editors, &cx);
+                    // A wowlua.json tab: its bar and form (S063).
+                    let manifest = shown.iter().find_map(|a| match a {
+                        editor::view::Action::Manifest { tab, bar, form } => {
+                            Some((*tab, *bar, *form))
+                        }
+                        _ => None,
+                    });
+                    shown.retain(|a| !matches!(a, editor::view::Action::Manifest { .. }));
+                    actions.extend(shown);
+                    if let Some((tab, bar, form)) = manifest {
+                        ui.scope_builder(UiBuilder::new().max_rect(bar), |ui| {
+                            if let Some(a) = manifest::bar(ui, manifests, editors, tab, workspace) {
+                                manifest_action = Some(a);
+                            }
+                        });
+                        if let Some(rect) = form {
+                            ui.scope_builder(UiBuilder::new().max_rect(rect), |ui| {
+                                if let Some(a) = manifest::form(
+                                    ui,
+                                    manifests,
+                                    editors,
+                                    tab,
+                                    workspace,
+                                    system,
+                                    &wowlua_version,
+                                    profiles,
+                                ) {
+                                    manifest_action = Some(a);
+                                }
+                            });
+                        }
+                    }
                 });
             }
             Panel::Problems => {
@@ -917,13 +1011,27 @@ impl Studio {
             }
             Panel::Parts => world::parts_panel(ui, world_state, editors, workspace, system),
             Panel::BuildProfiles => {
-                if let Some(a) = ship::profiles(ui, ship_state, editors, workspace, system) {
+                if let Some(a) = ship::profiles(ui, ship_state, workspace, system) {
                     ship_action = Some(a);
                 }
             }
             Panel::Ship => {
                 if let Some(a) = ship::ship(ui, ship_state, workspace, system, installation) {
                     ship_action = Some(a);
+                }
+            }
+            Panel::SettingsSections => settings::sections(ui, settings_page),
+            Panel::Settings => {
+                if let Some(a) = settings::studio(
+                    ui,
+                    settings_page,
+                    studio_settings,
+                    system,
+                    Some(workspace),
+                    installation,
+                    platform,
+                ) {
+                    settings_action = Some(a);
                 }
             }
             Panel::ProfileEditor => {
@@ -983,7 +1091,14 @@ impl Studio {
             self.open_file(&path, ctx);
         }
         if let Some(w) = self.workspace.clone()
-            && let Some(a) = debug::dialogs(ctx, &mut self.debug, &w, &*self.host.system)
+            && let Some(a) = debug::dialogs(
+                ctx,
+                &mut self.debug,
+                &w,
+                &*self.host.system,
+                &self.tests.discovered,
+                &self.profiles,
+            )
         {
             debug_action = Some(a);
         }
@@ -1002,7 +1117,29 @@ impl Studio {
         if let Some(a) = ship_action {
             self.ship_action(a, ctx);
         }
+        if let Some(a) = settings_action {
+            self.settings_action(a, ctx);
+        }
+        if let Some(a) = manifest_action {
+            match a {
+                manifest::Action::Save(path) => {
+                    if let Some(i) = self.editors.find(&path)
+                        && let Err(e) = self.editors.save(i, &*self.host.system)
+                    {
+                        let note = Notification::new(Kind::Error, "save", e);
+                        self.notify(note, ctx);
+                    }
+                }
+                // (the form's own section)
+                manifest::Action::Go(manifest::Go::Dependencies) => {}
+                manifest::Action::Go(manifest::Go::Ship) => {
+                    self.queue(Command::ShowPage(Page::Ship))
+                }
+            }
+        }
         world::flush_live(&mut self.world, &mut self.debug, &*self.host.system);
+        self.pull_debug_settings(ctx);
+        self.sync_gutter(ctx);
         // The stop's source, shown once.
         if let Some((path, line)) = self.debug.show.take() {
             let at = lsp::Wire {
@@ -1168,9 +1305,29 @@ impl Studio {
             A::Save(i) => self.save_tab(i, ctx),
             A::Close(i) => self.close_tab(i),
             // (taken above)
-            A::ToggleBreakpoint(_) | A::EditBreakpoint(_) => {}
+            A::ToggleBreakpoint(_) | A::EditBreakpoint(_) | A::Manifest { .. } => {}
             A::Hover(at) => self.lsp.hover(doc, at, system),
             A::Complete(at) => self.lsp.complete(doc, at, system),
+            A::Resolve(label) => {
+                let path = doc.path.clone();
+                let item = tab
+                    .completion
+                    .as_ref()
+                    .and_then(|c| c.items.iter().find(|i| i.label == label))
+                    .cloned();
+                if let Some(item) = item {
+                    self.lsp.resolve(&path, &item, system);
+                    // (asked once: until it answers, and an empty answer,
+                    // nothing shows)
+                    if let Some(t) = self.editors.active_mut()
+                        && let Some(c) = &mut t.completion
+                    {
+                        for it in c.items.iter_mut().filter(|i| i.label == label) {
+                            it.doc = Some(String::new());
+                        }
+                    }
+                }
+            }
             A::Signature(at) => self.lsp.signature(doc, at, system),
             A::Definition(at) => self.lsp.definition(doc, at, system),
             A::Linkable(at) => self.lsp.linkable(doc, at, system),
@@ -1239,6 +1396,9 @@ impl Studio {
                         let end = lsp::to_wire(&tab.doc, at);
                         let label = s.label.trim_matches('"').to_owned();
                         lsp::Item {
+                            edits: Vec::new(),
+                            doc: None,
+                            raw: serde_json::Value::Null,
                             sort: label.clone(),
                             label,
                             detail: s.detail,
@@ -1417,12 +1577,26 @@ impl Studio {
                     && !items.is_empty()
                     && self.editors.tabs[i].doc.selection.head.line == at.line
                 {
+                    // (auto-import's items only when imports are added, S062)
+                    let mut items = items;
+                    if !self.settings.add_imports {
+                        items.retain(|item| item.edits.is_empty());
+                    }
                     self.editors.tabs[i].completion = Some(editor::Completion {
                         at,
                         items,
                         selected: 0,
                         incomplete,
                     });
+                }
+            }
+            R::Resolved { path, label, doc } => {
+                if let Some(i) = find(&self.editors, &path)
+                    && let Some(c) = &mut self.editors.tabs[i].completion
+                {
+                    for item in c.items.iter_mut().filter(|it| it.label == label) {
+                        item.doc = Some(doc.clone());
+                    }
                 }
             }
             R::Signature { path, text, active } => {
@@ -1562,7 +1736,8 @@ impl Studio {
                 if let Some(tab) = self.editors.active()
                     && self.lsp.canonical_of(&tab.doc.path) == Some(path.as_path())
                 {
-                    self.lsp.decorations(&tab.doc, &*self.host.system);
+                    let (h, l) = (self.settings.inlay_hints, self.settings.code_lenses);
+                    self.lsp.decorations(&tab.doc, &*self.host.system, h, l);
                 }
             }
             R::Hints {
@@ -1681,8 +1856,10 @@ impl Studio {
         let Some(tab) = self.editors.tabs.get(i) else {
             return;
         };
-        // Format on save: the server's formatting first, then the write.
-        if self.lsp.ready
+        // Format on save (a setting, S062): the server's formatting first,
+        // then the write.
+        if self.settings.format_on_save
+            && self.lsp.ready
             && lsp::served(&tab.doc.path)
             && self.lsp.format(&tab.doc, true, &*self.host.system)
         {
@@ -1830,6 +2007,13 @@ impl Studio {
                 Event::FilesChanged(paths) => {
                     self.explorer.changed(&paths);
                     self.ship.files_changed();
+                    self.manifests.files_changed();
+                    if let Some(w) = &self.workspace
+                        && paths.iter().any(|p| p.ends_with("wowlua.json"))
+                    {
+                        let root = w.root.clone();
+                        self.read_line_width(&root);
+                    }
                     self.files_changed(&paths, ctx);
                     // A changed manifest can change the members: the
                     // workspace is read again.
@@ -1880,8 +2064,24 @@ impl Studio {
                 Event::WorldSnapshots(found) => self.world.snapshots_read(found),
                 Event::GameArt(art, image) => self.world.art.read(ctx, art, image),
                 Event::Spells(query, found) => self.world.spells_found(query, found),
+                Event::Found(what, flavor, query, rows) => {
+                    self.world.found.insert((what, flavor, query), rows);
+                }
                 Event::ClassSpells(class, found) => self.world.class_spells_found(class, found),
                 Event::Ship(event) => self.ship.event(event),
+                Event::Profiles { dir, read } => self.manifests.profiles_read(dir, read),
+                Event::Deps(event) => self.manifests.deps.event(event),
+                Event::Settings(info) => self.settings_page.info(info),
+                Event::Updates(check) => self.settings_page.updates(check),
+                Event::Github(event) => {
+                    // GitHub's code: its page opens in the browser, the code
+                    // on the clipboard to paste there (S062).
+                    if let system::GithubSignIn::Code { code, url } = &event {
+                        ctx.open_url(egui::OpenUrl::new_tab(url));
+                        ctx.copy_text(code.clone());
+                    }
+                    self.settings_page.github(event)
+                }
                 Event::Installation(_) | Event::Ui { .. } => {}
             }
             ctx.request_repaint();
@@ -1955,7 +2155,8 @@ impl Studio {
             // A package whose requirement excludes this wowlua opens with
             // checks, hover and completion off (E4300).
             if workspace.cannot_check.is_none() {
-                self.lsp.start(&workspace.root, &*self.host.system);
+                let options = lsp::options(&self.settings);
+                self.lsp.start(&workspace.root, &*self.host.system, options);
             } else {
                 self.lsp.stop(&*self.host.system);
                 self.terminal.close(&*self.host.system);
@@ -1973,8 +2174,13 @@ impl Studio {
             if self.ship.dev_on {
                 self.host.system.ship_dev(&workspace.root, None);
             }
+            // (the tab and profile chosen stay)
+            let (tab, selected) = (self.ship.tab, self.ship.selected.take());
             self.ship = ship::ShipState::default();
+            self.ship.tab = tab;
+            self.ship.selected = selected;
         }
+        self.read_line_width(&workspace.root);
         self.branch = self.host.system.branch(&workspace.root);
         self.reload_recents();
         self.recents.opened(&workspace, self.host.system.now());
@@ -1987,6 +2193,9 @@ impl Studio {
     fn open_tests(&mut self, workspace: &Workspace) {
         let system = &*self.host.system;
         self.tests = tests::TestsState::default();
+        // (the gutter as the settings say, S062)
+        self.tests.cov.in_gutter = self.settings.coverage_gutter;
+        self.gutter_seen = self.settings.coverage_gutter;
         let mut files: Vec<PathBuf> = Vec::new();
         let roots: Vec<PathBuf> = if workspace.members.is_empty() {
             vec![workspace.root.clone()]
@@ -2023,6 +2232,8 @@ impl Studio {
             .filter(|e| !e.is_dir && e.name.ends_with(".json"))
             .map(|e| e.name.trim_end_matches(".json").to_owned())
             .collect();
+        // (the settings' stops, not the workspace's, S062)
+        self.push_debug_settings();
     }
 
     /// The tests every workspace keeps (`tests.json`), by its root.
@@ -2061,7 +2272,11 @@ impl Studio {
         };
         let rel = tests::rel_of(&w, file);
         let test = test.map(tests::declared);
-        self.start_session(debug::Config::test(&rel, test));
+        let config = debug::Config {
+            manual: self.settings.default_clock == "manual",
+            ..debug::Config::test(&rel, test)
+        };
+        self.start_session(config);
         self.queue(Command::ShowPage(Page::Debug));
     }
 
@@ -2132,7 +2347,10 @@ impl Studio {
             .find(|c| Some(&c.name) == chosen.as_ref())
             .or_else(|| self.debug.configs.first())
             .cloned()
-            .unwrap_or_else(|| debug::Config::addon(&format!("{name} · the addon")))
+            .unwrap_or_else(|| debug::Config {
+                manual: self.settings.default_clock == "manual",
+                ..debug::Config::addon(&format!("{name} · the addon"))
+            })
     }
 
     /// Starts a session of `config`, the debugger's breakpoints set first;
@@ -2145,7 +2363,7 @@ impl Studio {
         let setup = self.debug.begin(session, config.clone(), &w);
         self.host
             .system
-            .game_start(&w.root, session, config.launch(), setup);
+            .game_start(&w.root, session, self.launch_of(&config), setup);
     }
 
     /// What the debugger page asked for.
@@ -2180,9 +2398,190 @@ impl Studio {
         self.queued_ship.push(what.to_owned());
     }
 
+    /// The settings page on a section by its label (the screenshot
+    /// harness's `settings:`).
+    pub fn settings_show(&mut self, what: &str) {
+        self.queue(Command::ShowPage(Page::Settings));
+        self.settings_page.section = settings::Section::ALL
+            .into_iter()
+            .find(|s| s.label() == what)
+            .unwrap_or_default();
+    }
+
+    /// The workspace's wowlua.json in its tab, on a section, its form or
+    /// its json (the screenshot harness's `manifest:<section>[@json]`).
+    pub fn manifest_show(&mut self, section: &str, json: bool) {
+        self.queued_manifest = Some((section.to_owned(), json));
+    }
+
     /// The spells part's search typed (the screenshot harness's `spells:`).
     pub fn world_search(&mut self, query: &str) {
         self.world.spell_query = query.to_owned();
+    }
+
+    /// The package's `fmt.line-width`, for wrapping at the line width
+    /// (S062): 100 when it sets none.
+    fn read_line_width(&self, root: &std::path::Path) {
+        let width = self
+            .host
+            .system
+            .read_file(&root.join("wowlua.json"))
+            .ok()
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+            .and_then(|m| m["fmt"]["line-width"].as_u64())
+            .unwrap_or(100);
+        editor::view::set_line_width(width as usize);
+    }
+
+    /// What the settings page asks (S062).
+    fn settings_action(&mut self, action: settings::Action, ctx: &Context) {
+        match action {
+            settings::Action::Changed => {
+                self.apply_settings(ctx);
+                self.touch(ctx);
+            }
+            settings::Action::PickInstallation => {
+                let system = &*self.host.system;
+                if let Some(path) = system.pick_folder("Pick your World of Warcraft folder") {
+                    system.set_installation(&path);
+                }
+            }
+            settings::Action::ResetLayouts => {
+                let key = self.layout_key();
+                self.layouts.workspaces.remove(&key);
+                self.touch(ctx);
+            }
+            settings::Action::OpenLog => {
+                if let Some(log) = self.host.system.log_file() {
+                    self.host.system.reveal(&log);
+                }
+            }
+        }
+    }
+
+    /// Applies the settings that change how Studio draws (S062): the
+    /// theme (the OS's for `system`) and the interface's scale.
+    fn apply_settings(&mut self, ctx: &Context) {
+        if self.prefs.as_ref() != Some(&self.settings) {
+            let before = self.prefs.replace(self.settings.clone());
+            state::set_prefs(ctx, &self.settings);
+            wowlua_studio_ui::set_density(self.settings.comfortable());
+            editor::view::set_font_size(self.settings.font_size);
+            if let Some(before) = before {
+                self.settings_changed(&before);
+            }
+        }
+        let theme = if self.settings.follows_system() {
+            match ctx.system_theme() {
+                Some(egui::Theme::Light) => wowlua_studio_ui::Theme::Light,
+                _ => wowlua_studio_ui::Theme::Dark,
+            }
+        } else {
+            self.settings.theme()
+        };
+        let zoom = self.settings.zoom();
+        if self.applied == Some((theme, zoom)) {
+            return;
+        }
+        self.applied = Some((theme, zoom));
+        wowlua_studio_ui::set_theme(ctx, theme);
+        if (ctx.zoom_factor() - zoom).abs() > f32::EPSILON {
+            ctx.set_zoom_factor(zoom);
+        }
+    }
+
+    /// A configuration's launch with the game screen's settings (S062).
+    fn launch_of(&self, config: &debug::Config) -> system::Launch {
+        let s = &self.settings;
+        let screen = s
+            .screen_size
+            .split_once(" × ")
+            .and_then(|(w, h)| Some((w.trim().parse().ok()?, h.trim().parse().ok()?)));
+        let launch = config.launch();
+        system::Launch {
+            art: s.installation_art,
+            game_data: s.installation_data,
+            screen,
+            // (on: every session steps into Blizzard's code; off: as the
+            // configuration says)
+            debug_blizzard_ui: launch.debug_blizzard_ui || s.step_into_blizzard,
+            ..launch
+        }
+    }
+
+    /// The debugger takes the settings' stops and dispatch frames (S062).
+    fn push_debug_settings(&mut self) {
+        let mut stops = self.settings.stop_on.clone();
+        stops.sort();
+        let hide = !self.settings.show_dispatch;
+        let changed = self.debug.kept.stop_on.iter().cloned().collect::<Vec<_>>() != stops;
+        self.debug.kept.stop_on = stops.iter().cloned().collect();
+        self.debug.kept.hide_dispatch = hide;
+        self.debug_seen = (stops.clone(), hide);
+        if changed && self.debug.running() {
+            self.debug
+                .send(&*self.host.system, system::GameRequest::SetStopOn(stops));
+        }
+    }
+
+    /// The coverage page's gutter switch and the setting are one (S062).
+    fn sync_gutter(&mut self, ctx: &Context) {
+        let page = self.tests.cov.in_gutter;
+        if page != self.gutter_seen {
+            // the coverage page changed it
+            self.settings.coverage_gutter = page;
+            self.touch(ctx);
+        } else if self.settings.coverage_gutter != page {
+            // the settings did
+            self.tests.cov.in_gutter = self.settings.coverage_gutter;
+        }
+        self.gutter_seen = self.tests.cov.in_gutter;
+    }
+
+    /// A change on the debugger page goes into the settings (S062).
+    fn pull_debug_settings(&mut self, ctx: &Context) {
+        let stops: Vec<String> = self.debug.kept.stop_on.iter().cloned().collect();
+        let hide = self.debug.kept.hide_dispatch;
+        if (stops.clone(), hide) == self.debug_seen {
+            return;
+        }
+        self.debug_seen = (stops.clone(), hide);
+        self.settings.stop_on = stops;
+        self.settings.show_dispatch = !hide;
+        self.touch(ctx);
+    }
+
+    /// What a change of the settings changes (S062).
+    fn settings_changed(&mut self, before: &state::Settings) {
+        if before.keys != self.settings.keys {
+            // (the menu bar shows the keys)
+            self.menus_changed = true;
+        }
+        if (&before.stop_on, before.show_dispatch)
+            != (&self.settings.stop_on, self.settings.show_dispatch)
+        {
+            self.push_debug_settings();
+        }
+        let system = &*self.host.system;
+        let options = lsp::options(&self.settings);
+        if lsp::options(before) != options {
+            self.lsp.configure(system, options);
+        }
+        let (hints, lenses) = (self.settings.inlay_hints, self.settings.code_lenses);
+        if (hints, lenses) != (before.inlay_hints, before.code_lenses) {
+            for tab in &mut self.editors.tabs {
+                if !hints {
+                    tab.hints = None;
+                }
+                if !lenses {
+                    tab.lenses = None;
+                }
+            }
+            if let Some(tab) = self.editors.active() {
+                let on = (hints && !before.inlay_hints, lenses && !before.code_lenses);
+                self.lsp.decorations(&tab.doc, system, on.0, on.1);
+            }
+        }
     }
 
     /// What the ship page asks (S061).
@@ -2193,6 +2592,36 @@ impl Studio {
                     && let Err(e) = self.editors.save(i, &*self.host.system)
                 {
                     let note = Notification::new(Kind::Error, "save", e);
+                    self.notify(note, ctx);
+                }
+            }
+            ship::Action::EditProfile(path, profile) => {
+                // The profile in its wowlua.json's form, in the editor.
+                self.manifests.show_profile(&path, &profile);
+                self.editors.as_json.remove(&path);
+                self.run(ctx, Command::ShowPage(Page::Files));
+                self.open_file(&path, ctx);
+            }
+            ship::Action::SetTargetProfile {
+                manifest,
+                target,
+                profile,
+            } => {
+                use crate::world::json::Key;
+                let path = vec![
+                    Key::Name("publish".into()),
+                    Key::Name("targets".into()),
+                    Key::Name(target),
+                    Key::Name("profile".into()),
+                ];
+                if let Err(e) = manifest::set_key(
+                    &mut self.editors,
+                    &*self.host.system,
+                    &manifest,
+                    path,
+                    Some(serde_json::Value::String(profile)),
+                ) {
+                    let note = Notification::new(Kind::Error, "wowlua.json", e);
                     self.notify(note, ctx);
                 }
             }
@@ -2565,7 +2994,11 @@ impl Studio {
                 .iter()
                 .filter(|c| w.flavors.contains(&c.flavor))
             {
-                items.push(format!("{} · {}", client.client, client.folder));
+                items.push(format!(
+                    "{} · {}",
+                    flavors::name(&client.flavor),
+                    client.folder
+                ));
             }
         }
         items.retain(|i| !i.is_empty());
@@ -2607,6 +3040,9 @@ impl Studio {
     fn run(&mut self, ctx: &Context, command: Command) {
         match command {
             Command::ShowPage(page) => {
+                if page == Page::Settings && self.page != Page::Settings {
+                    self.settings_page.opened();
+                }
                 self.page = page;
                 if self.settings.follow_presets {
                     self.layout_page = page;
@@ -2777,7 +3213,12 @@ impl Studio {
     }
 
     /// The key of the open workspace's layouts.
+    /// Whose layouts: the workspace's, or one for all of them (the
+    /// setting "keep layouts per workspace", S062).
     fn layout_key(&self) -> String {
+        if !self.settings.layouts_per_workspace {
+            return String::new();
+        }
         self.workspace
             .as_ref()
             .map(|w| w.root.to_string_lossy().into_owned())
@@ -2830,7 +3271,7 @@ impl Studio {
                 if widgets::button(ui, ButtonKind::Primary, "open", true, None).clicked() {
                     decided = Some(true);
                 }
-                if widgets::button(ui, ButtonKind::Ghost, "cancel", true, None).clicked() {
+                if widgets::button(ui, ButtonKind::Tertiary, "cancel", true, None).clicked() {
                     decided = Some(false);
                 }
             });
@@ -2921,10 +3362,10 @@ impl Studio {
                 if widgets::button(ui, ButtonKind::Primary, "save", true, None).clicked() {
                     decided = Some(true);
                 }
-                if widgets::button(ui, ButtonKind::Ghost, "don't save", true, None).clicked() {
+                if widgets::button(ui, ButtonKind::Tertiary, "don't save", true, None).clicked() {
                     decided = Some(false);
                 }
-                if widgets::button(ui, ButtonKind::Ghost, "cancel", true, None).clicked() {
+                if widgets::button(ui, ButtonKind::Tertiary, "cancel", true, None).clicked() {
                     self.pending = None;
                 }
             });

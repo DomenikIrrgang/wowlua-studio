@@ -3,12 +3,14 @@
 //! controls Studio is drawn with. It depends on egui alone, so it builds
 //! for the browser too (decision S002).
 
+pub mod controls;
 mod fonts;
 pub mod forms;
 pub mod icons;
 pub mod mark;
 mod raster;
 mod theme;
+pub mod verbs;
 pub mod widgets;
 pub mod wordmark;
 
@@ -17,6 +19,21 @@ pub use icons::Icon;
 pub use theme::{DARK, LIGHT, Palette, Theme, visuals};
 
 use egui::{Context, FontFamily, FontId, Id, TextStyle};
+
+/// The rows of trees, tables and lists: 1, or larger when comfortable
+/// (the setting "density", S062), as `f32` bits.
+static DENSITY: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x3f80_0000);
+
+/// Sets the rows' scale: 1 compact, 1.25 comfortable.
+pub fn set_density(comfortable: bool) {
+    let scale: f32 = if comfortable { 1.25 } else { 1.0 };
+    DENSITY.store(scale.to_bits(), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// A row's height at the density: `base` compact.
+pub fn row(base: f32) -> f32 {
+    (base * f32::from_bits(DENSITY.load(std::sync::atomic::Ordering::Relaxed))).round()
+}
 
 fn theme_id() -> Id {
     Id::unique("wowlua-studio-theme")

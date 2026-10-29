@@ -12,6 +12,18 @@ use wowlua_casc::spelltext::Caster;
 use wowlua_casc::tables::Table;
 use wowlua_studio_app::system::{Art, ClassSpell, Image, SpellRow};
 
+/// The item qualities by ID (`Enum.ItemQuality`).
+const QUALITIES: &[&str] = &[
+    "poor",
+    "common",
+    "uncommon",
+    "rare",
+    "epic",
+    "legendary",
+    "artifact",
+    "heirloom",
+];
+
 /// The class sheet the character screens draw class icons from.
 const CLASS_SHEET: &str = "Interface\\Glues\\CharacterCreate\\UI-CharacterCreate-Classes";
 
@@ -65,6 +77,7 @@ pub struct GameData {
     clients: Mutex<HashMap<String, Option<Arc<Casc>>>>,
     spells: Mutex<HashMap<String, Option<Arc<Spells>>>>,
     items: Mutex<HashMap<String, Option<Arc<Table>>>>,
+    sparse: Mutex<HashMap<String, Option<Arc<Table>>>>,
 }
 
 impl GameData {
@@ -105,6 +118,56 @@ impl GameData {
             .entry(flavor.to_string())
             .or_insert_with(|| Table::open(&casc, "Item").map(Arc::new))
             .clone()
+    }
+
+    /// The items' names, qualities and levels (`ItemSparse`), opened once.
+    fn item_sparse(&self, flavor: &str) -> Option<Arc<Table>> {
+        let casc = self.client(flavor)?;
+        let mut sparse = self.sparse.lock().ok()?;
+        sparse
+            .entry(flavor.to_string())
+            .or_insert_with(|| Table::open(&casc, "ItemSparse").map(Arc::new))
+            .clone()
+    }
+
+    /// The client's items whose name holds `query` (or whose ID it is),
+    /// the first 40, each with its quality and item level as its text.
+    pub fn search_items(&self, flavor: &str, query: &str) -> Vec<SpellRow> {
+        let q = query.trim();
+        let id = q.parse::<u32>().ok();
+        if q.chars().count() < 2 && id.is_none() {
+            return Vec::new();
+        }
+        let Some(sparse) = self.item_sparse(flavor) else {
+            return Vec::new();
+        };
+        let items = self.item_table(flavor);
+        let lower = q.to_lowercase();
+        let mut out = Vec::new();
+        for row in sparse.rows() {
+            let name = row.string("Display_lang").unwrap_or_default();
+            if id != Some(row.id()) && !name.to_lowercase().contains(&lower) {
+                continue;
+            }
+            let quality = QUALITIES
+                .get(row.int("OverallQualityID") as usize)
+                .copied()
+                .unwrap_or("");
+            out.push(SpellRow {
+                id: row.id(),
+                name,
+                icon: items
+                    .as_ref()
+                    .and_then(|t| t.row(row.id()))
+                    .map(|r| r.int("IconFileDataID"))
+                    .filter(|i| *i != 0),
+                text: format!("{quality} · item level {}", row.int("ItemLevel")),
+            });
+            if out.len() >= 40 {
+                break;
+            }
+        }
+        out
     }
 
     /// The art, as an image (a class's icon cropped from the sheet).
@@ -285,6 +348,28 @@ mod unit {
         assert_eq!(image.rgba, [0, 0, 0, 255]);
         let whole = cropped(4, 4, &pixels, None);
         assert_eq!(whole.rgba.len(), 64);
+    }
+
+    /// The client's items by name or ID (skipped without a camelot client).
+    #[test]
+    fn items_by_name_or_id_from_the_client() {
+        let data = GameData::default();
+        let found = data.search_items("camelot", "thunderfury");
+        if data.item_sparse("camelot").is_none() {
+            eprintln!("no camelot client: skipped");
+            return;
+        }
+        let blade = found.iter().find(|i| i.id == 19019).expect("Thunderfury");
+        assert!(blade.name.starts_with("Thunderfury"), "{}", blade.name);
+        assert!(
+            blade.text.starts_with("legendary · item level"),
+            "{}",
+            blade.text
+        );
+        assert!(blade.icon.is_some());
+        let by_id = data.search_items("camelot", "19019");
+        assert_eq!(by_id.first().map(|i| i.id), Some(19019));
+        assert!(data.search_items("camelot", "t").is_empty());
     }
 
     /// The client's warrior spells (skipped without a camelot client).

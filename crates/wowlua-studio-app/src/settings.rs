@@ -1,0 +1,1174 @@
+//! The settings page (M10, S062, S063): Studio's own settings on this
+//! computer by section, found by name. A setting changes as it is set and
+//! is kept with the others (`settings.json` in Studio's data). A package's
+//! `wowlua.json` is its tab's form, not a setting of Studio's.
+
+use std::path::PathBuf;
+
+use egui::{CornerRadius, Sense, Ui, Vec2};
+use wowlua_studio_ui::controls;
+use wowlua_studio_ui::forms::{self, CalloutKind};
+use wowlua_studio_ui::widgets::{self, BadgeKind, ButtonKind};
+use wowlua_studio_ui::{Face, Palette, palette};
+
+use crate::state::Settings;
+use crate::system::{GithubSignIn, Installation, SettingsInfo, System, UpdateCheck, Workspace};
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Section {
+    Appearance,
+    Editor,
+    Completion,
+    LanguageServer,
+    #[default]
+    Debugger,
+    GameScreen,
+    Installation,
+    Github,
+    Claude,
+    Keybindings,
+    Layouts,
+    About,
+}
+
+impl Section {
+    pub const ALL: [Section; 12] = [
+        Section::Appearance,
+        Section::Editor,
+        Section::Completion,
+        Section::LanguageServer,
+        Section::Debugger,
+        Section::GameScreen,
+        Section::Installation,
+        Section::Github,
+        Section::Claude,
+        Section::Keybindings,
+        Section::Layouts,
+        Section::About,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Section::Appearance => "appearance",
+            Section::Editor => "editor",
+            Section::Completion => "completion",
+            Section::LanguageServer => "language server",
+            Section::Debugger => "debugger",
+            Section::GameScreen => "game screen",
+            Section::Installation => "installation",
+            Section::Github => "github",
+            Section::Claude => "claude",
+            Section::Keybindings => "keybindings",
+            Section::Layouts => "layouts",
+            Section::About => "about",
+        }
+    }
+}
+
+/// What the page asks of the rest of Studio.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Action {
+    /// A setting changed: keep the settings and apply them.
+    Changed,
+    PickInstallation,
+    /// Reset every page's layout to its preset.
+    ResetLayouts,
+    OpenLog,
+}
+
+#[derive(Default)]
+pub struct SettingsState {
+    /// The section shown.
+    pub section: Section,
+    pub query: String,
+    info: Option<SettingsInfo>,
+    asked: bool,
+    updates: Option<UpdateCheck>,
+    checking_updates: bool,
+    github: Option<GithubSignIn>,
+    claude_key: String,
+    /// The wowlua built into Studio (the host's).
+    pub wowlua_version: String,
+    /// The command whose keys are being recorded (S062).
+    pub recording: Option<String>,
+    /// The flavor whose Blizzard UI the installation row shows (S064).
+    ui_flavor: Option<String>,
+}
+
+impl SettingsState {
+    pub fn info(&mut self, info: SettingsInfo) {
+        self.info = Some(info);
+    }
+
+    pub fn updates(&mut self, check: UpdateCheck) {
+        self.checking_updates = false;
+        self.updates = Some(check);
+    }
+
+    pub fn github(&mut self, event: GithubSignIn) {
+        if matches!(event, GithubSignIn::SignedIn(_)) {
+            self.asked = false;
+        }
+        self.github = Some(event);
+    }
+
+    /// The page was opened: what it shows of this computer is read again.
+    pub fn opened(&mut self) {
+        self.asked = false;
+    }
+}
+
+/// How a number is set.
+#[derive(Clone, Copy)]
+enum Num {
+    /// From `min` to `max` in `step`s, shown with `suffix`, `ticks` under.
+    Slider {
+        min: f64,
+        max: f64,
+        step: f64,
+        suffix: &'static str,
+        ticks: &'static [(f64, &'static str)],
+    },
+    /// One `step` at a time, in `unit`, with `presets` beside.
+    Stepper {
+        min: f64,
+        max: f64,
+        step: f64,
+        unit: &'static str,
+        presets: &'static [(&'static str, f64)],
+    },
+}
+
+/// How a setting is set.
+enum Kind {
+    Flag(fn(&Settings) -> bool, fn(&mut Settings, bool)),
+    Choice(
+        &'static [&'static str],
+        fn(&Settings) -> String,
+        fn(&mut Settings, &str),
+    ),
+    /// A number, never typed from blank: a slider or a stepper (S065).
+    Number(fn(&Settings) -> f64, fn(&mut Settings, f64), Num),
+    /// A value of this computer and its button.
+    Action(Act),
+    /// A key to save, never shown again.
+    Secret,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Act {
+    Installation,
+    Wowlua,
+    BlizzardUi,
+    CheckCache,
+    ArtCache,
+    Github,
+    Drafts,
+    Version,
+    Log,
+    ResetLayouts,
+}
+
+struct Row {
+    section: Section,
+    label: &'static str,
+    desc: &'static str,
+    kind: Kind,
+}
+
+fn rows() -> Vec<Row> {
+    use Kind::*;
+    use Section::*;
+    let row = |section, label, desc, kind| Row {
+        section,
+        label,
+        desc,
+        kind,
+    };
+    vec![
+        row(
+            Appearance,
+            "theme",
+            "wowlua's dark and light themes; system follows the OS. Also in the command palette: > theme.",
+            Choice(
+                &["dark", "light", "system"],
+                |s| s.theme.clone(),
+                |s, v| s.theme = v.into(),
+            ),
+        ),
+        row(
+            Appearance,
+            "interface size",
+            "Studio draws its own interface on the GPU: one scale for all of it, in percent.",
+            Number(
+                |s| f64::from(s.interface_size),
+                |s, v| s.interface_size = (v.round() as u32).clamp(50, 200),
+                Num::Slider {
+                    min: 50.0,
+                    max: 200.0,
+                    step: 5.0,
+                    suffix: "%",
+                    ticks: &[
+                        (50.0, "50%"),
+                        (100.0, "100%"),
+                        (150.0, "150%"),
+                        (200.0, "200%"),
+                    ],
+                },
+            ),
+        ),
+        row(
+            Appearance,
+            "density",
+            "Row height of trees, tables and lists.",
+            Choice(
+                &["compact", "comfortable"],
+                |s| s.density.clone(),
+                |s, v| s.density = v.into(),
+            ),
+        ),
+        row(
+            Appearance,
+            "reduce motion",
+            "No blinking caret, no animated panels.",
+            Flag(|s| s.reduce_motion, |s, v| s.reduce_motion = v),
+        ),
+        row(
+            Editor,
+            "font size",
+            "IBM Plex Mono, as everywhere in wowlua.",
+            Number(
+                |s| f64::from(s.font_size),
+                |s, v| s.font_size = (v as f32).clamp(8.0, 32.0),
+                Num::Stepper {
+                    min: 8.0,
+                    max: 32.0,
+                    step: 1.0,
+                    unit: "px",
+                    presets: &[("12", 12.0), ("13", 13.0), ("14", 14.0), ("16", 16.0)],
+                },
+            ),
+        ),
+        row(
+            Editor,
+            "format on save",
+            "wowlua fmt with the package's fmt settings.",
+            Flag(|s| s.format_on_save, |s, v| s.format_on_save = v),
+        ),
+        row(
+            Editor,
+            "inlay hints",
+            "Inferred types after names, as in : number | Secret<number>?",
+            Flag(|s| s.inlay_hints, |s, v| s.inlay_hints = v),
+        ),
+        row(
+            Editor,
+            "code lenses",
+            "References, tests and debug above functions and tests.",
+            Flag(|s| s.code_lenses, |s, v| s.code_lenses = v),
+        ),
+        row(
+            Editor,
+            "coverage in the gutter",
+            "Lines the last coverage run never ran.",
+            Flag(|s| s.coverage_gutter, |s, v| s.coverage_gutter = v),
+        ),
+        row(
+            Editor,
+            "word wrap",
+            "Long lines wrap at the package's fmt line width or at the window's edge.",
+            Choice(
+                &["off", "at the line width", "at the window"],
+                |s| match s.word_wrap.as_str() {
+                    "line width" => "at the line width".into(),
+                    "window" => "at the window".into(),
+                    _ => "off".into(),
+                },
+                |s, v| {
+                    s.word_wrap = match v {
+                        "at the line width" => "line width".into(),
+                        "at the window" => "window".into(),
+                        _ => "off".into(),
+                    }
+                },
+            ),
+        ),
+        row(
+            Completion,
+            "suggest while typing",
+            "Locals, members, imports, events, anchors, frame types, decorators.",
+            Flag(
+                |s| s.suggest_while_typing,
+                |s, v| s.suggest_while_typing = v,
+            ),
+        ),
+        row(
+            Completion,
+            "accept with",
+            "",
+            Choice(
+                &["tab", "enter", "tab and enter"],
+                |s| s.accept_with.clone(),
+                |s, v| s.accept_with = v.into(),
+            ),
+        ),
+        row(
+            Completion,
+            "add imports",
+            "Completing an export of another file adds its import.",
+            Flag(|s| s.add_imports, |s, v| s.add_imports = v),
+        ),
+        row(
+            Completion,
+            "documentation beside the list",
+            "The game API's documentation for your flavor, and your doc comments.",
+            Flag(|s| s.completion_docs, |s, v| s.completion_docs = v),
+        ),
+        row(
+            Completion,
+            "signature help",
+            "Parameters as you type a call.",
+            Flag(|s| s.signature_help, |s, v| s.signature_help = v),
+        ),
+        row(
+            LanguageServer,
+            "check",
+            "The open file and its imports first, then the workspace.",
+            Choice(
+                &["while typing", "when you pause", "on save"],
+                |s| s.check_when.clone(),
+                |s, v| s.check_when = v.into(),
+            ),
+        ),
+        row(
+            LanguageServer,
+            "worker threads",
+            "For per-file work; 0: all cores, 1: none.",
+            Number(
+                |s| f64::from(s.check_threads),
+                |s, v| s.check_threads = v.max(0.0).round() as u32,
+                Num::Stepper {
+                    min: 0.0,
+                    max: 256.0,
+                    step: 1.0,
+                    unit: "threads",
+                    presets: &[("all cores", 0.0), ("1 · none", 1.0)],
+                },
+            ),
+        ),
+        row(
+            LanguageServer,
+            "check with profile",
+            "Diagnostics follow a build profile.",
+            Choice(
+                &["dev", "test", "release"],
+                |s| s.check_profile.clone(),
+                |s, v| s.check_profile = v.into(),
+            ),
+        ),
+        row(
+            LanguageServer,
+            "check cache",
+            "The check cache, reused between runs.",
+            Action(Act::CheckCache),
+        ),
+        row(
+            Debugger,
+            "default clock",
+            "For new configurations. Manual: time moves only when you advance it.",
+            Choice(
+                &["manual", "realtime"],
+                |s| s.default_clock.clone(),
+                |s, v| s.default_clock = v.into(),
+            ),
+        ),
+        row(
+            Debugger,
+            "stop on uncaught errors",
+            "Errors that reach the error handler.",
+            Flag(|s| s.stops_on("uncaught"), |s, v| stop(s, "uncaught", v)),
+        ),
+        row(
+            Debugger,
+            "stop on every error",
+            "Caught ones too: pcall, xpcall, your own error handlers.",
+            Flag(|s| s.stops_on("all"), |s, v| stop(s, "all", v)),
+        ),
+        row(
+            Debugger,
+            "stop on taint",
+            "When secure execution becomes tainted.",
+            Flag(|s| s.stops_on("taint"), |s, v| stop(s, "taint", v)),
+        ),
+        row(
+            Debugger,
+            "stop on blocked actions",
+            "A protected action refused (ADDON_ACTION_BLOCKED, ADDON_ACTION_FORBIDDEN).",
+            Flag(|s| s.stops_on("blocked"), |s, v| stop(s, "blocked", v)),
+        ),
+        row(
+            Debugger,
+            "step into Blizzard's UI",
+            "Off: Blizzard's code is stepped over and never stopped in.",
+            Flag(|s| s.step_into_blizzard, |s, v| s.step_into_blizzard = v),
+        ),
+        row(
+            Debugger,
+            "show dispatch frames",
+            "Events, scripts, OnUpdate, timers and game frames in the call stack.",
+            Flag(|s| s.show_dispatch, |s, v| s.show_dispatch = v),
+        ),
+        row(
+            Debugger,
+            "inline values",
+            "Values beside the code while paused; secrets marked.",
+            Flag(|s| s.inline_values, |s, v| s.inline_values = v),
+        ),
+        row(
+            Debugger,
+            "show what secrets hide",
+            "Off: a secret shows only as secret, as the game does.",
+            Flag(|s| s.reveal_secrets, |s, v| s.reveal_secrets = v),
+        ),
+        row(
+            GameScreen,
+            "screen size",
+            "For sessions; tests use test.screen.",
+            Choice(
+                &["1920 × 1080", "2560 × 1440", "3840 × 2160"],
+                |s| s.screen_size.clone(),
+                |s, v| s.screen_size = v.into(),
+            ),
+        ),
+        row(
+            GameScreen,
+            "use the installation's art",
+            "Textures, atlases, fonts and models from your WoW folder; never shipped.",
+            Flag(|s| s.installation_art, |s, v| s.installation_art = v),
+        ),
+        row(
+            GameScreen,
+            "answer from the installation's data",
+            "Items, creatures, appearances where a profile defines nothing. Off: the same result on every machine.",
+            Flag(|s| s.installation_data, |s, v| s.installation_data = v),
+        ),
+        row(
+            GameScreen,
+            "art cache",
+            "Read once from the installation, then kept on disk.",
+            Action(Act::ArtCache),
+        ),
+        row(
+            Installation,
+            "wow",
+            "Where Studio reads art and installs AddOns, kept as wow.path in ~/.wowlua/config.json.",
+            Action(Act::Installation),
+        ),
+        row(
+            Installation,
+            "wowlua",
+            "The wowlua built into Studio: its checker, test runner, debugger and client.",
+            Action(Act::Wowlua),
+        ),
+        row(
+            Installation,
+            "blizzard ui",
+            "Blizzard's UI code for test.blizzard-ui.",
+            Action(Act::BlizzardUi),
+        ),
+        row(
+            Github,
+            "account",
+            "GitHub's device sign-in: a code to enter on github.com. The token is kept in the OS credential store.",
+            Action(Act::Github),
+        ),
+        row(
+            Github,
+            "drafts",
+            "Online workspaces keep your uncommitted edits here until you commit or discard them.",
+            Action(Act::Drafts),
+        ),
+        row(
+            Github,
+            "load an online repository",
+            "Opened files first; the rest follows so checks and tests see the whole package.",
+            Choice(
+                &["opened files first", "everything at once"],
+                |s| s.github_load.clone(),
+                |s, v| s.github_load = v.into(),
+            ),
+        ),
+        row(
+            Github,
+            "watch branches on GitHub",
+            "Every 5 minutes: a branch that moved under your drafts or folder says so.",
+            Flag(|s| s.github_watch, |s, v| s.github_watch = v),
+        ),
+        row(
+            Github,
+            "notify when a run finishes",
+            "For runs of your pushes and pull requests.",
+            Flag(|s| s.github_notify, |s, v| s.github_notify = v),
+        ),
+        row(
+            Claude,
+            "api key",
+            "Your Anthropic API key, kept in the OS credential store; Studio never shows it again.",
+            Secret,
+        ),
+        row(
+            Claude,
+            "approvals",
+            "What Claude may do without asking.",
+            Choice(
+                &[
+                    "ask every time",
+                    "edits ask, the rest runs",
+                    "only reading runs",
+                ],
+                |s| s.claude_approvals.clone(),
+                |s, v| s.claude_approvals = v.into(),
+            ),
+        ),
+        row(
+            Claude,
+            "debug and game tools",
+            "Start sessions, screenshots, clicks, world changes, breakpoints (wowlua mcp).",
+            Flag(|s| s.claude_tools, |s, v| s.claude_tools = v),
+        ),
+        row(
+            Claude,
+            "run commands",
+            "wowlua test, check, build; never publish without asking.",
+            Flag(|s| s.claude_shell, |s, v| s.claude_shell = v),
+        ),
+        row(
+            Layouts,
+            "page presets",
+            "Each page opens in its preset until you move a panel.",
+            Flag(|s| s.follow_presets, |s, v| s.follow_presets = v),
+        ),
+        row(
+            Layouts,
+            "keep layouts per workspace",
+            "Each workspace keeps its own panels.",
+            Flag(
+                |s| s.layouts_per_workspace,
+                |s, v| s.layouts_per_workspace = v,
+            ),
+        ),
+        row(
+            Layouts,
+            "floating panels as OS windows",
+            "A panel dragged out becomes its own window, on any screen.",
+            Flag(|s| s.float_windows, |s, v| s.float_windows = v),
+        ),
+        row(
+            Layouts,
+            "reset layouts",
+            "Back to the presets for every page.",
+            Action(Act::ResetLayouts),
+        ),
+        row(
+            About,
+            "version",
+            "Studio and the wowlua built into it.",
+            Action(Act::Version),
+        ),
+        row(
+            About,
+            "logs",
+            "Studio's own log, for bug reports.",
+            Action(Act::Log),
+        ),
+    ]
+}
+
+fn stop(s: &mut Settings, kind: &str, on: bool) {
+    s.stop_on.retain(|k| k != kind);
+    if on {
+        s.stop_on.push(kind.into());
+    }
+}
+
+/// The left panel: Studio's sections.
+pub fn sections(ui: &mut Ui, state: &mut SettingsState) {
+    egui::ScrollArea::vertical()
+        .id_salt("settings-sections")
+        .auto_shrink([false, false])
+        .show(ui, |ui| sections_list(ui, state));
+}
+
+fn sections_list(ui: &mut Ui, state: &mut SettingsState) {
+    let p = palette(ui.ctx());
+    forms::padded(ui, 14, 6, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("Studio")
+                    .font(Face::PlexMedium.at(11.0))
+                    .color(p.ink_muted),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(
+                    egui::RichText::new("this computer")
+                        .font(Face::Plex.at(11.0))
+                        .color(p.ink_faint),
+                );
+            });
+        });
+    });
+    for section in Section::ALL {
+        let current = state.query.trim().is_empty() && state.section == section;
+        if nav(ui, section.label(), current, p) {
+            state.section = section;
+            state.query.clear();
+        }
+    }
+}
+
+/// A section in a list of them: the current one marked.
+pub(crate) fn nav(ui: &mut Ui, label: &str, current: bool, p: &Palette) -> bool {
+    let width = ui.available_width();
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 28.0), Sense::click());
+    let painter = ui.painter();
+    if current {
+        painter.rect_filled(rect, CornerRadius::ZERO, p.bg_400);
+        let bar = egui::Rect::from_min_size(rect.min, Vec2::new(2.0, rect.height()));
+        painter.rect_filled(bar, CornerRadius::ZERO, p.amber);
+    } else if response.hovered() {
+        painter.rect_filled(rect, CornerRadius::ZERO, p.bg_300);
+    }
+    painter.text(
+        rect.left_center() + Vec2::new(24.0, 0.0),
+        egui::Align2::LEFT_CENTER,
+        label,
+        Face::Plex.at(12.5),
+        p.ink,
+    );
+    response.clicked()
+}
+
+/// What this computer's facts say for an action row, and its button.
+fn act_value(
+    act: Act,
+    state: &SettingsState,
+    installation: Option<&Installation>,
+) -> (String, &'static str) {
+    let info = state.info.clone().unwrap_or_default();
+    match act {
+        Act::Installation => (
+            installation
+                .and_then(|i| i.path.as_ref())
+                .map_or_else(|| "not found".into(), |p| p.to_string_lossy().into_owned()),
+            "change",
+        ),
+        Act::Wowlua => (format!("wowlua {} · built in", state.wowlua_version), ""),
+        Act::BlizzardUi => ("from the installation".to_owned(), "refresh"),
+        Act::CheckCache => (
+            info.check_cache.map_or("empty".into(), |b| {
+                format!("~/.wowlua/cache/check · {}", crate::ship::size(b))
+            }),
+            "clear",
+        ),
+        Act::ArtCache => (
+            info.art_cache.map_or("empty".into(), |(b, n)| {
+                format!("{n} files · {}", crate::ship::size(b))
+            }),
+            "clear",
+        ),
+        Act::Github => match (&state.github, &info.github) {
+            (Some(GithubSignIn::Code { .. }), _) => ("waiting for GitHub…".into(), "cancel"),
+            (_, Some(login)) => (format!("signed in as {login}"), "sign out"),
+            _ => ("not signed in".into(), "sign in with GitHub"),
+        },
+        Act::Drafts => (
+            "Studio's data on this machine · none yet (online workspaces come with M12)".into(),
+            "",
+        ),
+        Act::Version => (
+            format!(
+                "wowlua studio {} · wowlua {}",
+                env!("CARGO_PKG_VERSION"),
+                state.wowlua_version
+            ),
+            "check for updates",
+        ),
+        Act::Log => (
+            info.log
+                .map_or("no log yet".into(), |p| p.to_string_lossy().into_owned()),
+            "open",
+        ),
+        Act::ResetLayouts => (String::new(), "reset layouts"),
+    }
+}
+
+/// The main panel for Studio's settings: a section, or what matches.
+#[allow(clippy::too_many_arguments)]
+pub fn studio(
+    ui: &mut Ui,
+    state: &mut SettingsState,
+    settings: &mut Settings,
+    system: &dyn System,
+    workspace: Option<&Workspace>,
+    installation: Option<&Installation>,
+    platform: crate::Platform,
+) -> Option<Action> {
+    let p = palette(ui.ctx());
+    if !state.asked {
+        state.asked = true;
+        system.settings_info();
+    }
+    let section = state.section;
+    let query = state.query.trim().to_lowercase();
+    let mut action = None;
+    forms::padded(ui, 16, 8, |ui| {
+        forms::bar(ui, |ui| {
+            let title = if query.is_empty() {
+                section.label().to_owned()
+            } else {
+                format!("settings matching \"{}\"", state.query.trim())
+            };
+            ui.label(
+                egui::RichText::new(title)
+                    .font(Face::PlexMedium.at(12.5))
+                    .color(p.ink),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                forms::text_input(ui, &mut state.query, 260.0, "find a setting");
+            });
+        });
+    });
+    // The package's flavors, else the supported ones (S064).
+    let flavors: Vec<String> = workspace
+        .map(|w| w.flavors.clone())
+        .filter(|f| !f.is_empty())
+        .unwrap_or_else(crate::flavors::supported_ids);
+    let flavor = state
+        .ui_flavor
+        .clone()
+        .filter(|f| flavors.contains(f))
+        .or_else(|| flavors.first().cloned())
+        .unwrap_or_default();
+    egui::ScrollArea::vertical()
+        .id_salt("settings-rows")
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            forms::padded(ui, 24, 8, |ui| {
+                ui.set_width(ui.available_width());
+                let notices = ui.cursor().top();
+                if query.is_empty() {
+                    match section {
+                        Section::Claude => {
+                            forms::callout(ui, CalloutKind::Plain, |ui| {
+                                ui.horizontal_wrapped(|ui| {
+                                    widgets::badge(ui, "M14", BadgeKind::Planned);
+                                    forms::paragraph(ui, "Claude in Studio is the last part to build. Your key and these settings are kept now; they take effect when it is.", 12.5, 19.0, p.ink);
+                                });
+                            });
+                        }
+                        Section::Github => {
+                            forms::callout(ui, CalloutKind::Plain, |ui| {
+                                ui.horizontal_wrapped(|ui| {
+                                    widgets::badge(ui, "M12", BadgeKind::Planned);
+                                    forms::paragraph(ui, "Signing in works now; the pull requests, online workspaces and runs these settings steer come with the GitHub pages.", 12.5, 19.0, p.ink);
+                                });
+                            });
+                            if let Some(GithubSignIn::Code { code, url }) = &state.github {
+                                forms::callout(ui, CalloutKind::Note, |ui| {
+                                    ui.horizontal_wrapped(|ui| {
+                                        forms::paragraph(
+                                            ui,
+                                            &format!("Enter {code} at {url} (opened in your browser; the code is copied) · waiting for GitHub…"),
+                                            12.5,
+                                            19.0,
+                                            p.ink,
+                                        );
+                                        if forms::text_button(ui, "open github.com").clicked() {
+                                            ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+                                        }
+                                        if forms::text_button(ui, "copy the code").clicked() {
+                                            ui.ctx().copy_text(code.clone());
+                                        }
+                                    });
+                                });
+                            }
+                            if let Some(GithubSignIn::Failed(why)) = &state.github {
+                                forms::callout(ui, CalloutKind::Error, |ui| forms::paragraph(ui, why, 12.5, 19.0, p.ink));
+                            }
+                        }
+                        Section::Keybindings => {
+                            if crate::keys::section(ui, settings, platform, &mut state.recording) {
+                                action = Some(Action::Changed);
+                            }
+                            return;
+                        }
+                        Section::About => {
+                            match &state.updates {
+                                Some(UpdateCheck::Newest) => caption(ui, "This is the newest Studio.", p),
+                                Some(UpdateCheck::Newer { version, url }) => {
+                                    forms::callout(ui, CalloutKind::Note, |ui| {
+                                        forms::paragraph(ui, &format!("wowlua studio {version} is out: {url}"), 12.5, 19.0, p.ink);
+                                    });
+                                }
+                                Some(UpdateCheck::Failed(why)) => caption(ui, why, p),
+                                None if state.checking_updates => caption(ui, "checking…", p),
+                                None => {}
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                if ui.cursor().top() > notices {
+                    ui.add_space(10.0);
+                }
+                let all = rows();
+                let shown: Vec<&Row> = all
+                    .iter()
+                    .filter(|r| {
+                        if query.is_empty() {
+                            r.section == section
+                        } else {
+                            format!("{} {}", r.label, r.desc).to_lowercase().contains(&query)
+                        }
+                    })
+                    .collect();
+                if shown.is_empty() {
+                    caption(ui, &format!("No setting matches \"{}\".", state.query.trim()), p);
+                }
+                for r in shown {
+                    let where_ = (!query.is_empty()).then(|| r.section.label());
+                    let a = row(ui, r, where_, state, settings, system, installation, &flavors, &flavor, p);
+                    if a.is_some() {
+                        action = a;
+                    }
+                }
+            });
+        });
+    action
+}
+
+fn caption(ui: &mut Ui, text: &str, p: &Palette) {
+    ui.label(
+        egui::RichText::new(text)
+            .font(Face::Plex.at(11.5))
+            .color(p.ink_muted),
+    );
+}
+
+/// A setting's row: its label and description, its control on the right.
+#[allow(clippy::too_many_arguments)]
+fn row(
+    ui: &mut Ui,
+    r: &Row,
+    section: Option<&str>,
+    state: &mut SettingsState,
+    settings: &mut Settings,
+    system: &dyn System,
+    installation: Option<&Installation>,
+    flavors: &[String],
+    flavor: &str,
+    p: &Palette,
+) -> Option<Action> {
+    let mut action = None;
+    let width = ui.available_width();
+    let control = 360.0_f32.min(width * 0.5);
+    forms::centred_row(
+        ui,
+        ("setting", r.label),
+        width - control - 16.0,
+        control,
+        |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(
+                    egui::RichText::new(r.label)
+                        .font(Face::PlexMedium.at(12.5))
+                        .color(p.ink),
+                );
+                if let Some(s) = section {
+                    ui.label(
+                        egui::RichText::new(format!("· {s}"))
+                            .font(Face::Plex.at(11.0))
+                            .color(p.ink_faint),
+                    );
+                }
+            });
+            if !r.desc.is_empty() {
+                ui.label(
+                    egui::RichText::new(r.desc)
+                        .font(Face::Plex.at(11.5))
+                        .color(p.ink_muted),
+                );
+            }
+        },
+        |ui| {
+            match &r.kind {
+                Kind::Flag(get, set) => {
+                    let mut on = get(settings);
+                    let word = if on { "on" } else { "off" };
+                    if forms::checkbox(ui, &mut on, word, None) {
+                        set(settings, on);
+                        action = Some(Action::Changed);
+                    }
+                }
+                Kind::Choice(options, get, set) => {
+                    let now = get(settings);
+                    let mut at = options.iter().position(|o| *o == now).unwrap_or(0);
+                    let id = format!("set-{}", r.label);
+                    // (buttons when they fit the column, else a select)
+                    if seg_width(ui, options) <= control {
+                        if let Some(i) = widgets::seg(ui, &id, options, at, true) {
+                            set(settings, options[i]);
+                            action = Some(Action::Changed);
+                        }
+                    } else {
+                        let opts: Vec<(&str, bool)> = options.iter().map(|o| (*o, true)).collect();
+                        if forms::select(ui, &id, &opts, &mut at, control.min(300.0)) {
+                            set(settings, options[at]);
+                            action = Some(Action::Changed);
+                        }
+                    }
+                }
+                Kind::Number(get, set, how) => {
+                    let now = get(settings);
+                    let mut v = now;
+                    let id = format!("set-{}", r.label);
+                    match how {
+                        Num::Slider {
+                            min,
+                            max,
+                            step,
+                            suffix,
+                            ticks,
+                        } => {
+                            controls::slider(
+                                ui, &id, &mut v, *min, *max, *step, 1.0, suffix, ticks, control,
+                            );
+                        }
+                        Num::Stepper {
+                            min,
+                            max,
+                            step,
+                            unit,
+                            presets,
+                        } => {
+                            ui.horizontal_wrapped(|ui| {
+                                controls::stepper(
+                                    ui,
+                                    &id,
+                                    &mut v,
+                                    Some(*min),
+                                    Some(*max),
+                                    *step,
+                                    unit,
+                                );
+                                if let Some(p) = controls::presets(ui, presets, v) {
+                                    v = p;
+                                }
+                            });
+                        }
+                    }
+                    if (v - now).abs() > 1e-9 {
+                        set(settings, v);
+                        action = Some(Action::Changed);
+                    }
+                }
+                Kind::Secret => {
+                    let saved = state.info.as_ref().is_some_and(|i| i.claude_key);
+                    ui.horizontal(|ui| {
+                        if saved {
+                            caption(ui, "a key is saved", p);
+                            if widgets::button(ui, ButtonKind::Secondary, "remove", true, None)
+                                .clicked()
+                            {
+                                system.claude_key(None);
+                                state.asked = false;
+                            }
+                        } else {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut state.claude_key)
+                                    .password(true)
+                                    .desired_width(control - 80.0)
+                                    .font(Face::Plex.at(12.0))
+                                    .hint_text("sk-ant-…"),
+                            );
+                            if widgets::button(ui, ButtonKind::Secondary, "save", true, None)
+                                .clicked()
+                                && !state.claude_key.trim().is_empty()
+                            {
+                                system.claude_key(Some(state.claude_key.trim().to_owned()));
+                                state.claude_key.clear();
+                                state.asked = false;
+                            }
+                        }
+                    });
+                }
+                Kind::Action(act) => {
+                    let (value, button) = act_value(*act, state, installation);
+                    // (a long value wraps in the column, the button after it)
+                    ui.horizontal_wrapped(|ui| {
+                        // Blizzard's UI of one of the package's flavors (S064).
+                        if *act == Act::BlizzardUi && !flavors.is_empty() {
+                            let labels: Vec<String> =
+                                flavors.iter().map(|f| crate::flavors::label(f)).collect();
+                            let opts: Vec<(&str, bool)> = flavors
+                                .iter()
+                                .zip(&labels)
+                                .map(|(f, l)| (l.as_str(), crate::flavors::supported(f)))
+                                .collect();
+                            let mut at = flavors.iter().position(|f| f == flavor).unwrap_or(0);
+                            if forms::select(ui, "set-ui-flavor", &opts, &mut at, 200.0) {
+                                state.ui_flavor = Some(flavors[at].clone());
+                            }
+                        }
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(value)
+                                    .font(Face::Plex.at(11.5))
+                                    .color(p.ink_muted),
+                            )
+                            .wrap(),
+                        );
+                        if !button.is_empty()
+                            && widgets::button(ui, ButtonKind::Secondary, button, true, None)
+                                .clicked()
+                        {
+                            match act {
+                                Act::Installation => action = Some(Action::PickInstallation),
+                                Act::BlizzardUi => system.refresh_ui(flavor),
+                                Act::CheckCache => {
+                                    system.clear_check_cache();
+                                    state.asked = false;
+                                }
+                                Act::ArtCache => {
+                                    system.clear_art_cache();
+                                    state.asked = false;
+                                }
+                                Act::Github => match (
+                                    &state.github,
+                                    state.info.as_ref().and_then(|i| i.github.as_ref()),
+                                ) {
+                                    (Some(GithubSignIn::Code { .. }), _) => {
+                                        system.github_sign_in(false);
+                                        state.github = None;
+                                    }
+                                    (_, Some(_)) => {
+                                        system.github_sign_in(false);
+                                        state.github = None;
+                                        state.asked = false;
+                                    }
+                                    _ => system.github_sign_in(true),
+                                },
+                                Act::Version => {
+                                    state.checking_updates = true;
+                                    state.updates = None;
+                                    system.check_updates();
+                                }
+                                Act::Log => action = Some(Action::OpenLog),
+                                Act::ResetLayouts => action = Some(Action::ResetLayouts),
+                                Act::Wowlua | Act::Drafts => {}
+                            }
+                        }
+                    });
+                }
+            }
+        },
+    );
+    ui.add_space(4.0);
+    let y = ui.cursor().top();
+    ui.painter().line_segment(
+        [
+            egui::pos2(ui.min_rect().left(), y),
+            egui::pos2(ui.min_rect().right(), y),
+        ],
+        egui::Stroke::new(1.0, p.line),
+    );
+    ui.add_space(6.0);
+    action
+}
+
+/// How wide the segmented buttons of `options` are (`widgets::seg`, large).
+fn seg_width(ui: &Ui, options: &[&str]) -> f32 {
+    let p = palette(ui.ctx());
+    let text: f32 = options
+        .iter()
+        .map(|o| {
+            ui.fonts_mut(|f| {
+                f.layout_no_wrap((*o).to_owned(), Face::Plex.at(12.0), p.ink)
+                    .size()
+                    .x
+            })
+        })
+        .sum();
+    text + 24.0 * options.len() as f32 + 4.0
+}
+
+/// The rows' labels, for checks.
+pub fn labels() -> Vec<(&'static str, &'static str)> {
+    rows()
+        .into_iter()
+        .map(|r| (r.section.label(), r.label))
+        .collect()
+}
+
+#[allow(dead_code)]
+fn _unused(_: PathBuf) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every section has its rows (the keybindings have their table), and
+    /// every choice can show what its setting holds.
+    #[test]
+    fn every_section_has_settings() {
+        let all = rows();
+        for section in Section::ALL {
+            let n = all.iter().filter(|r| r.section == section).count();
+            assert!(
+                n > 0 || section == Section::Keybindings,
+                "{}",
+                section.label()
+            );
+        }
+        let s = Settings::default();
+        for r in &all {
+            if let Kind::Choice(options, get, _) = &r.kind {
+                assert!(
+                    options.contains(&get(&s).as_str()),
+                    "{}: {}",
+                    r.label,
+                    get(&s)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn settings_set_and_read_back() {
+        let mut s = Settings::default();
+        for r in rows() {
+            match r.kind {
+                Kind::Flag(get, set) => {
+                    let was = get(&s);
+                    set(&mut s, !was);
+                    assert_eq!(get(&s), !was, "{}", r.label);
+                }
+                Kind::Choice(options, get, set) => {
+                    set(&mut s, options[options.len() - 1]);
+                    assert_eq!(get(&s), options[options.len() - 1], "{}", r.label);
+                }
+                _ => {}
+            }
+        }
+        let size = rows()
+            .into_iter()
+            .find(|r| r.label == "interface size")
+            .unwrap();
+        if let Kind::Number(get, set, _) = size.kind {
+            set(&mut s, 125.0);
+            assert_eq!(get(&s), 125.0);
+            set(&mut s, 900.0);
+            assert_eq!(s.interface_size, 200, "clamped");
+        }
+    }
+}

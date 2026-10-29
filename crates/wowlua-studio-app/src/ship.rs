@@ -10,21 +10,15 @@ use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 use egui::{CornerRadius, Sense, Ui, Vec2};
-use serde_json::Value as Json;
 use wowlua_studio_ui::forms::{self, CalloutKind, TermLine};
 use wowlua_studio_ui::widgets::{self, BadgeKind, ButtonKind};
 use wowlua_studio_ui::{Face, Palette, palette};
 
-use crate::editor::Editors;
-use crate::editor::doc::EditKind;
 use crate::system::{
     BuildDone, BuildEvent, BuildProfile, BuildStep, ChangeKind, DevBuild, DevEvent, InstallFolder,
     InstallState, Installation, PublishDone, PublishEvent, ShipBuild, ShipDiagnostic, ShipEvent,
     ShipFacts, ShipInstall, ShipPublish, ShipTarget, System, TagPush, TokenState, Workspace,
 };
-use crate::world::json::{self, Key};
-use crate::world::pos_of;
-use crate::world::schema::{self, Kind};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Tab {
@@ -56,6 +50,14 @@ pub enum Action {
     /// A file at a line and column (1-based).
     GoTo(PathBuf, u32, u32),
     PickInstallation,
+    /// A build profile's settings, in its wowlua.json's form (S064).
+    EditProfile(PathBuf, String),
+    /// A publish target's build profile, set in its wowlua.json (S067).
+    SetTargetProfile {
+        manifest: PathBuf,
+        target: String,
+        profile: String,
+    },
 }
 
 /// A build (or install) running.
@@ -90,6 +92,9 @@ pub struct ShipState {
     dev_building: Option<Vec<String>>,
     /// Targets switched off for the next publish.
     off: BTreeSet<String>,
+    /// The targets' profiles picked, shown until the package read again
+    /// has them (wowlua.json's tab may be unsaved).
+    target_profiles: HashMap<String, String>,
     tokens: HashMap<String, TokenState>,
     tokens_asked: bool,
     token_text: HashMap<String, String>,
@@ -102,15 +107,9 @@ pub struct ShipState {
     dialog: Option<Dialog>,
     tagging: bool,
     tagged: Option<Result<String, String>>,
-    /// `wowlua.json` parsed, as of a version of its document.
-    manifest: Option<(PathBuf, u64, Json)>,
-    /// The manifest's schema, once read.
-    schema: Option<Option<Json>>,
     /// The addon picked in a workspace without a package of its own: its
     /// folder.
     picked: Option<PathBuf>,
-    buffers: HashMap<String, String>,
-    new_profile: Option<String>,
 }
 
 impl ShipState {
@@ -152,6 +151,14 @@ impl ShipState {
                         .find(|p| p.name == "release")
                         .or(facts.profiles.first())
                         .map(|p| p.name.clone());
+                }
+                if let Ok(facts) = &read {
+                    self.target_profiles.retain(|name, profile| {
+                        facts
+                            .targets
+                            .iter()
+                            .any(|t| &t.name == name && &t.profile != profile)
+                    });
                 }
                 self.facts = Some(read);
             }
@@ -390,16 +397,6 @@ fn strong(ui: &mut Ui, text: &str, p: &Palette) {
     );
 }
 
-fn section(ui: &mut Ui, title: &str, p: &Palette) {
-    ui.add_space(6.0);
-    ui.label(
-        egui::RichText::new(title)
-            .font(Face::PlexMedium.at(11.0))
-            .color(p.ink_muted),
-    );
-    ui.add_space(2.0);
-}
-
 /// A size as people read it: `1.84 MB`, `212 KB`, `90 B`.
 pub fn size(bytes: u64) -> String {
     let b = bytes as f64;
@@ -542,185 +539,11 @@ fn used_by(profile: &BuildProfile, facts: &ShipFacts) -> String {
 
 // --------------------------------------------------------- the profiles
 
-/// A form's edits of `wowlua.json`.
-struct Fx<'a> {
-    root: &'a Json,
-    profile: &'a BuildProfile,
-    changes: Vec<(Vec<Key>, Option<Json>, bool)>,
-    buffers: &'a mut HashMap<String, String>,
-}
-
-impl Fx<'_> {
-    /// The value this profile sets.
-    fn own(&self, keys: &[&str]) -> Option<&Json> {
-        let mut v = self.root.get("profiles")?.get(&self.profile.name)?;
-        for k in keys {
-            v = v.get(*k)?;
-        }
-        Some(v)
-    }
-
-    /// The value as wowlua resolves it (as of the last read).
-    fn effective(&self, keys: &[&str]) -> Option<&Json> {
-        let mut v = &self.profile.effective;
-        for k in keys {
-            v = v.get(*k)?;
-        }
-        Some(v)
-    }
-
-    fn path(&self, keys: &[&str]) -> Vec<Key> {
-        let mut path: Vec<Key> = vec!["profiles".into(), Key::Name(self.profile.name.clone())];
-        path.extend(keys.iter().map(|k| Key::Name((*k).to_owned())));
-        path
-    }
-
-    fn set(&mut self, keys: &[&str], value: Option<Json>, typing: bool) {
-        self.changes.push((self.path(keys), value, typing));
-    }
-}
-
-/// "inherited", or a reset for a value the profile sets.
-fn inherited(ui: &mut Ui, fx: &mut Fx<'_>, keys: &[&str], p: &Palette) {
-    if fx.own(keys).is_some() {
-        if forms::text_button(ui, "reset").clicked() {
-            fx.set(keys, None, false);
-        }
-    } else {
-        ui.label(
-            egui::RichText::new("inherited")
-                .font(Face::Plex.at(10.5))
-                .color(p.ink_faint),
-        );
-    }
-}
-
-fn flag(ui: &mut Ui, fx: &mut Fx<'_>, label: &str, keys: &[&str], p: &Palette) {
-    let own = fx.own(keys).and_then(Json::as_bool);
-    let mut on = own
-        .or_else(|| fx.effective(keys).and_then(Json::as_bool))
-        .unwrap_or(false);
-    ui.horizontal_wrapped(|ui| {
-        if forms::checkbox(ui, &mut on, label, None) {
-            fx.set(keys, Some(Json::Bool(on)), false);
-        }
-        inherited(ui, fx, keys, p);
-    });
-}
-
-fn pick(ui: &mut Ui, fx: &mut Fx<'_>, label: &str, keys: &[&str], values: &[String], p: &Palette) {
-    let now = fx
-        .own(keys)
-        .or_else(|| fx.effective(keys))
-        .and_then(Json::as_str)
-        .unwrap_or("")
-        .to_owned();
-    let mut list: Vec<String> = values.to_vec();
-    if !now.is_empty() && !list.contains(&now) {
-        list.push(now.clone());
-    }
-    let mut index = list.iter().position(|v| *v == now).unwrap_or(0);
-    ui.horizontal_wrapped(|ui| {
-        forms::label(ui, label);
-        inherited(ui, fx, keys, p);
-    });
-    let opts: Vec<(&str, bool)> = list.iter().map(|o| (o.as_str(), true)).collect();
-    let id = format!("ship-{}-{}", fx.profile.name, keys.join("."));
-    if forms::select(ui, &id, &opts, &mut index, ui.available_width().min(240.0)) {
-        fx.set(keys, Some(Json::String(list[index].clone())), false);
-    }
-}
-
-/// A text field: a string, a number, or strings written `a, b`.
-fn text(
-    ui: &mut Ui,
-    fx: &mut Fx<'_>,
-    label: &str,
-    keys: &[&str],
-    kind: &Kind,
-    hint: &str,
-    p: &Palette,
-) {
-    let shown = |v: Option<&Json>| match v {
-        Some(Json::String(s)) => s.clone(),
-        Some(Json::Array(a)) => a
-            .iter()
-            .map(|v| v.as_str().map_or_else(|| v.to_string(), str::to_owned))
-            .collect::<Vec<_>>()
-            .join(", "),
-        Some(Json::Null) | None => String::new(),
-        Some(v) => v.to_string(),
-    };
-    let own = shown(fx.own(keys));
-    let inherited_text = shown(fx.effective(keys));
-    ui.horizontal_wrapped(|ui| {
-        forms::label(ui, label);
-        inherited(ui, fx, keys, p);
-    });
-    let key = format!("{}/{}", fx.profile.name, keys.join("."));
-    let buffer = fx.buffers.entry(key).or_insert_with(|| own.clone());
-    let hint = if inherited_text.is_empty() {
-        hint.to_owned()
-    } else {
-        inherited_text
-    };
-    let response = forms::text_input(ui, buffer, ui.available_width().min(240.0), &hint);
-    if response.changed() {
-        let t = buffer.trim();
-        let value = if t.is_empty() {
-            None
-        } else {
-            Some(match kind {
-                Kind::Number => t
-                    .parse::<f64>()
-                    .ok()
-                    .and_then(serde_json::Number::from_f64)
-                    .map_or_else(|| Json::String(t.to_owned()), Json::Number),
-                Kind::Numbers | Kind::Json => Json::Array(
-                    t.split(',')
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty())
-                        .map(|s| Json::String(s.to_owned()))
-                        .collect(),
-                ),
-                _ => Json::String(buffer.clone()),
-            })
-        };
-        fx.set(keys, value, true);
-    } else if !response.has_focus() {
-        *buffer = own;
-    }
-}
-
-/// The settings drawn by the designed form; the schema's form has the
-/// others.
-const DESIGNED: &[&str] = &[
-    "inherits",
-    "bundle",
-    "minify",
-    "minify-libraries",
-    "optimize",
-    "exclude",
-    "config",
-];
-
-/// A profile's settings in wowlua's schema: its fields, by name.
-fn schema_fields(schema: &Json) -> Vec<schema::Field> {
-    use crate::editor::json::resolve;
-    let Some(profiles) = schema.get("properties").and_then(|p| p.get("profiles")) else {
-        return Vec::new();
-    };
-    let profiles = resolve(schema, profiles);
-    let Some(settings) = profiles.get("additionalProperties") else {
-        return Vec::new();
-    };
-    schema::fields(schema, settings).0
-}
-
+/// The ship page's profiles: the one the build tab builds. Their settings
+/// are edited in wowlua.json's build section (S064).
 pub fn profiles(
     ui: &mut Ui,
     state: &mut ShipState,
-    editors: &mut Editors,
     workspace: &Workspace,
     system: &dyn System,
 ) -> Option<Action> {
@@ -744,83 +567,15 @@ pub fn profiles(
         forms::padded(ui, 12, 10, |ui| pick_addon(ui, state, &facts, p));
         return None;
     }
-    let tab = editors.held(&facts.manifest, system).ok()?;
-    let doc = &editors.tabs[tab].doc;
-    let dirty = doc.is_dirty();
-    if state
-        .manifest
-        .as_ref()
-        .is_none_or(|(path, v, _)| *path != facts.manifest || *v != doc.version)
-    {
-        let root = serde_json::from_str::<Json>(&doc.text()).unwrap_or(Json::Null);
-        state.manifest = Some((facts.manifest.clone(), doc.version, root));
-    }
-    if state.schema.is_none() {
-        state.schema = Some(
-            system
-                .schema(false)
-                .and_then(|t| serde_json::from_str(&t).ok()),
-        );
-    }
     let mut action = None;
-    let mut changes: Vec<(Vec<Key>, Option<Json>, bool)> = Vec::new();
-
     egui::ScrollArea::vertical()
         .id_salt("ship-profiles")
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            if dirty {
-                forms::padded(ui, 12, 6, |ui| {
-                    ui.horizontal(|ui| {
-                        caption(ui, "wowlua.json has changes", p);
-                        if widgets::button(ui, ButtonKind::Primary, "save", true, None).clicked() {
-                            action = Some(Action::Save(facts.manifest.clone()));
-                        }
-                    });
-                });
-            }
-            // The profiles.
             for profile in &facts.profiles {
                 let selected = state.selected.as_deref() == Some(profile.name.as_str());
                 if row(ui, p, profile, &used_by(profile, &facts), selected) {
                     state.selected = Some(profile.name.clone());
-                }
-            }
-            // (add: the new profile's name; `Some(None)`: cancelled)
-            let mut new: Option<Option<String>> = None;
-            forms::padded(ui, 12, 8, |ui| match &mut state.new_profile {
-                None => {
-                    if forms::text_button(ui, "+ new profile").clicked() {
-                        state.new_profile = Some(String::new());
-                    }
-                }
-                Some(name) => {
-                    forms::label(ui, "new profile");
-                    forms::text_input(ui, name, 200.0, "readable");
-                    let valid = !name.trim().is_empty()
-                        && !facts.profiles.iter().any(|p| p.name == name.trim());
-                    ui.horizontal(|ui| {
-                        ui.add_enabled_ui(valid, |ui| {
-                            if widgets::button(ui, ButtonKind::Secondary, "add, inheriting release", true, None).clicked() {
-                                new = Some(Some(name.trim().to_owned()));
-                            }
-                        });
-                        if forms::text_button(ui, "cancel").clicked() {
-                            new = Some(None);
-                        }
-                    });
-                }
-            });
-            if let Some(added) = new {
-                state.new_profile = None;
-                if let Some(name) = added {
-                    changes.push((
-                        vec!["profiles".into(), Key::Name(name.clone())],
-                        Some(serde_json::json!({ "inherits": "release" })),
-                        false,
-                    ));
-                    state.selected = Some(name);
-                    state.stale = true;
                 }
             }
             let Some(profile) = state
@@ -830,89 +585,34 @@ pub fn profiles(
             else {
                 return;
             };
-            let root = state.manifest.as_ref().map(|(_, _, r)| r.clone()).unwrap_or(Json::Null);
-            let mut fx = Fx {
-                root: &root,
-                profile,
-                changes: Vec::new(),
-                buffers: &mut state.buffers,
-            };
             forms::padded(ui, 12, 10, |ui| {
                 ui.set_width(ui.available_width());
-                strong(ui, &profile.name, p);
                 if let Some(why) = &profile.problem {
                     forms::callout(ui, CalloutKind::Error, |ui| {
                         forms::paragraph(ui, why, 12.0, 18.0, p.ink);
                     });
-                    return;
                 }
-                if profile.chain.len() > 1 {
-                    caption(ui, &format!("inherits {}", profile.chain[..profile.chain.len() - 1].join(" → ")), p);
-                }
-                flag(ui, &mut fx, "bundle into one file", &["bundle"], p);
-                let levels: Vec<String> = ["none", "strip", "compact", "rename", "max"]
-                    .iter()
-                    .map(|s| (*s).to_owned())
-                    .collect();
-                pick(ui, &mut fx, "minify", &["minify"], &levels, p);
-                flag(ui, &mut fx, "minify libraries", &["minify-libraries"], p);
-                section(ui, "optimize", p);
-                flag(ui, &mut fx, "inline", &["optimize", "inline"], p);
-                let cache: Vec<String> = vec!["off".into(), "safe".into()];
-                pick(ui, &mut fx, "cache globals", &["optimize", "cache-globals"], &cache, p);
-                flag(ui, &mut fx, "remove dead code", &["optimize", "dead-code"], p);
-                flag(ui, &mut fx, "constants", &["optimize", "constants"], p);
-                text(ui, &mut fx, "exclude", &["exclude"], &Kind::Numbers, "src/Diagnostics/**", p);
-                section(ui, "other settings", p);
-                let fields = state
-                    .schema
-                    .as_ref()
-                    .and_then(Option::as_ref)
-                    .map(schema_fields)
-                    .unwrap_or_default();
-                let mut left = Vec::new();
-                for f in fields.iter().filter(|f| !DESIGNED.contains(&f.name.as_str())) {
-                    let keys = [f.name.as_str()];
-                    match &f.kind {
-                        Kind::Bool => flag(ui, &mut fx, &f.name, &keys, p),
-                        Kind::Choice(values) => pick(ui, &mut fx, &f.name, &keys, values, p),
-                        Kind::Text | Kind::Number | Kind::Scalar => {
-                            text(ui, &mut fx, &f.name, &keys, &f.kind, "", p)
-                        }
-                        _ => left.push(f.name.clone()),
-                    }
-                    if !f.help.is_empty() {
-                        caption(ui, &f.help, p);
-                    }
-                }
-                if fields.is_empty() {
-                    caption(ui, "wowlua's schema is not here: edit the other settings in wowlua.json.", p);
-                } else if !left.is_empty() {
-                    caption(ui, &format!("In wowlua.json: {}.", left.join(", ")), p);
+                if widgets::button(
+                    ui,
+                    ButtonKind::Secondary,
+                    &format!("edit {} in wowlua.json", profile.name),
+                    true,
+                    None,
+                )
+                .clicked()
+                {
+                    action = Some(Action::EditProfile(
+                        facts.manifest.clone(),
+                        profile.name.clone(),
+                    ));
                 }
                 caption(
                     ui,
-                    "A setting not set here comes from what the profile inherits or wowlua's default. A change rewrites only that value in wowlua.json.",
+                    "A profile's settings, and new profiles, are edited in wowlua.json's build section, which opens in the editor.",
                     p,
                 );
             });
-            changes.append(&mut fx.changes);
         });
-
-    // The changes, as edits of the manifest's text.
-    for (path, value, typing) in changes {
-        let text = editors.tabs[tab].doc.text();
-        let Some((range, with)) = json::set(&text, &path, value.as_ref()) else {
-            continue;
-        };
-        let (a, b) = (pos_of(&text, range.start), pos_of(&text, range.end));
-        let kind = if typing {
-            EditKind::Typing
-        } else {
-            EditKind::Other
-        };
-        editors.tabs[tab].doc.edit(a, b, &with, kind);
-    }
     action
 }
 
@@ -1310,7 +1010,7 @@ fn install_tab(
         ui,
         "your WoW installation",
         |ui| {
-            if widgets::button(ui, ButtonKind::Ghost, "change", true, None).clicked() {
+            if widgets::button(ui, ButtonKind::Tertiary, "change", true, None).clicked() {
                 action = Some(Action::PickInstallation);
             }
         },
@@ -1423,7 +1123,7 @@ fn install_tab(
             if changes.len() > 12 {
                 caption(ui, &format!("and {} more", changes.len() - 12), p);
             }
-            if widgets::button(ui, ButtonKind::Ghost, "show the folder", true, None).clicked() {
+            if widgets::button(ui, ButtonKind::Tertiary, "show the folder", true, None).clicked() {
                 system.reveal(&folder.path);
             }
         });
@@ -1670,6 +1370,104 @@ pub fn checks(facts: &ShipFacts) -> Vec<(Option<bool>, String, String)> {
     out
 }
 
+/// A publish target's row in the targets table: published or not, its
+/// name, project, build profile (written to wowlua.json, S067) and token.
+fn target_row(
+    ui: &mut Ui,
+    state: &mut ShipState,
+    facts: &ShipFacts,
+    t: &ShipTarget,
+    system: &dyn System,
+    p: &Palette,
+) -> Option<Action> {
+    let mut action = None;
+    let mut checked = t.enabled && !state.off.contains(&t.name);
+    // (in a cell of the row's height, centred as the rest)
+    ui.allocate_ui_with_layout(
+        egui::Vec2::new(18.0, forms::CONTROL_H),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            if !t.enabled {
+                ui.disable();
+            }
+            if forms::checkbox(ui, &mut checked, "", None) {
+                if checked {
+                    state.off.remove(&t.name);
+                } else {
+                    state.off.insert(t.name.clone());
+                }
+            }
+        },
+    );
+    strong(ui, &t.name, p);
+    caption(ui, &t.project, p);
+    // Its build profile, written to wowlua.json.
+    let shown = state
+        .target_profiles
+        .get(&t.name)
+        .unwrap_or(&t.profile)
+        .clone();
+    let mut names: Vec<&str> = facts.profiles.iter().map(|p| p.name.as_str()).collect();
+    if !names.contains(&shown.as_str()) {
+        names.push(&shown);
+    }
+    let mut index = names.iter().position(|n| *n == shown).unwrap_or(0);
+    let opts: Vec<(&str, bool)> = names.iter().map(|n| (*n, true)).collect();
+    if forms::select(
+        ui,
+        &format!("ship-target-profile-{}", t.name),
+        &opts,
+        &mut index,
+        112.0,
+    ) && names[index] != shown
+    {
+        let profile = names[index].to_owned();
+        state
+            .target_profiles
+            .insert(t.name.clone(), profile.clone());
+        action = Some(Action::SetTargetProfile {
+            manifest: facts.manifest.clone(),
+            target: t.name.clone(),
+            profile,
+        });
+    }
+    ui.horizontal(|ui| {
+        let (word, more) = token_text(state.tokens.get(&t.name));
+        match word {
+            "saved" => {
+                ui.label(
+                    egui::RichText::new("token saved")
+                        .font(Face::Plex.at(12.0))
+                        .color(p.success),
+                );
+                if forms::text_button(ui, "remove").clicked() {
+                    system.ship_token(&t.kind, None);
+                }
+            }
+            "from" => caption(ui, &format!("token from ${}", more.unwrap_or_default()), p),
+            "reading" => caption(ui, "reading the token…", p),
+            _ => {
+                if let Some(why) = more {
+                    caption(ui, &why, p);
+                }
+                let input = state.token_text.entry(t.kind.clone()).or_default();
+                ui.add(
+                    egui::TextEdit::singleline(input)
+                        .password(true)
+                        .desired_width(110.0)
+                        .font(Face::Plex.at(12.0))
+                        .hint_text("token"),
+                );
+                if widgets::button(ui, ButtonKind::Secondary, "save", true, None).clicked() {
+                    let token = input.clone();
+                    system.ship_token(&t.kind, Some(token));
+                }
+            }
+        }
+    });
+    action
+}
+
 fn publish_tab(
     ui: &mut Ui,
     state: &mut ShipState,
@@ -1678,6 +1476,7 @@ fn publish_tab(
     system: &dyn System,
     p: &Palette,
 ) -> Option<Action> {
+    let mut action = None;
     let checks = checks(facts);
     let failing = checks.iter().any(|(ok, _, _)| *ok == Some(false));
     let on: Vec<&ShipTarget> = facts
@@ -1728,49 +1527,24 @@ fn publish_tab(
                     if facts.targets.is_empty() {
                         caption(ui, "No publish targets: add one under publish.targets in wowlua.json.", p);
                     }
-                    for t in &facts.targets {
-                        ui.horizontal_wrapped(|ui| {
-                            let mut checked = t.enabled && !state.off.contains(&t.name);
-                            ui.add_enabled_ui(t.enabled, |ui| {
-                                if forms::checkbox(ui, &mut checked, "", None) {
-                                    if checked {
-                                        state.off.remove(&t.name);
-                                    } else {
-                                        state.off.insert(t.name.clone());
+                    if !facts.targets.is_empty() {
+                        egui::Grid::new("ship-targets")
+                            .num_columns(5)
+                            .spacing([10.0, 6.0])
+                            .show(ui, |ui| {
+                                for h in ["", "target", "project", "profile", "token"] {
+                                    caption(ui, h, p);
+                                }
+                                ui.end_row();
+                                for t in &facts.targets {
+                                    if let Some(a) = target_row(ui, state, facts, t, system, p) {
+                                        action = Some(a);
                                     }
+                                    ui.end_row();
                                 }
                             });
-                            strong(ui, &t.name, p);
-                            caption(ui, &format!("{} · {}", t.project, t.profile), p);
-                            let (word, more) = token_text(state.tokens.get(&t.name));
-                            match word {
-                                "saved" => {
-                                    ui.label(egui::RichText::new("token saved").font(Face::Plex.at(12.0)).color(p.success));
-                                    if forms::text_button(ui, "remove").clicked() {
-                                        system.ship_token(&t.kind, None);
-                                    }
-                                }
-                                "from" => caption(ui, &format!("token from ${}", more.unwrap_or_default()), p),
-                                "reading" => caption(ui, "reading the token…", p),
-                                _ => {
-                                    if let Some(why) = more {
-                                        caption(ui, &why, p);
-                                    }
-                                    let input = state.token_text.entry(t.kind.clone()).or_default();
-                                    ui.add(
-                                        egui::TextEdit::singleline(input)
-                                            .password(true)
-                                            .desired_width(150.0)
-                                            .font(Face::Plex.at(12.0))
-                                            .hint_text(format!("{} token", t.kind)),
-                                    );
-                                    if widgets::button(ui, ButtonKind::Secondary, "save", true, None).clicked() {
-                                        let token = input.clone();
-                                        system.ship_token(&t.kind, Some(token));
-                                    }
-                                }
-                            }
-                        });
+                    }
+                    for t in &facts.targets {
                         if let Some(said) = state.token_said.get(&t.kind) {
                             match said {
                                 Ok(s) => caption(ui, &format!("{}: {s}", t.kind), p),
@@ -1871,7 +1645,7 @@ fn publish_tab(
             }
         }
     });
-    None
+    action
 }
 
 /// What each target got (or would get), and the run's problems.
@@ -2055,6 +1829,7 @@ pub fn dialogs(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value as Json;
 
     fn facts() -> ShipFacts {
         ShipFacts {

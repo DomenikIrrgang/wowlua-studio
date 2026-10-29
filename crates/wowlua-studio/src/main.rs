@@ -4,15 +4,20 @@
 //! menu bar. `wowlua-studio <folder>` opens the folder (S031: a new window
 //! is Studio started again with it).
 
+mod art;
+mod bindings;
+mod deps;
 mod frame_stats;
 mod game;
 mod gamedata;
+mod log;
 mod lsp;
 #[cfg(target_os = "macos")]
 mod menu_bar;
 mod native;
 mod profiles;
 mod screenshot;
+mod settings;
 mod ship;
 mod store;
 mod terminal;

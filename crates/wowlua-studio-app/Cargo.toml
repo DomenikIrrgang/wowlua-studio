@@ -12,6 +12,9 @@ authors.workspace = true
 egui.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+wowlua-diagnostics.workspace = true
+wowlua-flavors.workspace = true
+wowlua-toc.workspace = true
 wowlua-studio-ui.workspace = true
 
 [lints]
