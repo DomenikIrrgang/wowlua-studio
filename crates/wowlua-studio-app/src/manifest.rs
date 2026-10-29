@@ -94,6 +94,8 @@ enum How {
     Changelog,
     /// Extra TOC directives: one of wowlua's known ones, and its value.
     TocExtra,
+    /// Lints by code: a warning of wowlua's, allowed, warned or denied.
+    Lints,
 }
 
 /// The game's UI Scale slider (Blizzard's Graphics.lua, wowlua T508).
@@ -217,8 +219,8 @@ fn rows() -> Vec<Row> {
         r(
             "check",
             &["check", "lints"],
-            "Lints by code: allow, warn or deny.",
-            Json,
+            "Warnings by code: allowed (off), warned or denied (an error).",
+            Lints,
         ),
         r("fmt", &["fmt", "indent"], "A tab, or spaces.", Indent),
         r(
@@ -699,6 +701,78 @@ fn edit_value(
                 let text = shown(now.as_ref(), &How::Text);
                 typed_text(ui, fx, path, &text, width, "CHANGELOG.md");
             }
+        }
+        How::Lints => {
+            let set: Vec<(String, String)> = now
+                .as_ref()
+                .and_then(Json::as_object)
+                .map(|o| {
+                    o.iter()
+                        .map(|(k, v)| (k.clone(), v.as_str().unwrap_or("warn").to_owned()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let p = palette(ui.ctx());
+            let levels = ["allow", "warn", "deny"];
+            ui.vertical(|ui| {
+                for (code, level) in &set {
+                    let keys: Vec<&str> = path.iter().copied().chain([code.as_str()]).collect();
+                    forms::bar(ui, |ui| {
+                        ui.label(
+                            egui::RichText::new(code)
+                                .font(Face::PlexMedium.at(12.0))
+                                .color(p.ink),
+                        );
+                        let at = levels.iter().position(|l| l == level).unwrap_or(1);
+                        if let Some(i) =
+                            widgets::seg(ui, &format!("mf-lint-{code}"), &levels, at, false)
+                        {
+                            fx.set(&keys, Some(Json::String(levels[i].into())), false);
+                        }
+                        if widgets::button(ui, ButtonKind::Tertiary, "remove", true, None).clicked()
+                        {
+                            fx.set(&keys, None, false);
+                        }
+                    });
+                    if let Some(info) = wowlua_diagnostics::lookup(code) {
+                        caption(ui, info.summary, p);
+                    }
+                    ui.add_space(4.0);
+                }
+                // (the warnings not set yet, by code)
+                let offered: Vec<&wowlua_diagnostics::CodeInfo> = wowlua_diagnostics::all_codes()
+                    .iter()
+                    .filter(|c| c.code.starts_with('W') && !set.iter().any(|(k, _)| k == c.code))
+                    .collect();
+                if !offered.is_empty() {
+                    let labels: Vec<String> = std::iter::once("add a warning".to_owned())
+                        .chain(offered.iter().map(|c| {
+                            let summary: String = c.summary.chars().take(60).collect();
+                            let more = if c.summary.chars().count() > 60 {
+                                "…"
+                            } else {
+                                ""
+                            };
+                            format!("{} · {summary}{more}", c.code)
+                        }))
+                        .collect();
+                    let opts: Vec<(&str, bool)> =
+                        labels.iter().map(|l| (l.as_str(), true)).collect();
+                    let mut at = 0;
+                    if forms::select(
+                        ui,
+                        &format!("mf-{}-add", path.join(".")),
+                        &opts,
+                        &mut at,
+                        width.min(300.0),
+                    ) && at > 0
+                    {
+                        let keys: Vec<&str> =
+                            path.iter().copied().chain([offered[at - 1].code]).collect();
+                        fx.set(&keys, Some(Json::String("allow".into())), false);
+                    }
+                }
+            });
         }
         How::TocExtra => {
             let set: Vec<(String, String)> = now

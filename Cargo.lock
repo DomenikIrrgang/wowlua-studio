@@ -5863,6 +5863,7 @@ dependencies = [
  "egui",
  "serde",
  "serde_json",
+ "wowlua-diagnostics",
  "wowlua-flavors",
  "wowlua-studio-ui",
  "wowlua-toc",
