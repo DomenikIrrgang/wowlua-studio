@@ -1,7 +1,7 @@
-//! The settings page (M10, S062): Studio's own settings on this computer
-//! by section, found by name; `wowlua.json` per package; a package's
-//! dependencies. A setting changes as it is set and is kept with the
-//! others (`settings.json` in Studio's data).
+//! The settings page (M10, S062, S063): Studio's own settings on this
+//! computer by section, found by name. A setting changes as it is set and
+//! is kept with the others (`settings.json` in Studio's data). A package's
+//! `wowlua.json` is its tab's form, not a setting of Studio's.
 
 use std::path::PathBuf;
 
@@ -10,7 +10,6 @@ use wowlua_studio_ui::forms::{self, CalloutKind};
 use wowlua_studio_ui::widgets::{self, BadgeKind, ButtonKind};
 use wowlua_studio_ui::{Face, Palette, palette};
 
-use crate::deps::DepsState;
 use crate::state::Settings;
 use crate::system::{GithubSignIn, Installation, SettingsInfo, System, UpdateCheck, Workspace};
 
@@ -65,21 +64,6 @@ impl Section {
     }
 }
 
-/// What the page shows.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum View {
-    Studio(Section),
-    /// `wowlua.json`'s section by its index.
-    Manifest(usize),
-    Dependencies,
-}
-
-impl Default for View {
-    fn default() -> Self {
-        View::Studio(Section::default())
-    }
-}
-
 /// What the page asks of the rest of Studio.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
@@ -93,10 +77,9 @@ pub enum Action {
 
 #[derive(Default)]
 pub struct SettingsState {
-    pub view: View,
+    /// The section shown.
+    pub section: Section,
     pub query: String,
-    pub deps: DepsState,
-    pub manifest: crate::manifest::ManifestState,
     info: Option<SettingsInfo>,
     asked: bool,
     updates: Option<UpdateCheck>,
@@ -131,7 +114,6 @@ impl SettingsState {
     /// The page was opened: what it shows of this computer is read again.
     pub fn opened(&mut self) {
         self.asked = false;
-        self.deps.opened();
     }
 }
 
@@ -576,15 +558,15 @@ fn stop(s: &mut Settings, kind: &str, on: bool) {
     }
 }
 
-/// The left panel: Studio's sections, `wowlua.json`'s, the dependencies.
-pub fn sections(ui: &mut Ui, state: &mut SettingsState, manifest_sections: &[&str]) {
+/// The left panel: Studio's sections.
+pub fn sections(ui: &mut Ui, state: &mut SettingsState) {
     egui::ScrollArea::vertical()
         .id_salt("settings-sections")
         .auto_shrink([false, false])
-        .show(ui, |ui| sections_list(ui, state, manifest_sections));
+        .show(ui, |ui| sections_list(ui, state));
 }
 
-fn sections_list(ui: &mut Ui, state: &mut SettingsState, manifest_sections: &[&str]) {
+fn sections_list(ui: &mut Ui, state: &mut SettingsState) {
     let p = palette(ui.ctx());
     forms::padded(ui, 14, 6, |ui| {
         ui.horizontal(|ui| {
@@ -603,42 +585,16 @@ fn sections_list(ui: &mut Ui, state: &mut SettingsState, manifest_sections: &[&s
         });
     });
     for section in Section::ALL {
-        let current = state.query.trim().is_empty() && state.view == View::Studio(section);
+        let current = state.query.trim().is_empty() && state.section == section;
         if nav(ui, section.label(), current, p) {
-            state.view = View::Studio(section);
+            state.section = section;
             state.query.clear();
         }
     }
-    ui.add_space(8.0);
-    forms::padded(ui, 14, 6, |ui| {
-        ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new("wowlua.json")
-                    .font(Face::PlexMedium.at(11.0))
-                    .color(p.ink_muted),
-            );
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(
-                    egui::RichText::new("per package")
-                        .font(Face::Plex.at(11.0))
-                        .color(p.ink_faint),
-                );
-            });
-        });
-    });
-    for (i, name) in manifest_sections.iter().enumerate() {
-        if nav(ui, name, state.view == View::Manifest(i), p) {
-            state.view = View::Manifest(i);
-        }
-    }
-    ui.add_space(8.0);
-    if nav(ui, "dependencies", state.view == View::Dependencies, p) {
-        state.view = View::Dependencies;
-        state.deps.opened();
-    }
 }
 
-fn nav(ui: &mut Ui, label: &str, current: bool, p: &Palette) -> bool {
+/// A section in a list of them: the current one marked.
+pub(crate) fn nav(ui: &mut Ui, label: &str, current: bool, p: &Palette) -> bool {
     let width = ui.available_width();
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 28.0), Sense::click());
     let painter = ui.painter();
@@ -730,10 +686,7 @@ pub fn studio(
         state.asked = true;
         system.settings_info();
     }
-    let section = match state.view {
-        View::Studio(s) => s,
-        _ => Section::default(),
-    };
+    let section = state.section;
     let query = state.query.trim().to_lowercase();
     let mut action = None;
     forms::padded(ui, 16, 8, |ui| {

@@ -1,12 +1,12 @@
-//! The dependencies view of the settings page (M10, S010, S062): a
-//! package's dependencies and dev-dependencies with their source,
+//! The dependencies section of a wowlua.json tab (M10, S010, S062, S063):
+//! the package's dependencies and dev-dependencies with their source,
 //! requirement, locked and newest version; newer ones looked up when the
 //! view opens (`wowlua outdated`); the registry's search to add from; a
 //! dependency's details, its versions, update, a new requirement, remove.
 //! Everything runs in Studio's process through wowlua's library.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use egui::{CornerRadius, Sense, Ui, Vec2};
 use wowlua_studio_ui::forms::{self, CalloutKind, TermLine};
@@ -46,6 +46,18 @@ impl DepsState {
         self.picked
             .clone()
             .unwrap_or_else(|| workspace.root.clone())
+    }
+
+    /// The view of the package in `dir`: another package starts afresh.
+    pub fn package(&mut self, dir: &Path, workspace: &Workspace) {
+        let picked = (dir != workspace.root).then(|| dir.to_path_buf());
+        if picked != self.picked {
+            self.picked = picked;
+            self.facts = None;
+            self.newer = None;
+            self.selected = None;
+            self.last = None;
+        }
     }
 
     pub fn files_changed(&mut self) {
@@ -159,40 +171,6 @@ pub fn state_of(row: &DepRow, newer: Option<&DepNewer>, p: &Palette) -> (String,
     }
 }
 
-/// The package select: the workspace's packages, the root first.
-fn package_select(ui: &mut Ui, state: &mut DepsState, workspace: &Workspace) {
-    let mut members: Vec<(String, PathBuf)> = workspace
-        .members
-        .iter()
-        .map(|m| (m.name.clone(), m.dir.clone()))
-        .collect();
-    members.sort_by_key(|(_, dir)| *dir != workspace.root);
-    if !members.iter().any(|(_, d)| *d == workspace.root) {
-        members.insert(0, (workspace.name.clone(), workspace.root.clone()));
-    }
-    let current = state.dir(workspace);
-    let mut index = members.iter().position(|(_, d)| *d == current).unwrap_or(0);
-    let labels: Vec<String> = members
-        .iter()
-        .map(|(n, d)| {
-            if *d == workspace.root {
-                format!("{n} · root")
-            } else {
-                n.clone()
-            }
-        })
-        .collect();
-    let opts: Vec<(&str, bool)> = labels.iter().map(|l| (l.as_str(), true)).collect();
-    if forms::select(ui, "deps-package", &opts, &mut index, 180.0) {
-        let dir = members[index].1.clone();
-        state.picked = (dir != workspace.root).then_some(dir);
-        state.facts = None;
-        state.newer = None;
-        state.selected = None;
-        state.last = None;
-    }
-}
-
 pub fn show(ui: &mut Ui, state: &mut DepsState, workspace: &Workspace, system: &dyn System) {
     let now = ui.input(|i| i.time);
     state.refresh(workspace, system, now);
@@ -200,12 +178,6 @@ pub fn show(ui: &mut Ui, state: &mut DepsState, workspace: &Workspace, system: &
     // The bar.
     forms::padded(ui, 16, 8, |ui| {
         forms::bar(ui, |ui| {
-            ui.label(
-                egui::RichText::new("dependencies")
-                    .font(Face::PlexMedium.at(12.5))
-                    .color(p.ink),
-            );
-            package_select(ui, state, workspace);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let busy = state.running.is_some();
                 ui.add_enabled_ui(!busy, |ui| {

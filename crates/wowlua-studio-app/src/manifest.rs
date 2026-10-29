@@ -1,17 +1,19 @@
-//! The `wowlua.json` view of the settings page (M10, S062): a package's
-//! manifest by section, the designed rows, then every other key in a form
-//! from wowlua's schema; the json view the same document (the editor's).
-//! An edit changes only that value's text, keeping the file's order.
+//! A `wowlua.json` tab's form (M10, S062, S063): the package's manifest by
+//! section, the designed rows, then every other key in a form from
+//! wowlua's schema; the dependencies section the dependencies view; the
+//! json view the tab's code. An edit changes only that value's text,
+//! keeping the file's order.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use egui::Ui;
+use egui::{CornerRadius, Rect, Ui, UiBuilder, Vec2};
 use serde_json::Value as Json;
 use wowlua_studio_ui::forms::{self, CalloutKind};
 use wowlua_studio_ui::widgets::{self, ButtonKind};
 use wowlua_studio_ui::{Face, Palette, palette};
 
+use crate::deps::{self, DepsState};
 use crate::editor::Editors;
 use crate::editor::doc::EditKind;
 use crate::system::{System, Workspace};
@@ -19,7 +21,7 @@ use crate::world::json::{self, Key};
 use crate::world::pos_of;
 use crate::world::schema::{self, Kind};
 
-/// The sections, as the settings page lists them.
+/// The sections, as the tab lists them.
 pub const SECTIONS: &[(&str, &str)] = &[
     (
         "package",
@@ -48,11 +50,6 @@ pub const SECTIONS: &[(&str, &str)] = &[
         "Every other key of wowlua.json, as its schema describes it.",
     ),
 ];
-
-/// The section names, for the settings page's list.
-pub fn section_names() -> Vec<&'static str> {
-    SECTIONS.iter().map(|(n, _)| *n).collect()
-}
 
 /// How a designed row is edited.
 #[derive(Clone)]
@@ -150,7 +147,7 @@ fn rows() -> Vec<Row> {
         r(
             "dependencies",
             &["dependencies"],
-            "Search the registry, add, update and remove them on the dependencies page.",
+            "Search the registry, add, update and remove them in the dependencies section.",
             Link(Go::Dependencies),
         ),
         r(
@@ -279,33 +276,42 @@ const DESIGNED: &[&str] = &[
     "profiles",
 ];
 
-/// What the page asks of the rest of Studio.
+/// What the tab asks of the rest of Studio.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
     Save(PathBuf),
     Go(Go),
 }
 
+/// The wowlua.json tabs' forms (S063): each file's own, the schema read
+/// once, the dependencies section's view.
 #[derive(Default)]
-pub struct ManifestState {
-    /// The package's folder (none: the workspace's root).
-    pub picked: Option<PathBuf>,
-    pub json_view: bool,
-    pub query: String,
-    parsed: Option<(PathBuf, u64, Json)>,
+pub struct Manifests {
+    views: HashMap<PathBuf, ManifestState>,
     schema: Option<Option<Json>>,
-    buffers: HashMap<String, String>,
-    new_flavor: String,
+    pub deps: DepsState,
 }
 
-impl ManifestState {
-    /// The manifest the page edits.
-    pub fn path(&self, workspace: &Workspace) -> PathBuf {
-        self.picked
-            .clone()
-            .unwrap_or_else(|| workspace.root.clone())
-            .join("wowlua.json")
+impl Manifests {
+    /// The form of `path` on a section by its name (the screenshot
+    /// harness's `manifest:`).
+    pub fn show_section(&mut self, path: &Path, name: &str) {
+        let i = SECTIONS.iter().position(|(n, _)| *n == name).unwrap_or(0);
+        self.views.entry(path.to_path_buf()).or_default().section = i;
+        if SECTIONS[i].0 == "dependencies" {
+            self.deps.opened();
+        }
     }
+}
+
+/// A wowlua.json's form: its section, what is searched, what is typed.
+#[derive(Default)]
+struct ManifestState {
+    section: usize,
+    query: String,
+    parsed: Option<(u64, Json)>,
+    buffers: HashMap<String, String>,
+    new_flavor: String,
 }
 
 /// The edits a form makes: a path and its new value (none: removed).
@@ -440,7 +446,7 @@ fn edit_value(
                     ui.label(egui::RichText::new(text).font(Face::Plex.at(11.5)));
                 }
                 let label = match to {
-                    Go::Dependencies => "the dependencies page",
+                    Go::Dependencies => "the dependencies section",
                     Go::Ship => "the ship page",
                 };
                 if widgets::button(ui, ButtonKind::Secondary, label, true, None).clicked() {
@@ -617,163 +623,262 @@ fn other_keys(ui: &mut Ui, fx: &mut Fx<'_>, schema: Option<&Json>, p: &Palette) 
 /// The page for section `section`; the json view draws the document's
 /// code, which the caller does (it holds the editor).
 #[allow(clippy::too_many_arguments)]
-pub fn show(
-    ui: &mut Ui,
-    state: &mut ManifestState,
-    editors: &mut Editors,
-    workspace: &Workspace,
-    system: &dyn System,
-    section: usize,
-    wowlua_version: &str,
-) -> (Option<Action>, Option<(egui::Rect, usize)>) {
-    let p = palette(ui.ctx());
-    let path = state.path(workspace);
-    let Ok(tab) = editors.held(&path, system) else {
-        forms::padded(ui, 16, 10, |ui| {
-            caption(ui, &format!("{} can't be read.", path.display()), p)
+/// The package a manifest is of: its name and where it is in the
+/// workspace.
+fn package_of(dir: &Path, workspace: &Workspace) -> String {
+    let name = workspace
+        .members
+        .iter()
+        .find(|m| m.dir == dir)
+        .map(|m| m.name.clone())
+        .or_else(|| (dir == workspace.root).then(|| workspace.name.clone()))
+        .unwrap_or_else(|| {
+            dir.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default()
         });
-        return (None, None);
-    };
-    let doc = &editors.tabs[tab].doc;
-    let dirty = doc.is_dirty();
-    if state
-        .parsed
-        .as_ref()
-        .is_none_or(|(pa, v, _)| *pa != path || *v != doc.version)
-    {
-        let root = serde_json::from_str::<Json>(&doc.text()).unwrap_or(Json::Null);
-        state.parsed = Some((path.clone(), doc.version, root));
+    if dir == workspace.root {
+        format!("{name} · the root package of the workspace")
+    } else {
+        format!("{name} · a package of the workspace")
     }
-    if state.schema.is_none() {
-        state.schema = Some(
-            system
-                .schema(false)
-                .and_then(|t| serde_json::from_str(&t).ok()),
-        );
-    }
+}
+
+/// A wowlua.json tab's bar: the form or the json, finding a key, saving.
+pub fn bar(
+    ui: &mut Ui,
+    manifests: &mut Manifests,
+    editors: &mut Editors,
+    tab: usize,
+    workspace: &Workspace,
+) -> Option<Action> {
+    let p = palette(ui.ctx());
+    let rect = ui.max_rect();
+    ui.painter().rect_filled(rect, CornerRadius::ZERO, p.bg_100);
+    ui.painter().hline(
+        rect.x_range(),
+        rect.bottom() - 0.5,
+        egui::Stroke::new(1.0, p.line),
+    );
+    let path = editors.tabs[tab].doc.path.clone();
+    let dirty = editors.tabs[tab].doc.is_dirty();
+    let json_view = editors.as_json.contains(&path);
+    let dir = path.parent().unwrap_or(&workspace.root).to_path_buf();
+    let state = manifests.views.entry(path.clone()).or_default();
     let mut action = None;
-    // The bar: the package, the view, saving, finding a key.
     forms::padded(ui, 16, 8, |ui| {
         forms::bar(ui, |ui| {
-            ui.label(
-                egui::RichText::new("wowlua.json")
-                    .font(Face::PlexMedium.at(12.5))
-                    .color(p.ink),
-            );
-            package_select(ui, state, workspace);
             if let Some(i) = widgets::seg(
                 ui,
                 "mf-view",
                 &["form", "json"],
-                usize::from(state.json_view),
+                usize::from(json_view),
                 false,
             ) {
-                state.json_view = i == 1;
+                if i == 1 {
+                    editors.as_json.insert(path.clone());
+                    editors.focus = true;
+                } else {
+                    editors.as_json.remove(&path);
+                }
             }
+            caption(ui, &package_of(&dir, workspace), p);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let word = if dirty { "save" } else { "saved" };
                 if widgets::button(ui, ButtonKind::Primary, word, true, None).clicked() && dirty {
                     action = Some(Action::Save(path.clone()));
                 }
-                if !state.json_view {
+                if !json_view {
                     forms::text_input(ui, &mut state.query, 220.0, "find a setting");
                 }
             });
         });
     });
-    // A requirement that excludes the wowlua built in, with its fix.
+    action
+}
+
+/// A wowlua.json tab's form: its sections on the left, the one shown (or
+/// what the search finds) on the right.
+pub fn form(
+    ui: &mut Ui,
+    manifests: &mut Manifests,
+    editors: &mut Editors,
+    tab: usize,
+    workspace: &Workspace,
+    system: &dyn System,
+    wowlua_version: &str,
+) -> Option<Action> {
+    let p = palette(ui.ctx());
+    let rect = ui.max_rect();
+    ui.painter().rect_filled(rect, CornerRadius::ZERO, p.bg_100);
+    let path = editors.tabs[tab].doc.path.clone();
+    let dir = path.parent().unwrap_or(&workspace.root).to_path_buf();
+    if manifests.schema.is_none() {
+        manifests.schema = Some(
+            system
+                .schema(false)
+                .and_then(|t| serde_json::from_str(&t).ok()),
+        );
+    }
+    let Manifests {
+        views,
+        schema,
+        deps: deps_state,
+    } = manifests;
+    let state = views.entry(path.clone()).or_default();
+    let doc = &editors.tabs[tab].doc;
+    if state.parsed.as_ref().is_none_or(|(v, _)| *v != doc.version) {
+        let root = serde_json::from_str::<Json>(&doc.text()).unwrap_or(Json::Null);
+        state.parsed = Some((doc.version, root));
+    }
     let root = state
         .parsed
         .as_ref()
-        .map(|(_, _, r)| r.clone())
+        .map(|(_, r)| r.clone())
         .unwrap_or(Json::Null);
-    let mut changes: Vec<(Vec<Key>, Option<Json>, bool)> = Vec::new();
-    if state.picked.is_none()
-        && let Some(why) = &workspace.cannot_check
-    {
-        let wanted = requirement_for(wowlua_version);
-        forms::padded(ui, 16, 4, |ui| {
-            forms::callout(ui, CalloutKind::Error, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    forms::paragraph(ui, why, 12.5, 19.0, p.ink);
-                    if widgets::button(
-                        ui,
-                        ButtonKind::Primary,
-                        &format!("require {wanted}"),
-                        true,
-                        None,
-                    )
-                    .clicked()
-                    {
-                        changes.push((
-                            vec![Key::Name("package".into()), Key::Name("wowlua".into())],
-                            Some(Json::String(wanted.clone())),
-                            false,
-                        ));
+    let deps_section = SECTIONS
+        .iter()
+        .position(|(n, _)| *n == "dependencies")
+        .unwrap_or(0);
+
+    // The sections.
+    let list = Rect::from_min_size(
+        rect.min,
+        Vec2::new(180.0_f32.min(rect.width() * 0.3), rect.height()),
+    );
+    let body = Rect::from_min_max(egui::pos2(list.right(), rect.top()), rect.max);
+    ui.painter().vline(
+        list.right() - 0.5,
+        list.y_range(),
+        egui::Stroke::new(1.0, p.line),
+    );
+    ui.scope_builder(UiBuilder::new().max_rect(list), |ui| {
+        egui::ScrollArea::vertical()
+            .id_salt(("manifest-sections", &path))
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.add_space(6.0);
+                for (i, (name, _)) in SECTIONS.iter().enumerate() {
+                    let current = state.query.trim().is_empty() && state.section == i;
+                    if crate::settings::nav(ui, name, current, p) {
+                        state.section = i;
+                        state.query.clear();
+                        if i == deps_section {
+                            deps_state.opened();
+                        }
                     }
+                }
+            });
+    });
+
+    let mut changes: Vec<(Vec<Key>, Option<Json>, bool)> = Vec::new();
+    let mut go = None;
+    ui.scope_builder(UiBuilder::new().max_rect(body), |ui| {
+        // A requirement that excludes the wowlua built in, with its fix.
+        if dir == workspace.root
+            && let Some(why) = &workspace.cannot_check
+        {
+            let wanted = requirement_for(wowlua_version);
+            forms::padded(ui, 16, 8, |ui| {
+                forms::callout(ui, CalloutKind::Error, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        forms::paragraph(ui, why, 12.5, 19.0, p.ink);
+                        if widgets::button(
+                            ui,
+                            ButtonKind::Primary,
+                            &format!("require {wanted}"),
+                            true,
+                            None,
+                        )
+                        .clicked()
+                        {
+                            changes.push((
+                                vec![Key::Name("package".into()), Key::Name("wowlua".into())],
+                                Some(Json::String(wanted.clone())),
+                                false,
+                            ));
+                        }
+                    });
                 });
             });
-        });
-    }
-    if state.json_view {
-        let rect = ui.available_rect_before_wrap();
-        apply(editors, tab, changes);
-        return (action, Some((rect, tab)));
-    }
-    let mut go = None;
-    egui::ScrollArea::vertical()
-        .id_salt("manifest-rows")
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
+        }
+        let query = state.query.trim().to_lowercase();
+        let (name, desc) = SECTIONS.get(state.section).copied().unwrap_or(SECTIONS[0]);
+        let all = rows();
+        let mut fx = Fx {
+            root: &root,
+            changes: Vec::new(),
+            buffers: &mut state.buffers,
+        };
+        if query.is_empty() && state.section == deps_section {
+            // The dependencies: the TOC's other AddOns, then the view of
+            // the package's dependencies from the registry.
             forms::padded(ui, 24, 10, |ui| {
                 ui.set_width(ui.available_width());
-                let mut fx = Fx {
-                    root: &root,
-                    changes: Vec::new(),
-                    buffers: &mut state.buffers,
-                };
-                let query = state.query.trim().to_lowercase();
-                let (name, desc) = SECTIONS.get(section).copied().unwrap_or(SECTIONS[0]);
-                if query.is_empty() {
-                    ui.label(egui::RichText::new(name).font(Face::PlexMedium.at(15.0)).color(p.ink));
-                    caption(ui, desc, p);
-                    ui.add_space(8.0);
-                    match name {
-                        "flavors" => flavors(ui, &mut fx, &mut state.new_flavor, p),
-                        "other keys" => other_keys(ui, &mut fx, state.schema.as_ref().and_then(Option::as_ref), p),
-                        _ => {}
-                    }
-                }
-                let all = rows();
-                let shown: Vec<&Row> = all
-                    .iter()
-                    .filter(|r| {
-                        if query.is_empty() {
-                            r.section == name
-                        } else {
-                            format!("{} {}", r.path.join("."), r.desc).to_lowercase().contains(&query)
-                        }
-                    })
-                    .collect();
-                if !query.is_empty() && shown.is_empty() {
-                    caption(ui, &format!("No setting of wowlua.json matches \"{}\".", state.query.trim()), p);
-                }
-                for r in shown {
+                ui.label(egui::RichText::new(name).font(Face::PlexMedium.at(15.0)).color(p.ink));
+                caption(ui, desc, p);
+                ui.add_space(8.0);
+                for r in all.iter().filter(|r| r.section == name && !matches!(r.how, How::Link(_))) {
                     row(ui, &mut fx, r, p, &mut go);
                 }
-                caption(
-                    ui,
-                    "Every key is the schema's, with completion and checks in the json view too. An edit rewrites only that value in wowlua.json, keeping its order.",
-                    p,
-                );
-                changes.append(&mut fx.changes);
             });
-        });
-    if let Some(to) = go {
-        action = Some(Action::Go(to));
-    }
+            changes.append(&mut fx.changes);
+            deps_state.package(&dir, workspace);
+            deps::show(ui, deps_state, workspace, system);
+            return;
+        }
+        egui::ScrollArea::vertical()
+            .id_salt(("manifest-rows", &path))
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                forms::padded(ui, 24, 10, |ui| {
+                    ui.set_width(ui.available_width());
+                    if query.is_empty() {
+                        ui.label(egui::RichText::new(name).font(Face::PlexMedium.at(15.0)).color(p.ink));
+                        caption(ui, desc, p);
+                        ui.add_space(8.0);
+                        match name {
+                            "flavors" => flavors(ui, &mut fx, &mut state.new_flavor, p),
+                            "other keys" => other_keys(ui, &mut fx, schema.as_ref().and_then(Option::as_ref), p),
+                            _ => {}
+                        }
+                    }
+                    let shown: Vec<&Row> = all
+                        .iter()
+                        .filter(|r| {
+                            if query.is_empty() {
+                                r.section == name
+                            } else {
+                                format!("{} {}", r.path.join("."), r.desc).to_lowercase().contains(&query)
+                            }
+                        })
+                        .collect();
+                    if !query.is_empty() && shown.is_empty() {
+                        caption(ui, &format!("No setting of wowlua.json matches \"{}\".", state.query.trim()), p);
+                    }
+                    for r in shown {
+                        row(ui, &mut fx, r, p, &mut go);
+                    }
+                    caption(
+                        ui,
+                        "Every key is the schema's, with completion and checks in the json view too. An edit rewrites only that value in wowlua.json, keeping its order.",
+                        p,
+                    );
+                });
+            });
+        changes.append(&mut fx.changes);
+    });
     apply(editors, tab, changes);
-    (action, None)
+    match go {
+        // (the section of this tab)
+        Some(Go::Dependencies) => {
+            state.section = deps_section;
+            state.query.clear();
+            deps_state.opened();
+            None
+        }
+        other => other.map(Action::Go),
+    }
 }
 
 /// The changes, as edits of the manifest's text.
@@ -800,41 +905,6 @@ pub fn requirement_for(version: &str) -> String {
     match (parts.next(), parts.next()) {
         (Some(major), Some(minor)) => format!("^{major}.{minor}"),
         _ => format!("^{version}"),
-    }
-}
-
-/// The package select: the workspace's packages, the root first.
-fn package_select(ui: &mut Ui, state: &mut ManifestState, workspace: &Workspace) {
-    let mut members: Vec<(String, PathBuf)> = workspace
-        .members
-        .iter()
-        .map(|m| (m.name.clone(), m.dir.clone()))
-        .collect();
-    members.sort_by_key(|(_, dir)| *dir != workspace.root);
-    if !members.iter().any(|(_, d)| *d == workspace.root) {
-        members.insert(0, (workspace.name.clone(), workspace.root.clone()));
-    }
-    let current = state
-        .picked
-        .clone()
-        .unwrap_or_else(|| workspace.root.clone());
-    let mut index = members.iter().position(|(_, d)| *d == current).unwrap_or(0);
-    let labels: Vec<String> = members
-        .iter()
-        .map(|(n, d)| {
-            if *d == workspace.root {
-                format!("{n} · root")
-            } else {
-                n.clone()
-            }
-        })
-        .collect();
-    let opts: Vec<(&str, bool)> = labels.iter().map(|l| (l.as_str(), true)).collect();
-    if forms::select(ui, "mf-package", &opts, &mut index, 180.0) {
-        let dir = members[index].1.clone();
-        state.picked = (dir != workspace.root).then_some(dir);
-        state.parsed = None;
-        state.buffers.clear();
     }
 }
 

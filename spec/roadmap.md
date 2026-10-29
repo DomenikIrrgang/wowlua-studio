@@ -341,7 +341,7 @@ confirm showing the commands. The frame budget holds with SuuUI's size:
 
 ## M10: Settings and dependencies
 
-Artboards: settings, wowlua.json.
+Artboards: settings, wowlua.json (an editor tab, S063).
 
 - Studio's settings and keybindings; `wowlua.json` as forms that keep the
   file's order.
@@ -363,12 +363,14 @@ installation and Blizzard's UI refreshed (T505); layouts per workspace,
 floating panels as OS windows; Studio's log and releases. Keybindings
 recorded per command, the editor's too, with clashes. GitHub's device
 sign-in and the Claude API key in the OS credential store (their other
-settings kept for M12 and M14). `wowlua.json` by section: the designed rows,
-every other key from the schema, the json view the same document, a
-requirement that excludes the built-in wowlua fixed. The dependencies of a
-package of the workspace: newer versions when the view opens, the registry
-searched, added, updated, removed, a new requirement, yanked versions.
-The frame budget holds: 0.09 ms median, 0.15 ms p99. GitHub's sign-in uses
+settings kept for M12 and M14). A `wowlua.json` opens in its editor tab as
+its form (S063), its sections listed inside the tab: the designed rows,
+every other key from the schema, the json view the tab's code, a
+requirement that excludes the built-in wowlua fixed. Its dependencies
+section: newer versions when it opens, the registry searched, added,
+updated, removed, a new requirement, yanked versions. The settings page is
+Studio's own settings only. The frame budget holds: 0.05 ms median,
+0.12 ms p99. GitHub's sign-in uses
 the "wowlua studio" OAuth App (its client ID built in; no secret). Not yet:
 checked by hand on macOS only.
 
@@ -430,9 +432,9 @@ and tests it on Windows and Linux (S058). On each, with SuuUI's workspace:
    warning; the dev loop with a save (copied and linked); save a publish
    token and see it in `wowlua login`'s store; a dry run.
 10. **M10**: the system theme following the OS; the interface size; record
-    a key and use it; word wrap at the window; save the Claude key; edit a
-    key of `wowlua.json` in its form and see the json view; search the
-    registry and add a dependency.
+    a key and use it; word wrap at the window; save the Claude key; open
+    `wowlua.json`, edit a key in its form and see the json view; search the
+    registry and add a dependency in its dependencies section.
 
 ## Open questions
 

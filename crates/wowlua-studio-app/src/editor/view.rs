@@ -118,7 +118,17 @@ pub enum Action {
     ToggleBreakpoint(usize),
     /// Right-clicked there: edit the line's breakpoint.
     EditBreakpoint(usize),
+    /// A wowlua.json tab (S063): its bar, and its form's place unless it
+    /// shows as json. Studio draws them; the editor leaves them empty.
+    Manifest {
+        tab: usize,
+        bar: Rect,
+        form: Option<Rect>,
+    },
 }
+
+/// The height of a wowlua.json tab's bar.
+pub const MANIFEST_BAR_H: f32 = 52.0;
 
 /// A breakpoint in the gutter (S056).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -258,6 +268,8 @@ pub fn show(ui: &mut Ui, editors: &mut Editors, cx: &Cx<'_>) -> Vec<Action> {
     );
     let focus = std::mem::take(&mut editors.focus);
     let active = editors.active;
+    let manifest = super::is_manifest(&editors.tabs[active].doc.path);
+    let as_json = editors.as_json.contains(&editors.tabs[active].doc.path);
     let tab = &mut editors.tabs[active];
     crumbs(ui, crumbs_rect, &tab.doc, cx.workspace);
     // Esc in the code closes the find bar, when no popup takes it.
@@ -279,7 +291,7 @@ pub fn show(ui: &mut Ui, editors: &mut Editors, cx: &Cx<'_>) -> Vec<Action> {
         clash_banner(&mut child, tab);
         top = child.min_rect().bottom();
     }
-    let code_rect = Rect::from_min_max(Pos2::new(rect.left(), top), rect.max);
+    let mut code_rect = Rect::from_min_max(Pos2::new(rect.left(), top), rect.max);
     if let Some(clash) = &tab.clash
         && clash.comparing
     {
@@ -287,6 +299,20 @@ pub fn show(ui: &mut Ui, editors: &mut Editors, cx: &Cx<'_>) -> Vec<Action> {
         let theirs = clash.theirs.replace("\r\n", "\n");
         compare(ui, code_rect, &mine, &theirs, &tab.doc.path);
         return actions;
+    }
+    // A manifest: its bar, then its form, or its code as json (S063).
+    if manifest {
+        let bar = Rect::from_min_size(code_rect.min, Vec2::new(rect.width(), MANIFEST_BAR_H));
+        code_rect.min.y = bar.bottom();
+        let form = (!as_json).then_some(code_rect);
+        actions.push(Action::Manifest {
+            tab: active,
+            bar,
+            form,
+        });
+        if form.is_some() {
+            return actions;
+        }
     }
     // The find bar's matches, marked while it is open.
     let found: Vec<(Pos, Pos)> = if editors.finder.open {

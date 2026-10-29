@@ -9,7 +9,7 @@ pub mod find;
 pub mod json;
 pub mod view;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::system::{Highlight, Syntax, System};
@@ -140,6 +140,14 @@ pub struct Editors {
     pub focus: bool,
     /// The find bar, the window's (S051).
     pub finder: find::Finder,
+    /// The wowlua.json files shown as json, not their form (S063): kept
+    /// for the session, the tab closed or not.
+    pub as_json: HashSet<PathBuf>,
+}
+
+/// Whether the file is a package's manifest, shown as its form (S063).
+pub fn is_manifest(path: &Path) -> bool {
+    path.file_name().is_some_and(|n| n == "wowlua.json")
 }
 
 impl Editors {
@@ -546,6 +554,14 @@ mod tests {
         assert_eq!(lines[0], [(0, 5, Syntax::Comment)]);
         // Characters: the tab is one.
         assert_eq!(lines[1], [(0, 4, Syntax::Comment)]);
+    }
+
+    #[test]
+    fn manifests_are_the_files_named_wowlua_json() {
+        assert!(is_manifest(Path::new("/w/wowlua.json")));
+        assert!(is_manifest(Path::new("/w/libs/lib/wowlua.json")));
+        assert!(!is_manifest(Path::new("/w/tests/profiles/raid.json")));
+        assert!(!is_manifest(Path::new("/w/wowlua.lock")));
     }
 
     #[test]

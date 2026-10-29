@@ -752,13 +752,15 @@ fn the_ship_page_stays_within_the_budget() {
     }
 }
 
-/// The settings page: Studio's sections, then the dependencies of a
-/// package with 40 of them and a search's results; each scrolled through.
+/// The settings page's Studio sections, then a wowlua.json tab's form: a
+/// section of rows, and the dependencies of a package with 40 of them;
+/// each scrolled through.
 #[test]
 fn the_settings_page_stays_within_the_budget() {
     use egui::UiBuilder;
-    use wowlua_studio_app::deps;
-    use wowlua_studio_app::settings::{self, Section, SettingsState, View};
+    use wowlua_studio_app::editor::{Document, Editors, Tab};
+    use wowlua_studio_app::manifest::{self, Manifests};
+    use wowlua_studio_app::settings::{self, Section, SettingsState};
     use wowlua_studio_app::state::Settings;
     use wowlua_studio_app::system::*;
     let ctx = egui::Context::default();
@@ -772,6 +774,14 @@ fn the_settings_page_stays_within_the_budget() {
     };
     let mut state = SettingsState::default();
     let mut settings = Settings::default();
+    let mut manifests = Manifests::default();
+    let mut editors = Editors::default();
+    let path = std::path::PathBuf::from("/w/wowlua.json");
+    editors.tabs.push(Tab::new(Document::new(
+        path.clone(),
+        r#"{ "package": { "name": "suuui", "version": "0.6.0-beta.1", "wowlua": "^0.13" },
+  "test": { "blizzard-ui": true, "platform": "mac", "coverage": { "lines": 98 } } }"#,
+    )));
     let rows: Vec<DepRow> = (0..40)
         .map(|i| DepRow {
             name: format!("lib-{i}"),
@@ -785,13 +795,13 @@ fn the_settings_page_stays_within_the_budget() {
             description: "A library.".into(),
         })
         .collect();
-    state.deps.event(DepsEvent::Read(Box::new(Ok(DepsFacts {
+    manifests.deps.event(DepsEvent::Read(Box::new(Ok(DepsFacts {
         package: "suuui".into(),
         manifest: "/w/wowlua.json".into(),
         rows,
         problems: Vec::new(),
     }))));
-    state.deps.event(DepsEvent::Outdated(Ok((0..20)
+    manifests.deps.event(DepsEvent::Outdated(Ok((0..20)
         .map(|i| DepNewer {
             name: format!("lib-{i}"),
             latest: "1.2.3".into(),
@@ -803,11 +813,12 @@ fn the_settings_page_stays_within_the_budget() {
     let main = Rect::from_min_max(Pos2::new(304.0, 40.0), Pos2::new(1440.0, 870.0));
     let mut times = Vec::new();
     for frame in 0..300u32 {
-        state.view = match frame / 100 {
-            0 => View::Studio(Section::Debugger),
-            1 => View::Studio(Section::Editor),
-            _ => View::Dependencies,
-        };
+        state.section = Section::Debugger;
+        match frame {
+            100 => manifests.show_section(&path, "test"),
+            200 => manifests.show_section(&path, "dependencies"),
+            _ => {}
+        }
         let mut input = RawInput {
             screen_rect: Some(screen),
             ..Default::default()
@@ -825,16 +836,11 @@ fn the_settings_page_stays_within_the_budget() {
         });
         let started = Instant::now();
         let mut output = ctx.run_ui(input, |ui| {
-            ui.scope_builder(UiBuilder::new().max_rect(left), |ui| {
-                settings::sections(
-                    ui,
-                    &mut state,
-                    &wowlua_studio_app::manifest::section_names(),
-                );
-            });
-            ui.scope_builder(UiBuilder::new().max_rect(main), |ui| match state.view {
-                View::Dependencies => deps::show(ui, &mut state.deps, &workspace, &NoSystem),
-                _ => {
+            if frame < 100 {
+                ui.scope_builder(UiBuilder::new().max_rect(left), |ui| {
+                    settings::sections(ui, &mut state);
+                });
+                ui.scope_builder(UiBuilder::new().max_rect(main), |ui| {
                     let _ = settings::studio(
                         ui,
                         &mut state,
@@ -844,8 +850,20 @@ fn the_settings_page_stays_within_the_budget() {
                         None,
                         wowlua_studio_app::Platform::MacOs,
                     );
-                }
-            });
+                });
+            } else {
+                ui.scope_builder(UiBuilder::new().max_rect(main), |ui| {
+                    let _ = manifest::form(
+                        ui,
+                        &mut manifests,
+                        &mut editors,
+                        0,
+                        &workspace,
+                        &NoSystem,
+                        "0.13.6",
+                    );
+                });
+            }
         });
         let _ = ctx.tessellate(output.shapes, output.pixels_per_point);
         output.textures_delta.clear();

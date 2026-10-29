@@ -9,8 +9,8 @@
 //! `profile:<speedscope file>`, `profiletest:file::test`, `record:<seconds>`,
 //! `profview:<view>[@frame][#rank]`, `world:<profile>[/<part>][@json]`, `spells:<query>`,
 //! `worldlive:<profile>|<path>=<json>|…`, `ship:<tab>[/<profile>]`,
-//! `shipdo:<build|install|dry|publish|tag|dev>`, `settings:<section>` (a
-//! Studio section, `wowlua.json/<section>`, `dependencies`).
+//! `shipdo:<build|install|dry|publish|tag|dev>`, `settings:<section>`,
+//! `manifest:<section>[@json]` (the workspace's wowlua.json in its tab).
 
 use std::{
     path::PathBuf,
@@ -148,6 +148,14 @@ impl Screenshot {
             }
             if let Some(what) = step.strip_prefix("settings:") {
                 studio.settings_show(what);
+                continue;
+            }
+            if let Some(what) = step.strip_prefix("manifest:") {
+                let (section, json) = match what.strip_suffix("@json") {
+                    Some(s) => (s, true),
+                    None => (what, false),
+                };
+                studio.manifest_show(section, json);
                 continue;
             }
             if let Some(what) = step.strip_prefix("shipdo:") {

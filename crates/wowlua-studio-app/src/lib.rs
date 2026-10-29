@@ -131,6 +131,11 @@ pub struct Studio {
     ship: ship::ShipState,
     /// The settings page (M10, S062).
     settings_page: settings::SettingsState,
+    /// The wowlua.json tabs' forms (S063).
+    manifests: manifest::Manifests,
+    /// A wowlua.json to open on a section, as json or not (the screenshot
+    /// harness's `manifest:`).
+    queued_manifest: Option<(String, bool)>,
     /// The theme and scale last applied (S062).
     applied: Option<(wowlua_studio_ui::Theme, f32)>,
     /// The settings last applied (S062).
@@ -264,6 +269,8 @@ impl Studio {
             world: world::WorldState::default(),
             ship: ship::ShipState::default(),
             settings_page: settings::SettingsState::default(),
+            manifests: manifest::Manifests::default(),
+            queued_manifest: None,
             applied: None,
             prefs: None,
             debug_seen: (Vec::new(), false),
@@ -487,6 +494,16 @@ impl Studio {
             self.pending = Some(Pending::Quit);
         }
 
+        if let Some(w) = &self.workspace
+            && let Some((section, json)) = self.queued_manifest.take()
+        {
+            let path = w.root.join("wowlua.json");
+            self.manifests.show_section(&path, &section);
+            if json {
+                self.editors.as_json.insert(path.clone());
+            }
+            self.queued_files.push(path);
+        }
         if self.workspace.is_some() {
             for path in std::mem::take(&mut self.queued_files) {
                 self.open_file(&path, &ctx);
@@ -777,9 +794,11 @@ impl Studio {
         let ship_state = &mut self.ship;
         let mut ship_action = None;
         let settings_page = &mut self.settings_page;
+        let manifests = &mut self.manifests;
         let mut manifest_action = None;
         let platform = self.host.platform;
         settings_page.wowlua_version = self.host.wowlua_version.clone();
+        let wowlua_version = self.host.wowlua_version.clone();
         let studio_settings = &mut self.settings;
         let mut settings_action = None;
         let installation = self.start.installation();
@@ -865,7 +884,38 @@ impl Studio {
                 // (below the debugger's bar, when it has one)
                 let rest = ui.available_rect_before_wrap();
                 ui.scope_builder(UiBuilder::new().max_rect(rest), |ui| {
-                    actions.extend(editor::view::show(ui, editors, &cx));
+                    let mut shown = editor::view::show(ui, editors, &cx);
+                    // A wowlua.json tab: its bar and form (S063).
+                    let manifest = shown.iter().find_map(|a| match a {
+                        editor::view::Action::Manifest { tab, bar, form } => {
+                            Some((*tab, *bar, *form))
+                        }
+                        _ => None,
+                    });
+                    shown.retain(|a| !matches!(a, editor::view::Action::Manifest { .. }));
+                    actions.extend(shown);
+                    if let Some((tab, bar, form)) = manifest {
+                        ui.scope_builder(UiBuilder::new().max_rect(bar), |ui| {
+                            if let Some(a) = manifest::bar(ui, manifests, editors, tab, workspace) {
+                                manifest_action = Some(a);
+                            }
+                        });
+                        if let Some(rect) = form {
+                            ui.scope_builder(UiBuilder::new().max_rect(rect), |ui| {
+                                if let Some(a) = manifest::form(
+                                    ui,
+                                    manifests,
+                                    editors,
+                                    tab,
+                                    workspace,
+                                    system,
+                                    &wowlua_version,
+                                ) {
+                                    manifest_action = Some(a);
+                                }
+                            });
+                        }
+                    }
                 });
             }
             Panel::Problems => {
@@ -968,66 +1018,20 @@ impl Studio {
                     ship_action = Some(a);
                 }
             }
-            Panel::SettingsSections => {
-                settings::sections(ui, settings_page, &manifest::section_names())
+            Panel::SettingsSections => settings::sections(ui, settings_page),
+            Panel::Settings => {
+                if let Some(a) = settings::studio(
+                    ui,
+                    settings_page,
+                    studio_settings,
+                    system,
+                    Some(workspace),
+                    installation,
+                    platform,
+                ) {
+                    settings_action = Some(a);
+                }
             }
-            Panel::Settings => match settings_page.view {
-                settings::View::Studio(_) => {
-                    if let Some(a) = settings::studio(
-                        ui,
-                        settings_page,
-                        studio_settings,
-                        system,
-                        Some(workspace),
-                        installation,
-                        platform,
-                    ) {
-                        settings_action = Some(a);
-                    }
-                }
-                settings::View::Dependencies => {
-                    deps::show(ui, &mut settings_page.deps, workspace, system)
-                }
-                settings::View::Manifest(section) => {
-                    let version = settings_page.wowlua_version.clone();
-                    let (a, json) = manifest::show(
-                        ui,
-                        &mut settings_page.manifest,
-                        editors,
-                        workspace,
-                        system,
-                        section,
-                        &version,
-                    );
-                    if let Some(a) = a {
-                        manifest_action = Some(a);
-                    }
-                    // The json view: the manifest's document in the editor's
-                    // code, its checks the language server's.
-                    if let Some((rect, i)) = json {
-                        let diagnostics = lsp_state
-                            .diagnostics
-                            .get(&editors.tabs[i].canonical)
-                            .map_or(&[][..], Vec::as_slice);
-                        let cx = editor::view::Cx {
-                            system,
-                            workspace,
-                            mac,
-                            diagnostics,
-                            lenses: &[],
-                            tests_at: &[],
-                            coverage: None,
-                            breakpoints: &[],
-                            stopped: None,
-                            inline: &[],
-                        };
-                        let tab = &mut editors.tabs[i];
-                        ui.scope_builder(UiBuilder::new().max_rect(rect), |ui| {
-                            let _ = editor::view::single(ui, tab, &cx, i);
-                        });
-                    }
-                }
-            },
             Panel::ProfileEditor => {
                 let live = world::session_profile(debug_state, world_state);
                 let (json, a) = world::editor(
@@ -1117,10 +1121,8 @@ impl Studio {
                         self.notify(note, ctx);
                     }
                 }
-                manifest::Action::Go(manifest::Go::Dependencies) => {
-                    self.settings_page.view = settings::View::Dependencies;
-                    self.settings_page.deps.opened();
-                }
+                // (the form's own section)
+                manifest::Action::Go(manifest::Go::Dependencies) => {}
                 manifest::Action::Go(manifest::Go::Ship) => {
                     self.queue(Command::ShowPage(Page::Ship))
                 }
@@ -1294,7 +1296,7 @@ impl Studio {
             A::Save(i) => self.save_tab(i, ctx),
             A::Close(i) => self.close_tab(i),
             // (taken above)
-            A::ToggleBreakpoint(_) | A::EditBreakpoint(_) => {}
+            A::ToggleBreakpoint(_) | A::EditBreakpoint(_) | A::Manifest { .. } => {}
             A::Hover(at) => self.lsp.hover(doc, at, system),
             A::Complete(at) => self.lsp.complete(doc, at, system),
             A::Resolve(label) => {
@@ -1996,7 +1998,7 @@ impl Studio {
                 Event::FilesChanged(paths) => {
                     self.explorer.changed(&paths);
                     self.ship.files_changed();
-                    self.settings_page.deps.files_changed();
+                    self.manifests.deps.files_changed();
                     if let Some(w) = &self.workspace
                         && paths.iter().any(|p| p.ends_with("wowlua.json"))
                     {
@@ -2055,7 +2057,7 @@ impl Studio {
                 Event::Spells(query, found) => self.world.spells_found(query, found),
                 Event::ClassSpells(class, found) => self.world.class_spells_found(class, found),
                 Event::Ship(event) => self.ship.event(event),
-                Event::Deps(event) => self.settings_page.deps.event(event),
+                Event::Deps(event) => self.manifests.deps.event(event),
                 Event::Settings(info) => self.settings_page.info(info),
                 Event::Updates(check) => self.settings_page.updates(check),
                 Event::Github(event) => {
@@ -2383,26 +2385,20 @@ impl Studio {
         self.queued_ship.push(what.to_owned());
     }
 
-    /// The settings page on a section (the screenshot harness's
-    /// `settings:`): a Studio section by its label, `wowlua.json/<section>`,
-    /// or `dependencies`.
+    /// The settings page on a section by its label (the screenshot
+    /// harness's `settings:`).
     pub fn settings_show(&mut self, what: &str) {
         self.queue(Command::ShowPage(Page::Settings));
-        self.settings_page.view = if what == "dependencies" {
-            settings::View::Dependencies
-        } else if let Some(name) = what.strip_prefix("wowlua.json/") {
-            let i = manifest::SECTIONS
-                .iter()
-                .position(|(n, _)| *n == name)
-                .unwrap_or(0);
-            settings::View::Manifest(i)
-        } else {
-            let s = settings::Section::ALL
-                .into_iter()
-                .find(|s| s.label() == what)
-                .unwrap_or_default();
-            settings::View::Studio(s)
-        };
+        self.settings_page.section = settings::Section::ALL
+            .into_iter()
+            .find(|s| s.label() == what)
+            .unwrap_or_default();
+    }
+
+    /// The workspace's wowlua.json in its tab, on a section, its form or
+    /// its json (the screenshot harness's `manifest:<section>[@json]`).
+    pub fn manifest_show(&mut self, section: &str, json: bool) {
+        self.queued_manifest = Some((section.to_owned(), json));
     }
 
     /// The spells part's search typed (the screenshot harness's `spells:`).
