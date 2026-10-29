@@ -19,13 +19,18 @@ use wowlua_studio_app::system::{GithubSignIn, SettingsInfo, UpdateCheck};
 const GITHUB: &str = "studio-github";
 const CLAUDE: &str = "anthropic";
 
-/// The OAuth App Studio signs in to GitHub with: its client ID, built in
-/// or in `WOWLUA_STUDIO_GITHUB_CLIENT_ID` (S062: registered by the user).
+/// The client ID of the OAuth App Studio signs in to GitHub with
+/// ("wowlua studio", device flow; S062). Public by design: the device flow
+/// sends it from every computer, and it has no secret.
+const GITHUB_CLIENT_ID: &str = "Ov23liPIsvUv6iwQ72nw";
+
+/// The OAuth App's client ID: built in, or another app's in
+/// `WOWLUA_STUDIO_GITHUB_CLIENT_ID`.
 fn github_client_id() -> Option<String> {
     std::env::var("WOWLUA_STUDIO_GITHUB_CLIENT_ID")
         .ok()
-        .or_else(|| option_env!("WOWLUA_STUDIO_GITHUB_CLIENT_ID").map(str::to_owned))
         .filter(|id| !id.trim().is_empty())
+        .or_else(|| Some(GITHUB_CLIENT_ID.to_owned()))
 }
 
 /// The installation's art kept on disk (S062).
@@ -208,7 +213,7 @@ fn form(pairs: &[(&str, &str)]) -> Vec<u8> {
 pub fn github_sign_in(stop: Arc<AtomicBool>, tell: impl Fn(GithubSignIn)) {
     let Some(client) = github_client_id() else {
         tell(GithubSignIn::Failed(
-            "Studio's GitHub app is not configured yet (WOWLUA_STUDIO_GITHUB_CLIENT_ID)".into(),
+            "Studio's GitHub app has no client ID (WOWLUA_STUDIO_GITHUB_CLIENT_ID is empty)".into(),
         ));
         return;
     };

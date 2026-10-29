@@ -368,9 +368,9 @@ every other key from the schema, the json view the same document, a
 requirement that excludes the built-in wowlua fixed. The dependencies of a
 package of the workspace: newer versions when the view opens, the registry
 searched, added, updated, removed, a new requirement, yanked versions.
-The frame budget holds: 0.09 ms median, 0.15 ms p99. Not yet: GitHub's
-OAuth App (its client ID, from the user); checked by
-hand on macOS only.
+The frame budget holds: 0.09 ms median, 0.15 ms p99. GitHub's sign-in uses
+the "wowlua studio" OAuth App (its client ID built in; no secret). Not yet:
+checked by hand on macOS only.
 
 ## M11: Git
 
