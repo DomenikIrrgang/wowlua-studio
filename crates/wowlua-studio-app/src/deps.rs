@@ -584,10 +584,49 @@ fn details(
             }
         });
     });
+    // A new requirement (S065): ^, ~ or =, and one of the registry's
+    // versions (the yanked left out).
+    let versions: Vec<String> = state
+        .versions
+        .get(&row.name)
+        .map(|v| {
+            v.iter()
+                .filter(|(_, yanked)| !yanked)
+                .map(|(v, _)| v.clone())
+                .collect()
+        })
+        .unwrap_or_default();
     if let Some(requirement) = &mut state.requirement {
         ui.add_space(6.0);
         forms::label(ui, "requirement");
-        forms::text_input(ui, requirement, 160.0, "^1.2");
+        let (op, version) = match requirement.chars().next() {
+            Some(c @ ('^' | '~' | '=')) => (c, requirement[1..].trim().to_owned()),
+            _ => ('^', requirement.trim().to_owned()),
+        };
+        ui.horizontal(|ui| {
+            let at = ['^', '~', '='].iter().position(|c| *c == op).unwrap_or(0);
+            if let Some(i) = widgets::seg(ui, "deps-req-op", &["^", "~", "="], at, false) {
+                *requirement = format!("{}{version}", ['^', '~', '='][i]);
+            }
+            let mut names: Vec<String> = versions.clone();
+            if !version.is_empty() && !names.contains(&version) {
+                names.insert(0, version.clone());
+            }
+            if names.is_empty() {
+                forms::text_input(ui, requirement, 160.0, "^1.2");
+            } else {
+                let mut index = names.iter().position(|v| *v == version).unwrap_or(0);
+                let opts: Vec<(&str, bool)> = names.iter().map(|v| (v.as_str(), true)).collect();
+                if forms::select(ui, "deps-req-version", &opts, &mut index, 140.0) {
+                    *requirement = format!("{op}{}", names[index]);
+                }
+            }
+        });
+        caption(
+            ui,
+            "^ any later minor, ~ any later patch, = exactly this version.",
+            p,
+        );
         let new = requirement.trim().to_owned();
         ui.horizontal(|ui| {
             if widgets::button(ui, ButtonKind::Secondary, "change", true, None).clicked()
