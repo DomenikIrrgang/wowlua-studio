@@ -652,7 +652,8 @@ fn toolbar(ui: &mut Ui, state: &mut GameState, system: &dyn System, p: &Palette)
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add_enabled_ui(state.running(), |ui| {
-                    if widgets::button(ui, ButtonKind::Ghost, "screenshot", true, None).clicked() {
+                    if widgets::button(ui, ButtonKind::Tertiary, "screenshot", true, None).clicked()
+                    {
                         shoot(state, system, None);
                     }
                 });
@@ -1341,7 +1342,13 @@ pub fn inspector(
                         .unwrap_or_default();
                     let can = named.is_some() && !scripts.is_empty();
                     let r = ui.add_enabled_ui(can, |ui| {
-                        widgets::button(ui, ButtonKind::Ghost, "break on its scripts", true, None)
+                        widgets::button(
+                            ui,
+                            ButtonKind::Tertiary,
+                            "break on its scripts",
+                            true,
+                            None,
+                        )
                     });
                     if r.inner.clicked()
                         && let Some(n) = &named
@@ -1358,7 +1365,8 @@ pub fn inspector(
                             "it has no scripts"
                         });
                     }
-                    if widgets::button(ui, ButtonKind::Ghost, "screenshot it", true, None).clicked()
+                    if widgets::button(ui, ButtonKind::Tertiary, "screenshot it", true, None)
+                        .clicked()
                     {
                         shoot(state, system, Some(id));
                     }

@@ -423,7 +423,7 @@ fn rename(ui: &mut Ui, state: &mut SearchState, root: &Path, p: &Palette) -> Opt
                 .collect();
             action = Some(Action::Rename(edits));
         }
-        cancel = widgets::button(ui, ButtonKind::Ghost, "cancel", true, None).clicked();
+        cancel = widgets::button(ui, ButtonKind::Tertiary, "cancel", true, None).clicked();
     });
     if cancel || action.is_some() {
         state.rename = None;

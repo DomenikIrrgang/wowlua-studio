@@ -369,7 +369,10 @@ every other key from the schema, the json view the tab's code, a
 requirement that excludes the built-in wowlua fixed. Its dependencies
 section: newer versions when it opens, the registry searched, added,
 updated, removed, a new requirement, yanked versions. The settings page is
-Studio's own settings only. The frame budget holds: 0.05 ms median,
+Studio's own settings only. Flavors come from wowlua's flavor table
+everywhere (S064); build profiles are edited in wowlua.json's build
+section, the coverage minimums and the test screen as fields. The frame
+budget holds: 0.05 ms median,
 0.12 ms p99. GitHub's sign-in uses
 the "wowlua studio" OAuth App (its client ID built in; no secret). Not yet:
 checked by hand on macOS only.

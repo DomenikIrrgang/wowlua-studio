@@ -3,12 +3,14 @@
 //! controls Studio is drawn with. It depends on egui alone, so it builds
 //! for the browser too (decision S002).
 
+pub mod controls;
 mod fonts;
 pub mod forms;
 pub mod icons;
 pub mod mark;
 mod raster;
 mod theme;
+pub mod verbs;
 pub mod widgets;
 pub mod wordmark;
 

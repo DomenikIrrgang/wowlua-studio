@@ -993,7 +993,7 @@ fn install_tab(
         ui,
         "your WoW installation",
         |ui| {
-            if widgets::button(ui, ButtonKind::Ghost, "change", true, None).clicked() {
+            if widgets::button(ui, ButtonKind::Tertiary, "change", true, None).clicked() {
                 action = Some(Action::PickInstallation);
             }
         },
@@ -1106,7 +1106,7 @@ fn install_tab(
             if changes.len() > 12 {
                 caption(ui, &format!("and {} more", changes.len() - 12), p);
             }
-            if widgets::button(ui, ButtonKind::Ghost, "show the folder", true, None).clicked() {
+            if widgets::button(ui, ButtonKind::Tertiary, "show the folder", true, None).clicked() {
                 system.reveal(&folder.path);
             }
         });

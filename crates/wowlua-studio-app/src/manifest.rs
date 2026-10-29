@@ -655,7 +655,8 @@ fn flavors(ui: &mut Ui, fx: &mut Fx<'_>, new: &mut String, p: &Palette) {
                         caption(ui, &clients.join(" · "), p);
                     }
                     ui.add_enabled_ui(current.len() > 1, |ui| {
-                        if widgets::button(ui, ButtonKind::Ghost, "remove", true, None).clicked() {
+                        if widgets::button(ui, ButtonKind::Tertiary, "remove", true, None).clicked()
+                        {
                             let keys = vec![Key::Name("flavors".into()), Key::Name(f.clone())];
                             fx.changes.push((keys, None, false));
                         }

@@ -566,12 +566,12 @@ fn details(
                 );
             }
             if row.registry
-                && widgets::button(ui, ButtonKind::Ghost, "change requirement", true, None)
+                && widgets::button(ui, ButtonKind::Tertiary, "change requirement", true, None)
                     .clicked()
             {
                 state.requirement = Some(row.requirement.clone());
             }
-            if widgets::button(ui, ButtonKind::Ghost, "remove", true, None).clicked() {
+            if widgets::button(ui, ButtonKind::Tertiary, "remove", true, None).clicked() {
                 state.run(
                     workspace,
                     system,

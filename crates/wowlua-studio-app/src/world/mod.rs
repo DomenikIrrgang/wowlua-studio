@@ -1371,7 +1371,7 @@ pub fn live(
                         // (the panel is narrow: the name, then the button)
                         ui.vertical(|ui| {
                             forms::text_input(ui, &mut state.snapshot_name, ui.available_width().min(220.0), "raid-pull");
-                            if widgets::button(ui, ButtonKind::Ghost, "save the running world as a profile", true, None)
+                            if widgets::button(ui, ButtonKind::Tertiary, "save the running world as a profile", true, None)
                                 .clicked()
                                 && valid_name(&state.snapshot_name)
                             {

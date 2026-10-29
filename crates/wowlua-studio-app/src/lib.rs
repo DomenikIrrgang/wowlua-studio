@@ -3237,7 +3237,7 @@ impl Studio {
                 if widgets::button(ui, ButtonKind::Primary, "open", true, None).clicked() {
                     decided = Some(true);
                 }
-                if widgets::button(ui, ButtonKind::Ghost, "cancel", true, None).clicked() {
+                if widgets::button(ui, ButtonKind::Tertiary, "cancel", true, None).clicked() {
                     decided = Some(false);
                 }
             });
@@ -3328,10 +3328,10 @@ impl Studio {
                 if widgets::button(ui, ButtonKind::Primary, "save", true, None).clicked() {
                     decided = Some(true);
                 }
-                if widgets::button(ui, ButtonKind::Ghost, "don't save", true, None).clicked() {
+                if widgets::button(ui, ButtonKind::Tertiary, "don't save", true, None).clicked() {
                     decided = Some(false);
                 }
-                if widgets::button(ui, ButtonKind::Ghost, "cancel", true, None).clicked() {
+                if widgets::button(ui, ButtonKind::Tertiary, "cancel", true, None).clicked() {
                     self.pending = None;
                 }
             });

@@ -104,15 +104,18 @@ pub fn menu_button(ui: &mut Ui, label: &str) -> Response {
         .on_hover_cursor(CursorIcon::PointingHand)
 }
 
-/// A button's role.
+/// A button's role (Option D: each leads with its verb's icon).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ButtonKind {
     /// The one action a view exists for: amber.
     Primary,
     /// Its alternatives: a `line-strong` frame.
     Secondary,
-    /// Small inline actions: `[ label ]`.
-    Ghost,
+    /// Quiet actions: no frame, the icon in `amber-ink`.
+    Tertiary,
+    /// Actions inside text and rows: the icon in `amber-ink`, underlined
+    /// under the pointer (what `[ label ]` was).
+    Inline,
 }
 
 /// A check mark centred on `center` (the fonts have none: it is drawn).
@@ -127,7 +130,9 @@ pub fn check_mark(painter: &egui::Painter, center: egui::Pos2, color: Color32) {
     );
 }
 
-/// A command button: 36 px, or 28 px `small`; an optional leading icon.
+/// A command button (Option D): 36 px, or 28 px `small` (Studio's); an
+/// inline one as tall as its text. It leads with `icon`, else the icon of
+/// its label's verb; a removing tertiary or inline action is danger.
 pub fn button(
     ui: &mut Ui,
     kind: ButtonKind,
@@ -137,23 +142,30 @@ pub fn button(
 ) -> Response {
     let p = palette(ui.ctx());
     let enabled = ui.is_enabled();
-    let (font, spacing) = label_font(12.0);
-    let color = match (enabled, kind) {
-        (false, _) => p.ink_faint,
-        (true, ButtonKind::Primary) => p.on_amber,
-        (true, _) => p.ink,
-    };
-    let text = galley(ui, label, font.clone(), color, spacing);
-    let bracket = galley(ui, "[", font.clone(), p.ink_muted, 0.0);
-    let height = if small { 28.0 } else { 36.0 };
-    let pad = if small { 10.0 } else { 16.0 };
-    let icon_w = if icon.is_some() { 16.0 + 6.0 } else { 0.0 };
-    let brackets_w = if kind == ButtonKind::Ghost {
-        2.0 * (bracket.size().x + 4.0)
+    let icon = icon.or_else(|| crate::verbs::icon_for(label));
+    let danger =
+        matches!(kind, ButtonKind::Tertiary | ButtonKind::Inline) && crate::verbs::is_danger(label);
+    let inline = kind == ButtonKind::Inline;
+    // (height, padding left and right, font, icon, gap)
+    let (height, pad_l, pad_r, size, icon_s, gap) = if inline {
+        (20.0, 4.0, 6.0, 12.0, 14.0, 5.0)
+    } else if small {
+        (28.0, 12.0, 12.0, 12.0, 14.0, 6.0)
     } else {
-        0.0
+        (36.0, 16.0, 16.0, 13.0, 16.0, 8.0)
     };
-    let width = pad * 2.0 + icon_w + brackets_w + text.size().x;
+    let (font, spacing) = label_font(size);
+    let (ink, icon_ink) = match (enabled, kind) {
+        (false, _) => (p.ink_faint, p.ink_faint),
+        (true, ButtonKind::Primary) => (p.on_amber, p.on_amber),
+        (true, _) if danger => (p.error, p.error),
+        (true, ButtonKind::Secondary | ButtonKind::Tertiary | ButtonKind::Inline) => {
+            (p.ink, p.amber_ink)
+        }
+    };
+    let text = galley(ui, label, font, ink, spacing);
+    let icon_w = if icon.is_some() { icon_s + gap } else { 0.0 };
+    let width = pad_l + icon_w + text.size().x + pad_r;
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::click());
     response.widget_info(|| WidgetInfo::labeled(Role::Button, enabled, label));
     let hovered = enabled && response.hovered();
@@ -197,42 +209,34 @@ pub fn button(
                 StrokeKind::Inside,
             );
         }
-        ButtonKind::Ghost => {
+        ButtonKind::Tertiary | ButtonKind::Inline => {
             if hovered {
                 painter.rect_filled(rect, CornerRadius::ZERO, p.bg_300);
             }
         }
     }
-    let mut x = rect.left() + pad;
+    let mut x = rect.left() + pad_l;
     let cy = rect.center().y
         + if pressed && kind == ButtonKind::Primary {
             1.0
         } else {
             0.0
         };
-    if kind == ButtonKind::Ghost {
-        painter.galley(
-            Pos2::new(x, cy - bracket.size().y / 2.0),
-            bracket.clone(),
-            p.ink_muted,
-        );
-        x += bracket.size().x + 4.0;
-    }
     if let Some(i) = icon {
         icons::paint(
             painter,
-            Rect::from_min_size(Pos2::new(x, cy - 8.0), Vec2::splat(16.0)),
+            Rect::from_min_size(Pos2::new(x, cy - icon_s / 2.0), Vec2::splat(icon_s)),
             i,
-            color,
+            icon_ink,
         );
         x += icon_w;
     }
-    painter.galley(Pos2::new(x, cy - text.size().y / 2.0), text.clone(), color);
-    if kind == ButtonKind::Ghost {
-        let close = galley(ui, "]", font, p.ink_muted, 0.0);
-        x += text.size().x + 4.0;
-        ui.painter()
-            .galley(Pos2::new(x, cy - close.size().y / 2.0), close, p.ink_muted);
+    let top = cy - text.size().y / 2.0;
+    painter.galley(Pos2::new(x, top), text.clone(), ink);
+    if inline && hovered {
+        // (an inline action underlines under the pointer)
+        let y = top + text.size().y + 1.0;
+        painter.hline(x..=x + text.size().x, y, Stroke::new(1.0, ink));
     }
     focus_ring(ui, rect, &response);
     if enabled {

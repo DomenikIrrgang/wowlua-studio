@@ -507,10 +507,10 @@ fn clash_banner(ui: &mut Ui, tab: &mut Tab) {
             if widgets::button(ui, ButtonKind::Secondary, compare, true, None).clicked() {
                 choice = Some(0);
             }
-            if widgets::button(ui, ButtonKind::Ghost, "keep mine", true, None).clicked() {
+            if widgets::button(ui, ButtonKind::Tertiary, "keep mine", true, None).clicked() {
                 choice = Some(1);
             }
-            if widgets::button(ui, ButtonKind::Ghost, "take theirs", true, None).clicked() {
+            if widgets::button(ui, ButtonKind::Tertiary, "take theirs", true, None).clicked() {
                 choice = Some(2);
             }
         });

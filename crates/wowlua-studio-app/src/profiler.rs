@@ -1165,7 +1165,7 @@ fn bar(
                 let exportable = state.current.as_ref().and_then(|m| m.path.clone());
                 if ui
                     .add_enabled_ui(exportable.is_some(), |ui| {
-                        widgets::button(ui, ButtonKind::Ghost, "export speedscope", true, None)
+                        widgets::button(ui, ButtonKind::Tertiary, "export speedscope", true, None)
                     })
                     .inner
                     .clicked()
@@ -2376,7 +2376,7 @@ pub fn function(ui: &mut Ui, state: &mut ProfilerState, p: &Palette) -> Option<A
                         && k.line > 0;
                     if ui
                         .add_enabled_ui(can_break, |ui| {
-                            widgets::button(ui, ButtonKind::Ghost, "break on it", true, None)
+                            widgets::button(ui, ButtonKind::Tertiary, "break on it", true, None)
                         })
                         .inner
                         .clicked()

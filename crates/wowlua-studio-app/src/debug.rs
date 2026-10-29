@@ -1037,15 +1037,15 @@ pub fn bar(ui: &mut Ui, state: &mut DebugState, system: &dyn System) -> Option<A
                     ("step into", GameRequest::StepIn),
                     ("step out", GameRequest::StepOut),
                 ] {
-                    if widgets::button(ui, ButtonKind::Ghost, label, true, None).clicked() {
+                    if widgets::button(ui, ButtonKind::Tertiary, label, true, None).clicked() {
                         state.send(system, r);
                     }
                 }
             });
-            if widgets::button(ui, ButtonKind::Ghost, "restart", true, None).clicked() {
+            if widgets::button(ui, ButtonKind::Tertiary, "restart", true, None).clicked() {
                 action = Some(Action::Restart);
             }
-            if widgets::button(ui, ButtonKind::Ghost, "stop", true, None).clicked() {
+            if widgets::button(ui, ButtonKind::Tertiary, "stop", true, None).clicked() {
                 action = Some(Action::Stop);
             }
             if forms::text_button(ui, "/reload").clicked() {
@@ -1077,7 +1077,7 @@ pub fn bar(ui: &mut Ui, state: &mut DebugState, system: &dyn System) -> Option<A
                         ("+100 ms", None, Some(0.1)),
                         ("+1 frame", Some(1), None),
                     ] {
-                        if widgets::button(ui, ButtonKind::Ghost, label, true, None).clicked() {
+                        if widgets::button(ui, ButtonKind::Tertiary, label, true, None).clicked() {
                             state.send(system, GameRequest::Advance { frames, seconds });
                         }
                     }
@@ -2314,11 +2314,11 @@ pub fn dialogs(
                     if widgets::button(ui, ButtonKind::Primary, "save", true, None).clicked() {
                         done = Some(true);
                     }
-                    if widgets::button(ui, ButtonKind::Ghost, "cancel", true, None).clicked() {
+                    if widgets::button(ui, ButtonKind::Tertiary, "cancel", true, None).clicked() {
                         done = Some(false);
                     }
                     if at.is_some()
-                        && widgets::button(ui, ButtonKind::Ghost, "remove", true, None).clicked()
+                        && widgets::button(ui, ButtonKind::Tertiary, "remove", true, None).clicked()
                     {
                         done = Some(false);
                         if let Some(i) = at {
@@ -2397,7 +2397,7 @@ pub fn dialogs(
                     if widgets::button(ui, ButtonKind::Primary, "save", true, None).clicked() {
                         done = Some(true);
                     }
-                    if widgets::button(ui, ButtonKind::Ghost, "cancel", true, None).clicked() {
+                    if widgets::button(ui, ButtonKind::Tertiary, "cancel", true, None).clicked() {
                         done = Some(false);
                     }
                 });

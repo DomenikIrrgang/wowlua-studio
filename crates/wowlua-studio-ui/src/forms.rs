@@ -301,36 +301,10 @@ pub fn checkbox(ui: &mut Ui, checked: &mut bool, label: &str, help: Option<&str>
     toggled
 }
 
-/// A text button: `[ label ]`, `amber-ink` under the pointer.
+/// An inline action (Option D): its verb's icon, then the label,
+/// underlined under the pointer; a removing one is danger.
 pub fn text_button(ui: &mut Ui, label: &str) -> Response {
-    let p = palette(ui.ctx());
-    let (font, spacing) = widgets::label_font(12.0);
-    let open = widgets::galley(ui, "[ ", font.clone(), p.ink_muted, 0.0);
-    let close = widgets::galley(ui, " ]", font.clone(), p.ink_muted, 0.0);
-    let probe = widgets::galley(ui, label, font.clone(), p.ink, spacing);
-    let w = open.size().x + probe.size().x + close.size().x;
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(w, 20.0), Sense::click());
-    response.widget_info(|| WidgetInfo::labeled(Role::Button, ui.is_enabled(), label));
-    let ink = if response.hovered() {
-        p.amber_ink
-    } else {
-        p.ink
-    };
-    let text = widgets::galley(ui, label, font, ink, spacing);
-    let cy = rect.center().y;
-    let painter = ui.painter();
-    let mut x = rect.left();
-    painter.galley(
-        Pos2::new(x, cy - open.size().y / 2.0),
-        open.clone(),
-        p.ink_muted,
-    );
-    x += open.size().x;
-    painter.galley(Pos2::new(x, cy - text.size().y / 2.0), text.clone(), ink);
-    x += text.size().x;
-    painter.galley(Pos2::new(x, cy - close.size().y / 2.0), close, p.ink_muted);
-    widgets::focus_ring(ui, rect, &response);
-    response.on_hover_cursor(CursorIcon::PointingHand)
+    widgets::button(ui, widgets::ButtonKind::Inline, label, true, None)
 }
 
 /// A card: a `bg-200` box with a 36 px head (`title`, then `head` from the

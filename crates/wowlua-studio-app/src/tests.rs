@@ -1804,10 +1804,10 @@ fn failure_view(
         if button(ui, ButtonKind::Secondary, "run it again", idle, None).clicked() {
             action = Some(Action::Run(request_for(&package, file, Some(name), state)));
         }
-        if button(ui, ButtonKind::Ghost, "profile it", idle, None).clicked() {
+        if button(ui, ButtonKind::Tertiary, "profile it", idle, None).clicked() {
             action = Some(Action::Profile(file.to_path_buf(), Some(name.to_owned())));
         }
-        if button(ui, ButtonKind::Ghost, "open the test", true, None).clicked() {
+        if button(ui, ButtonKind::Tertiary, "open the test", true, None).clicked() {
             action = Some(Action::Open(file.to_path_buf(), test_line.unwrap_or(0)));
         }
     });
@@ -1880,7 +1880,7 @@ fn snapshot_view(
         }
         if button(
             ui,
-            ButtonKind::Ghost,
+            ButtonKind::Tertiary,
             "accept every changed snapshot (wowlua test -u)",
             idle,
             None,
