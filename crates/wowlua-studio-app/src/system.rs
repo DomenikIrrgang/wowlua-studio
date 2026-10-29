@@ -1557,6 +1557,12 @@ pub trait System {
     fn ship_read(&self, _root: &Path) {}
     /// The build profiles of the package in `dir` (→ [`Event::Profiles`]).
     fn profiles_read(&self, _dir: &Path) {}
+    /// The flavor's binding actions with their category (`MOVEFORWARD`,
+    /// `movement`), from Blizzard's UI code wowlua keeps; none while it
+    /// isn't fetched.
+    fn binding_actions(&self, _flavor: &str) -> Vec<(String, String)> {
+        Vec::new()
+    }
     /// The targets' tokens' states (→ [`ShipEvent::Tokens`]): the OS
     /// credential store may ask the user first.
     fn ship_tokens(&self, _targets: Vec<ShipTarget>) {}

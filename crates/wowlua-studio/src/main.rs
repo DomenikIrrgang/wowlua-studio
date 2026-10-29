@@ -5,6 +5,7 @@
 //! is Studio started again with it).
 
 mod art;
+mod bindings;
 mod deps;
 mod frame_stats;
 mod game;

@@ -573,6 +573,10 @@ impl System for NativeSystem {
         });
     }
 
+    fn binding_actions(&self, flavor: &str) -> Vec<(String, String)> {
+        crate::bindings::actions(flavor)
+    }
+
     fn world_profiles(&self, root: &Path) -> Vec<wowlua_studio_app::system::WorldProfile> {
         crate::world::profiles(root)
     }

@@ -2945,8 +2945,154 @@ fn new_key(ui: &mut Ui, cx: &mut Cx<'_>, base: &[Key], word: &str) {
     });
 }
 
+/// A key as the client names it in a binding: `ALT-CTRL-SHIFT-F`.
+fn binding_key(key: egui::Key, m: egui::Modifiers) -> Option<String> {
+    use egui::Key as K;
+    let name = match key {
+        K::Space => "SPACE".to_owned(),
+        K::Escape => return None,
+        K::Enter => "ENTER".to_owned(),
+        K::Tab => "TAB".to_owned(),
+        K::Backspace => "BACKSPACE".to_owned(),
+        K::Delete => "DELETE".to_owned(),
+        K::Insert => "INSERT".to_owned(),
+        K::Home => "HOME".to_owned(),
+        K::End => "END".to_owned(),
+        K::PageUp => "PAGEUP".to_owned(),
+        K::PageDown => "PAGEDOWN".to_owned(),
+        K::ArrowUp => "UP".to_owned(),
+        K::ArrowDown => "DOWN".to_owned(),
+        K::ArrowLeft => "LEFT".to_owned(),
+        K::ArrowRight => "RIGHT".to_owned(),
+        other => other.name().to_ascii_uppercase(),
+    };
+    let mut out = String::new();
+    if m.alt {
+        out.push_str("ALT-");
+    }
+    if m.ctrl {
+        out.push_str("CTRL-");
+    }
+    if m.shift {
+        out.push_str("SHIFT-");
+    }
+    if m.mac_cmd {
+        out.push_str("META-");
+    }
+    out.push_str(&name);
+    Some(out)
+}
+
+/// The bindings (S065): each a recorded key and an action picked from the
+/// flavor's client (Blizzard's UI's bindings), a new one by pressing it.
+fn bindings(ui: &mut Ui, cx: &mut Cx<'_>, base: &[Key], value: &Json) {
+    let p = palette(ui.ctx());
+    // (the actions read once per flavor)
+    let id = egui::Id::unique(("wowlua-studio-binding-actions", cx.look.flavor.to_owned()));
+    let actions: std::sync::Arc<Vec<(String, String)>> = match ui.data(|d| d.get_temp(id)) {
+        Some(a) => a,
+        None => {
+            let a = std::sync::Arc::new(cx.system.binding_actions(cx.look.flavor));
+            ui.data_mut(|d| d.insert_temp(id, a.clone()));
+            a
+        }
+    };
+    let labels: Vec<String> = actions
+        .iter()
+        .map(|(n, c)| {
+            if c.is_empty() {
+                n.clone()
+            } else {
+                format!("{n} · {c}")
+            }
+        })
+        .collect();
+    let entries: Vec<(String, String)> = value
+        .as_object()
+        .map(|o| {
+            o.iter()
+                .map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_owned()))
+                .collect()
+        })
+        .unwrap_or_default();
+    for (key, action) in &entries {
+        let mut path = base.to_vec();
+        path.push(name(key));
+        forms::bar(ui, |ui| {
+            cell(
+                ui,
+                220.0,
+                egui::RichText::new(key)
+                    .font(Face::PlexMedium.at(12.0))
+                    .color(p.ink),
+            );
+            if actions.is_empty() {
+                field(ui, cx, path.clone(), Kind::Text, 260.0, "MOVEFORWARD");
+            } else {
+                let mut names: Vec<&str> = vec!["(none)"];
+                names.extend(labels.iter().map(String::as_str));
+                let mut index = actions
+                    .iter()
+                    .position(|(n, _)| n == action)
+                    .map_or(0, |i| i + 1);
+                let opts: Vec<(&str, bool)> = names.iter().map(|n| (*n, true)).collect();
+                if forms::select(ui, &path_of(&path), &opts, &mut index, 300.0) {
+                    let v = actions
+                        .get(index.wrapping_sub(1))
+                        .map(|(n, _)| Json::String(n.clone()));
+                    cx.set(path.clone(), v.or_else(|| Some(json!(""))));
+                }
+            }
+            if widgets::button(ui, ButtonKind::Tertiary, "remove", true, None).clicked() {
+                cx.set(path.clone(), None);
+            }
+        });
+    }
+    if actions.is_empty() {
+        caption(
+            ui,
+            "The client's actions show once its Blizzard UI is fetched (the start page).",
+        );
+    }
+    // A new binding: press its key.
+    let recording_id = egui::Id::unique(("wowlua-studio-binding-recording", base.len()));
+    let recording: bool = ui.data(|d| d.get_temp(recording_id)).unwrap_or(false);
+    if recording {
+        let pressed = ui.input(|i| {
+            i.events.iter().find_map(|e| match e {
+                egui::Event::Key {
+                    key,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } => Some((*key, *modifiers)),
+                _ => None,
+            })
+        });
+        ui.horizontal(|ui| {
+            caption(ui, "press the key, with its modifiers (escape: cancel)…");
+            if widgets::button(ui, ButtonKind::Tertiary, "cancel", true, None).clicked() {
+                ui.data_mut(|d| d.insert_temp(recording_id, false));
+            }
+        });
+        if let Some((key, modifiers)) = pressed {
+            ui.data_mut(|d| d.insert_temp(recording_id, false));
+            if let Some(k) = binding_key(key, modifiers) {
+                let mut path = base.to_vec();
+                path.push(name(&k));
+                cx.set(path, Some(json!("")));
+            }
+        }
+    } else if widgets::button(ui, ButtonKind::Secondary, "record a key", true, None).clicked() {
+        ui.data_mut(|d| d.insert_temp(recording_id, true));
+    }
+}
+
 /// Keys and values (`cvars`, `bindings`, `stats`).
 fn map(ui: &mut Ui, cx: &mut Cx<'_>, base: &[Key], value: &Json, kind: &Kind, part: &str) {
+    if part == "bindings" {
+        return bindings(ui, cx, base, value);
+    }
     let (key_head, value_head, word) = match part {
         "cvars" => ("CVar", "value", "+ CVar"),
         "bindings" => ("key", "action", "+ binding"),
