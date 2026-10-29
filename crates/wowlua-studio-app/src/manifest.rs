@@ -1525,6 +1525,8 @@ enum Ctl<'a> {
     Flag,
     Pick(&'a [String]),
     Text(&'a Kind, &'a str),
+    /// A number one step at a time (S065): its unit and presets.
+    Stepper(&'a str, &'a [(&'a str, f64)]),
 }
 
 /// A profile's setting as a row: its name and help, its control, and
@@ -1596,6 +1598,21 @@ fn profile_row(
                         let id = format!("mf-{path_text}");
                         if forms::select(ui, &id, &opts, &mut index, control.min(240.0)) {
                             fx.set(keys, Some(Json::String(list[index].clone())), false);
+                        }
+                    }
+                    Ctl::Stepper(unit, presets) => {
+                        let before = own
+                            .as_ref()
+                            .or(effective.as_ref())
+                            .and_then(Json::as_f64)
+                            .unwrap_or(0.0);
+                        let mut v = before;
+                        controls::stepper(ui, &path_text, &mut v, Some(0.0), None, 0.5, unit);
+                        if let Some(picked) = controls::presets(ui, presets, v) {
+                            v = picked;
+                        }
+                        if (v - before).abs() > 1e-9 {
+                            fx.set(keys, Some(json_number(v)), false);
                         }
                     }
                     Ctl::Text(kind, hint) => {
@@ -1887,7 +1904,25 @@ fn profiles_section(
             Kind::Choice(values) => {
                 profile_row(ui, &mut fx, &f.name, &keys, &f.help, Ctl::Pick(values), p)
             }
-            Kind::Text | Kind::Number | Kind::Scalar => profile_row(
+            Kind::Number => {
+                // (the dev profile's budgets in ms, with the usual ones)
+                let presets: &[(&str, f64)] = match f.name.as_str() {
+                    "frame-budget" => &[("0.5", 0.5), ("1", 1.0), ("2", 2.0), ("4", 4.0)],
+                    "slow-call" => &[("1", 1.0), ("2", 2.0), ("5", 5.0), ("10", 10.0)],
+                    _ => &[],
+                };
+                let unit = if presets.is_empty() { "" } else { "ms" };
+                profile_row(
+                    ui,
+                    &mut fx,
+                    &f.name,
+                    &keys,
+                    &f.help,
+                    Ctl::Stepper(unit, presets),
+                    p,
+                )
+            }
+            Kind::Text | Kind::Scalar => profile_row(
                 ui,
                 &mut fx,
                 &f.name,
