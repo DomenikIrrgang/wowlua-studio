@@ -2231,6 +2231,8 @@ pub fn dialogs(
     state: &mut DebugState,
     workspace: &Workspace,
     system: &dyn System,
+    tests: &std::collections::BTreeMap<PathBuf, Vec<crate::lsp::Discovered>>,
+    profiles: &[String],
 ) -> Option<Action> {
     let mut action = None;
     if let Some((at, mut c)) = state.editing.take() {
@@ -2252,18 +2254,63 @@ pub fn dialogs(
                     c.test = (k == 1).then(String::new);
                 }
                 if kind == 1 {
-                    let mut t = c.test.clone().unwrap_or_default();
-                    forms::text_input(ui, &mut t, 320.0, "tests/unit/x.test.wowlua");
-                    c.test = Some(t);
-                    let mut f = c.filters.join(", ");
-                    forms::label(ui, "only tests whose names contain");
-                    forms::text_input(ui, &mut f, 320.0, "secret");
-                    c.filters = f
-                        .split(',')
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty())
-                        .map(str::to_owned)
+                    // The workspace's test files (S065), by their path in it.
+                    let files: Vec<(String, &PathBuf)> = tests
+                        .keys()
+                        .map(|p| {
+                            let shown = p.strip_prefix(&workspace.root).unwrap_or(p);
+                            (shown.to_string_lossy().replace('\\', "/"), p)
+                        })
                         .collect();
+                    let current = c.test.clone().unwrap_or_default();
+                    let mut names: Vec<String> = vec!["pick a test file".into()];
+                    names.extend(files.iter().map(|(n, _)| n.clone()));
+                    let mut at = files
+                        .iter()
+                        .position(|(n, _)| *n == current)
+                        .map_or(0, |i| i + 1);
+                    let opts: Vec<(&str, bool)> =
+                        names.iter().map(|n| (n.as_str(), true)).collect();
+                    if forms::select(ui, "cfg-test-file", &opts, &mut at, 320.0) && at > 0 {
+                        c.test = Some(files[at - 1].0.clone());
+                        c.filters.clear();
+                    }
+                    // Its tests: all, one, or those whose names contain…
+                    forms::label(ui, "only tests");
+                    let in_file: Vec<&str> = files
+                        .iter()
+                        .find(|(n, _)| Some(n) == c.test.as_ref())
+                        .and_then(|(_, p)| tests.get(*p))
+                        .map(|list| list.iter().map(|t| t.name.as_str()).collect())
+                        .unwrap_or_default();
+                    let mut choices: Vec<String> = vec!["all tests".into()];
+                    choices.extend(in_file.iter().map(|n| (*n).to_owned()));
+                    choices.push("names containing…".into());
+                    let custom = choices.len() - 1;
+                    let mut at = match c.filters.as_slice() {
+                        [] => 0,
+                        [one] => in_file
+                            .iter()
+                            .position(|n| n == one)
+                            .map_or(custom, |i| i + 1),
+                        _ => custom,
+                    };
+                    let opts: Vec<(&str, bool)> =
+                        choices.iter().map(|n| (n.as_str(), true)).collect();
+                    if forms::select(ui, "cfg-test-filter", &opts, &mut at, 320.0) {
+                        c.filters = if at == 0 {
+                            Vec::new()
+                        } else if at == custom {
+                            vec![String::new()]
+                        } else {
+                            vec![choices[at].clone()]
+                        };
+                    }
+                    if at == custom {
+                        let mut f = c.filters.join(", ");
+                        forms::text_input(ui, &mut f, 320.0, "secret");
+                        c.filters = f.split(',').map(str::trim).map(str::to_owned).collect();
+                    }
                 }
                 // The package's flavors (S064); one coming soon is named, not
                 // picked: the emulated client doesn't run it yet.
@@ -2287,10 +2334,19 @@ pub fn dialogs(
                 if forms::select(ui, "launch-flavor", &opts, &mut picked, 320.0) {
                     c.flavor = (picked > 0).then(|| workspace.flavors[picked - 1].clone());
                 }
-                let mut profile = c.profile.clone().unwrap_or_default();
-                forms::label(ui, "world profile (empty: test.profile)");
-                forms::text_input(ui, &mut profile, 320.0, "raid-pull");
-                c.profile = Some(profile.trim().to_owned()).filter(|f| !f.is_empty());
+                // The package's world profiles (S065).
+                forms::label(ui, "world profile");
+                let mut names: Vec<String> = vec!["test.profile · the package's".into()];
+                names.extend(profiles.iter().cloned());
+                let mut picked = c
+                    .profile
+                    .as_ref()
+                    .and_then(|p| profiles.iter().position(|n| n == p))
+                    .map_or(0, |i| i + 1);
+                let opts: Vec<(&str, bool)> = names.iter().map(|n| (n.as_str(), true)).collect();
+                if forms::select(ui, "cfg-profile", &opts, &mut picked, 320.0) {
+                    c.profile = profiles.get(picked.wrapping_sub(1)).cloned();
+                }
                 forms::checkbox(
                     ui,
                     &mut c.manual,

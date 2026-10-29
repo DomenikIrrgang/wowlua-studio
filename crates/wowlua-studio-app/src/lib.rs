@@ -1091,7 +1091,14 @@ impl Studio {
             self.open_file(&path, ctx);
         }
         if let Some(w) = self.workspace.clone()
-            && let Some(a) = debug::dialogs(ctx, &mut self.debug, &w, &*self.host.system)
+            && let Some(a) = debug::dialogs(
+                ctx,
+                &mut self.debug,
+                &w,
+                &*self.host.system,
+                &self.tests.discovered,
+                &self.profiles,
+            )
         {
             debug_action = Some(a);
         }
