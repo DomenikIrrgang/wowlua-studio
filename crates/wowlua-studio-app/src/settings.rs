@@ -901,6 +901,7 @@ fn row(
         });
         ui.vertical(|ui| {
             ui.set_width(control);
+            ui.set_max_width(control);
             match &r.kind {
                 Kind::Flag(get, set) => {
                     let mut on = get(settings);
@@ -972,11 +973,15 @@ fn row(
                 }
                 Kind::Action(act) => {
                     let (value, button) = act_value(*act, state, installation, flavor);
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new(value)
-                                .font(Face::Plex.at(11.5))
-                                .color(p.ink_muted),
+                    // (a long value wraps in the column, the button after it)
+                    ui.horizontal_wrapped(|ui| {
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(value)
+                                    .font(Face::Plex.at(11.5))
+                                    .color(p.ink_muted),
+                            )
+                            .wrap(),
                         );
                         if !button.is_empty()
                             && widgets::button(ui, ButtonKind::Secondary, button, true, None)
