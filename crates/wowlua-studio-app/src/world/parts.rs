@@ -2650,7 +2650,7 @@ fn schema_grid(ui: &mut Ui, cx: &mut Cx<'_>, base: &[Key], fields: &[schema::Fie
                     });
                     if f.kind == Kind::Bool {
                         check(ui, cx, "", path, false);
-                    } else {
+                    } else if !known(ui, cx, &f.name, &f.kind, path.clone(), w) {
                         field(ui, cx, path, f.kind.clone(), w, "");
                     }
                     if !f.help.is_empty() {
@@ -2661,6 +2661,128 @@ fn schema_grid(ui: &mut Ui, cx: &mut Cx<'_>, base: &[Key], fields: &[schema::Fie
         });
         ui.add_space(6.0);
     }
+}
+
+/// The item qualities, as the client numbers them.
+const QUALITIES: &[&str] = &[
+    "0 · Poor",
+    "1 · Common",
+    "2 · Uncommon",
+    "3 · Rare",
+    "4 · Epic",
+    "5 · Legendary",
+    "6 · Artifact",
+    "7 · Heirloom",
+];
+
+/// Where an item is worn (`C_Item.GetItemInventoryTypeByID`'s tokens).
+const EQUIP_LOCS: &[&str] = &[
+    "INVTYPE_HEAD",
+    "INVTYPE_NECK",
+    "INVTYPE_SHOULDER",
+    "INVTYPE_BODY",
+    "INVTYPE_CHEST",
+    "INVTYPE_ROBE",
+    "INVTYPE_WAIST",
+    "INVTYPE_LEGS",
+    "INVTYPE_FEET",
+    "INVTYPE_WRIST",
+    "INVTYPE_HAND",
+    "INVTYPE_FINGER",
+    "INVTYPE_TRINKET",
+    "INVTYPE_CLOAK",
+    "INVTYPE_WEAPON",
+    "INVTYPE_SHIELD",
+    "INVTYPE_2HWEAPON",
+    "INVTYPE_WEAPONMAINHAND",
+    "INVTYPE_WEAPONOFFHAND",
+    "INVTYPE_HOLDABLE",
+    "INVTYPE_RANGED",
+    "INVTYPE_THROWN",
+    "INVTYPE_RANGEDRIGHT",
+    "INVTYPE_RELIC",
+    "INVTYPE_TABARD",
+    "INVTYPE_BAG",
+    "INVTYPE_AMMO",
+    "INVTYPE_QUIVER",
+];
+
+/// A field of a schema's form that has a control of its own (S065): any
+/// number a stepper (a quality a select, a level up to the flavor's
+/// highest, a count with presets, seconds by halves), an item's slot a
+/// select. False: the plain field draws it.
+fn known(
+    ui: &mut Ui,
+    cx: &mut Cx<'_>,
+    name: &str,
+    kind: &Kind,
+    path: Vec<Key>,
+    width: f32,
+) -> bool {
+    let lower = name.to_ascii_lowercase();
+    if (lower == "equiploc" || lower == "inventorytype") && *kind == Kind::Text {
+        let now = at(cx.root, &path)
+            .and_then(Json::as_str)
+            .unwrap_or("")
+            .to_owned();
+        let mut list: Vec<&str> = vec!["(none)"];
+        list.extend(EQUIP_LOCS);
+        let mut index = list.iter().position(|l| *l == now).unwrap_or(0);
+        let opts: Vec<(&str, bool)> = list.iter().map(|l| (*l, true)).collect();
+        if forms::select(ui, &path_of(&path), &opts, &mut index, width) {
+            cx.set(
+                path,
+                (index > 0).then(|| Json::String(list[index].to_owned())),
+            );
+        }
+        return true;
+    }
+    if *kind != Kind::Number {
+        return false;
+    }
+    let now = at(cx.root, &path).and_then(Json::as_f64);
+    if lower == "quality" {
+        let mut index = now.map_or(1, |q| q.clamp(0.0, 7.0) as usize);
+        let opts: Vec<(&str, bool)> = QUALITIES.iter().map(|q| (*q, true)).collect();
+        if forms::select(ui, &path_of(&path), &opts, &mut index, width) {
+            cx.set(path, Some(number(index as f64)));
+        }
+        return true;
+    }
+    let before = now.unwrap_or(0.0);
+    let mut v = before;
+    let id = path_of(&path);
+    let changed = if lower.contains("level") && !lower.contains("item") {
+        let max = f64::from(crate::flavors::max_level(cx.look.flavor));
+        controls::stepper(ui, &id, &mut v, Some(1.0), Some(max), 1.0, "")
+    } else if lower.contains("count") || lower.contains("stack") {
+        let mut changed = controls::stepper(ui, &id, &mut v, Some(0.0), None, 1.0, "");
+        if let Some(p) = controls::presets(ui, &[("1", 1.0), ("20", 20.0), ("200", 200.0)], v) {
+            v = p;
+            changed = true;
+        }
+        changed
+    } else if [
+        "delay",
+        "duration",
+        "cooldown",
+        "remaining",
+        "time",
+        "seconds",
+    ]
+    .iter()
+    .any(|w| lower.contains(w))
+    {
+        controls::stepper(ui, &id, &mut v, Some(0.0), None, 0.5, "s")
+    } else {
+        // (a whole number steps by one, a fraction by a tenth)
+        let step = if before.fract() == 0.0 { 1.0 } else { 0.1 };
+        controls::stepper(ui, &id, &mut v, None, None, step, "")
+    };
+    if changed && (v - before).abs() > 1e-9 {
+        cx.set(path, Some(number(v)));
+    }
+    true
 }
 
 /// The fields the schema doesn't name, as keys and JSON values.

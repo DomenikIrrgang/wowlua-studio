@@ -96,6 +96,8 @@ enum How {
     TocExtra,
     /// Lints by code: a warning of wowlua's, allowed, warned or denied.
     Lints,
+    /// A texture: one of the package's, or a game texture by its path.
+    Texture,
 }
 
 /// The game's UI Scale slider (Blizzard's Graphics.lua, wowlua T508).
@@ -161,7 +163,12 @@ fn rows() -> Vec<Row> {
         ),
         r("addon", &["addon", "title"], "", Text),
         r("addon", &["addon", "notes"], "", Text),
-        r("addon", &["addon", "icon-texture"], "", Text),
+        r(
+            "addon",
+            &["addon", "icon-texture"],
+            "The AddOn list's icon: one of the package's textures, or a game texture by its path.",
+            Texture,
+        ),
         r(
             "addon",
             &["addon", "saved-variables"],
@@ -420,6 +427,8 @@ struct ManifestState {
     parsed: Option<(u64, Json)>,
     buffers: HashMap<String, String>,
     new_flavor: String,
+    /// The package's textures as the game names them, read once.
+    textures: Option<Vec<String>>,
 }
 
 /// The edits a form makes: a path and its new value (none: removed).
@@ -431,6 +440,8 @@ struct Fx<'a> {
     profiles: &'a [String],
     /// The wowlua built into Studio.
     wowlua: &'a str,
+    /// The package's textures as the game names them.
+    textures: &'a [String],
 }
 
 impl Fx<'_> {
@@ -701,6 +712,40 @@ fn edit_value(
                 let text = shown(now.as_ref(), &How::Text);
                 typed_text(ui, fx, path, &text, width, "CHANGELOG.md");
             }
+        }
+        How::Texture => {
+            let current = now.as_ref().and_then(Json::as_str).unwrap_or("").to_owned();
+            let mut names: Vec<String> = vec!["(none)".into()];
+            names.extend(fx.textures.iter().cloned());
+            let custom = !current.is_empty() && !fx.textures.contains(&current);
+            if custom {
+                names.push(format!("{current} · a game texture"));
+            }
+            let mut index = if current.is_empty() {
+                0
+            } else {
+                fx.textures
+                    .iter()
+                    .position(|t| *t == current)
+                    .map_or(names.len() - 1, |i| i + 1)
+            };
+            let opts: Vec<(&str, bool)> = names.iter().map(|n| (n.as_str(), true)).collect();
+            let id = format!("mf-{}", path.join("."));
+            if forms::select(ui, &id, &opts, &mut index, width) {
+                if index == 0 {
+                    fx.set(path, None, false);
+                } else if let Some(t) = fx.textures.get(index - 1) {
+                    fx.set(path, Some(Json::String(t.clone())), false);
+                }
+            }
+            typed_text(
+                ui,
+                fx,
+                path,
+                &current,
+                width,
+                "Interface\\Icons\\INV_Misc_QuestionMark",
+            );
         }
         How::Lints => {
             let set: Vec<(String, String)> = now
@@ -986,6 +1031,40 @@ pub fn next_versions(version: &str) -> Vec<String> {
         format!("{major}.{}.0", minor + 1),
         format!("{major}.{}.0-beta.1", minor + 1),
     ]
+}
+
+/// The package's textures (`.tga`, `.blp`, `.png` under its folder), as the
+/// game names them: `Interface\AddOns\<addon>\…`, without the ending.
+fn textures_of(system: &dyn System, dir: &Path, addon: &str) -> Vec<String> {
+    fn walk(
+        system: &dyn System,
+        root: &Path,
+        at: &Path,
+        depth: u32,
+        addon: &str,
+        out: &mut Vec<String>,
+    ) {
+        if depth > 6 || out.len() >= 400 {
+            return;
+        }
+        for e in system.list(at) {
+            if e.is_dir {
+                walk(system, root, &e.path, depth + 1, addon, out);
+                continue;
+            }
+            let lower = e.name.to_ascii_lowercase();
+            if [".tga", ".blp", ".png"].iter().any(|x| lower.ends_with(x))
+                && let Ok(rel) = e.path.with_extension("").strip_prefix(root)
+            {
+                let rel = rel.to_string_lossy().replace('/', "\\");
+                out.push(format!("Interface\\AddOns\\{addon}\\{rel}"));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(system, dir, dir, 0, addon, &mut out);
+    out.sort();
+    out
 }
 
 /// A JSON list of strings as strings.
@@ -1451,6 +1530,13 @@ pub fn form(
         .as_ref()
         .map(|(_, r)| r.clone())
         .unwrap_or(Json::Null);
+    if state.textures.is_none() {
+        let addon = root["addon"]["name"]
+            .as_str()
+            .unwrap_or("MyAddon")
+            .to_owned();
+        state.textures = Some(textures_of(system, &dir, &addon));
+    }
     let deps_section = SECTIONS
         .iter()
         .position(|(n, _)| *n == "dependencies")
@@ -1526,6 +1612,7 @@ pub fn form(
             buffers: &mut state.buffers,
             profiles: world_profiles,
             wowlua: wowlua_version,
+            textures: state.textures.as_deref().unwrap_or(&[]),
         };
         if query.is_empty() && state.section == deps_section {
             // The dependencies: the TOC's other AddOns, then the view of
