@@ -912,11 +912,20 @@ fn row(
                 }
                 Kind::Choice(options, get, set) => {
                     let now = get(settings);
-                    let at = options.iter().position(|o| *o == now).unwrap_or(0);
+                    let mut at = options.iter().position(|o| *o == now).unwrap_or(0);
                     let id = format!("set-{}", r.label);
-                    if let Some(i) = widgets::seg(ui, &id, options, at, true) {
-                        set(settings, options[i]);
-                        action = Some(Action::Changed);
+                    // (buttons when they fit the column, else a select)
+                    if seg_width(ui, options) <= control {
+                        if let Some(i) = widgets::seg(ui, &id, options, at, true) {
+                            set(settings, options[i]);
+                            action = Some(Action::Changed);
+                        }
+                    } else {
+                        let opts: Vec<(&str, bool)> = options.iter().map(|o| (*o, true)).collect();
+                        if forms::select(ui, &id, &opts, &mut at, control.min(300.0)) {
+                            set(settings, options[at]);
+                            action = Some(Action::Changed);
+                        }
                     }
                 }
                 Kind::Text(get, set) => {
@@ -1025,6 +1034,22 @@ fn row(
     );
     ui.add_space(6.0);
     action
+}
+
+/// How wide the segmented buttons of `options` are (`widgets::seg`, large).
+fn seg_width(ui: &Ui, options: &[&str]) -> f32 {
+    let p = palette(ui.ctx());
+    let text: f32 = options
+        .iter()
+        .map(|o| {
+            ui.fonts_mut(|f| {
+                f.layout_no_wrap((*o).to_owned(), Face::Plex.at(12.0), p.ink)
+                    .size()
+                    .x
+            })
+        })
+        .sum();
+    text + 24.0 * options.len() as f32 + 4.0
 }
 
 /// The rows' labels, for checks.
