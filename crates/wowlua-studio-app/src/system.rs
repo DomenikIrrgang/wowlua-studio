@@ -173,6 +173,9 @@ pub enum Event {
     GameArt(Art, Option<Image>),
     /// The client's spells a search found: the query, the spells.
     Spells(String, Vec<SpellRow>),
+    /// What an ID picker's search found (→ [`System::find`]): what, the
+    /// flavor, the query, the rows.
+    Found(Find, String, String, Vec<SpellRow>),
     /// A class's spells from the client: the class, its spells.
     ClassSpells(String, Vec<ClassSpell>),
     /// The ship page's news (S061).
@@ -598,6 +601,33 @@ pub struct ClassSpell {
     pub level: u32,
     pub line: String,
     pub icon: Option<u32>,
+}
+
+/// What an ID picker finds in the flavor's client: a spell or an item.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Find {
+    Spell,
+    Item,
+}
+
+impl Find {
+    /// As the picker names it.
+    pub fn word(self) -> &'static str {
+        match self {
+            Find::Spell => "spell",
+            Find::Item => "item",
+        }
+    }
+}
+
+/// A CVar of a flavor's client: its name, default, and whether addons may
+/// not set it (secure) or nobody may (read-only).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CVarInfo {
+    pub name: String,
+    pub default: String,
+    pub secure: bool,
+    pub read_only: bool,
 }
 
 /// A build profile: a built-in one (`dev`, `release`, `test`) or the
@@ -1540,6 +1570,9 @@ pub trait System {
     fn game_art(&self, _flavor: &str, _art: Art) {}
     /// The flavor's client's spells by name or ID (→ [`Event::Spells`]).
     fn search_spells(&self, _flavor: &str, _query: &str) {}
+    /// The flavor's client's spells or items by name or ID, for an ID
+    /// picker (→ [`Event::Found`]; an item's text: its quality and level).
+    fn find(&self, _what: Find, _flavor: &str, _query: &str) {}
     /// A class's spells of the flavor's client (→ [`Event::ClassSpells`]).
     fn class_spells(&self, _flavor: &str, _class: &str) {}
     /// A SavedVariables file's variables as JSON, read without running it.
@@ -1561,6 +1594,11 @@ pub trait System {
     /// `movement`), from Blizzard's UI code wowlua keeps; none while it
     /// isn't fetched.
     fn binding_actions(&self, _flavor: &str) -> Vec<(String, String)> {
+        Vec::new()
+    }
+    /// The CVars the flavor's client has, with their defaults (wowlua's
+    /// recorded ones); none where wowlua has none.
+    fn cvars(&self, _flavor: &str) -> Vec<CVarInfo> {
         Vec::new()
     }
     /// The targets' tokens' states (→ [`ShipEvent::Tokens`]): the OS

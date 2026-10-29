@@ -573,8 +573,32 @@ impl System for NativeSystem {
         });
     }
 
+    fn find(&self, what: wowlua_studio_app::system::Find, flavor: &str, query: &str) {
+        let data = self.gamedata.clone();
+        let (flavor, query) = (flavor.to_string(), query.to_string());
+        self.spawn(move || {
+            let rows = match what {
+                wowlua_studio_app::system::Find::Spell => data.search_spells(&flavor, &query),
+                wowlua_studio_app::system::Find::Item => data.search_items(&flavor, &query),
+            };
+            Event::Found(what, flavor, query, rows)
+        });
+    }
+
     fn binding_actions(&self, flavor: &str) -> Vec<(String, String)> {
         crate::bindings::actions(flavor)
+    }
+
+    fn cvars(&self, flavor: &str) -> Vec<wowlua_studio_app::system::CVarInfo> {
+        wowlua_engine::cvars(flavor)
+            .into_iter()
+            .map(|c| wowlua_studio_app::system::CVarInfo {
+                name: c.name,
+                default: c.default,
+                secure: c.secure,
+                read_only: c.read_only,
+            })
+            .collect()
     }
 
     fn world_profiles(&self, root: &Path) -> Vec<wowlua_studio_app::system::WorldProfile> {

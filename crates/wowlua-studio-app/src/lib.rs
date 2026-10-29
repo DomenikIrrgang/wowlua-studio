@@ -2064,6 +2064,9 @@ impl Studio {
                 Event::WorldSnapshots(found) => self.world.snapshots_read(found),
                 Event::GameArt(art, image) => self.world.art.read(ctx, art, image),
                 Event::Spells(query, found) => self.world.spells_found(query, found),
+                Event::Found(what, flavor, query, rows) => {
+                    self.world.found.insert((what, flavor, query), rows);
+                }
                 Event::ClassSpells(class, found) => self.world.class_spells_found(class, found),
                 Event::Ship(event) => self.ship.event(event),
                 Event::Profiles { dir, read } => self.manifests.profiles_read(dir, read),

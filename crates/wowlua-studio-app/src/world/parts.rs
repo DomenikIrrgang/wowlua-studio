@@ -14,7 +14,7 @@ use wowlua_studio_ui::{controls, forms};
 use super::json::Key;
 use super::schema::{self, Form, Kind};
 use super::{Action, ArtCache, Change, list};
-use crate::system::{Art, System};
+use crate::system::{Art, Find, System};
 
 /// What a form works with.
 pub struct Cx<'a> {
@@ -32,6 +32,9 @@ pub struct Cx<'a> {
     pub spells: Option<&'a (String, Vec<crate::system::SpellRow>)>,
     pub class_spells: Option<&'a (String, Vec<crate::system::ClassSpell>)>,
     pub all_ranks: &'a mut bool,
+    /// What the ID pickers found; the questions to ask.
+    pub found: &'a HashMap<(Find, String, String), Vec<crate::system::SpellRow>>,
+    pub ask: &'a mut Vec<(Find, String)>,
 }
 
 /// Where the installation's art comes from.
@@ -1678,6 +1681,265 @@ fn auras(ui: &mut Ui, cx: &mut Cx<'_>) {
     }
 }
 
+/// What an ID picker found for a query, asked for when not yet.
+fn found<'b>(cx: &mut Cx<'b>, what: Find, query: &str) -> Option<&'b [crate::system::SpellRow]> {
+    let all: &'b HashMap<_, _> = cx.found;
+    let hit = all.get(&(what, cx.look.flavor.to_owned(), query.to_owned()));
+    if hit.is_none() && !cx.ask.iter().any(|(w, q)| *w == what && q == query) {
+        cx.ask.push((what, query.to_owned()));
+    }
+    hit.map(Vec::as_slice)
+}
+
+/// The picker a field of this name is (`spellId`, `itemID`).
+fn find_of(field: &str) -> Option<Find> {
+    match field.to_ascii_lowercase().as_str() {
+        "spellid" => Some(Find::Spell),
+        "itemid" => Some(Find::Item),
+        _ => None,
+    }
+}
+
+/// An ID found by name among the client's spells or items (S065): the
+/// picked one's name and ID; open, a search and what it finds.
+fn find(ui: &mut Ui, cx: &mut Cx<'_>, label: &str, path: Vec<Key>, what: Find, width: f32) {
+    let p = palette(ui.ctx());
+    let now = at(cx.root, &path).and_then(Json::as_u64).map(|n| n as u32);
+    let key = path_of(&path);
+    let open_id = egui::Id::unique(("wowlua-studio-find", key.clone()));
+    let mut open: bool = ui.data(|d| d.get_temp(open_id)).unwrap_or(false);
+    ui.vertical(|ui| {
+        ui.set_width(width);
+        if !label.is_empty() {
+            forms::label(ui, label);
+        }
+        // The picked one: its name (asked by its ID), the ID.
+        let picked = now.and_then(|id| {
+            found(cx, what, &id.to_string())
+                .and_then(|rows| rows.iter().find(|r| r.id == id))
+                .map(|r| r.name.clone())
+        });
+        let main = match (now, picked) {
+            (None, _) => "(none)".to_owned(),
+            (Some(_), Some(n)) => n,
+            (Some(id), None) => format!("{} {id}", what.word()),
+        };
+        let meta = now.map(|id| id.to_string()).unwrap_or_default();
+        let (rect, response) =
+            ui.allocate_exact_size(Vec2::new(width, forms::CONTROL_H), Sense::click());
+        let painter = ui.painter();
+        painter.rect_filled(
+            rect,
+            CornerRadius::ZERO,
+            if response.hovered() { p.bg_300 } else { p.bg_000 },
+        );
+        let stroke = if open {
+            Stroke::new(2.0, p.amber_ink)
+        } else {
+            Stroke::new(1.0, p.line_strong)
+        };
+        painter.rect_stroke(rect, CornerRadius::ZERO, stroke, egui::StrokeKind::Inside);
+        let mut x = rect.left() + 8.0;
+        let icon = match what {
+            Find::Spell => now.map(Art::Spell),
+            Find::Item => now.map(Art::Item),
+        };
+        if let Some(tex) = icon.and_then(|a| cx.look.pic("", Some(a)).tex) {
+            let r = Rect::from_min_size(egui::pos2(x, rect.center().y - 10.0), Vec2::splat(20.0));
+            painter.image(
+                tex,
+                r,
+                Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                egui::Color32::WHITE,
+            );
+            x += 28.0;
+        }
+        let meta_w = painter
+            .text(
+                egui::pos2(rect.right() - 26.0, rect.center().y),
+                Align2::RIGHT_CENTER,
+                &meta,
+                Face::Plex.at(11.5),
+                p.ink_muted,
+            )
+            .width();
+        let room = (rect.right() - 26.0 - meta_w - 8.0 - x).max(0.0);
+        let shown = fit_to(ui, &main, Face::Plex.at(12.5), room);
+        ui.painter().text(
+            egui::pos2(x, rect.center().y),
+            Align2::LEFT_CENTER,
+            shown,
+            Face::Plex.at(12.5),
+            if now.is_some() { p.ink } else { p.ink_muted },
+        );
+        // (the chevron)
+        let c = egui::pos2(rect.right() - 13.0, rect.center().y);
+        let chevron = Stroke::new(1.5, p.ink_muted);
+        ui.painter().line_segment([c + Vec2::new(-3.5, -1.5), c + Vec2::new(0.0, 2.0)], chevron);
+        ui.painter().line_segment([c + Vec2::new(0.0, 2.0), c + Vec2::new(3.5, -1.5)], chevron);
+        if response.clicked() {
+            open = !open;
+        }
+        if !open {
+            return;
+        }
+        // Open: a search and what it finds.
+        egui::Frame::new()
+            .fill(p.bg_100)
+            .stroke(Stroke::new(1.0, p.line_strong))
+            .inner_margin(egui::Margin::same(6))
+            .show(ui, |ui| {
+                ui.set_width(width - 12.0);
+                let search = format!("{key}/find");
+                let typed = {
+                    let buffer = cx.buffers.entry(search.clone()).or_default();
+                    forms::text_input(
+                        ui,
+                        buffer,
+                        width - 12.0,
+                        &format!("search the client's {}s by name or ID", what.word()),
+                    );
+                    buffer.trim().to_owned()
+                };
+                let typed_id = typed.parse::<u32>().ok();
+                let mut pick: Option<Option<u32>> = None;
+                if typed.chars().count() < 2 && typed_id.is_none() {
+                    caption(ui, "Type two letters of its name, or its ID.");
+                } else {
+                    match found(cx, what, &typed) {
+                        None => caption(ui, "searching the client…"),
+                        Some([]) => {
+                            caption(
+                                ui,
+                                &format!(
+                                    "No {} of this flavor's client found (no installation with its client: use the ID).",
+                                    what.word()
+                                ),
+                            );
+                        }
+                        Some(rows) => {
+                            for r in rows.iter().take(12) {
+                                if found_row(ui, cx, what, r, width - 12.0) {
+                                    pick = Some(Some(r.id));
+                                }
+                            }
+                        }
+                    }
+                    if let Some(id) = typed_id
+                        && widgets::button(ui, ButtonKind::Inline, &format!("use ID {id}"), true, None)
+                            .clicked()
+                    {
+                        pick = Some(Some(id));
+                    }
+                }
+                if now.is_some()
+                    && widgets::button(ui, ButtonKind::Inline, "clear", true, None).clicked()
+                {
+                    pick = Some(None);
+                }
+                if let Some(id) = pick {
+                    cx.set(path.clone(), id.map(|i| number(f64::from(i))));
+                    cx.buffers.insert(search, String::new());
+                    open = false;
+                }
+            });
+    });
+    ui.data_mut(|d| d.insert_temp(open_id, open));
+}
+
+/// A row an ID picker found: icon, name, its text, the ID; whether it
+/// was clicked.
+fn found_row(
+    ui: &mut Ui,
+    cx: &mut Cx<'_>,
+    what: Find,
+    row: &crate::system::SpellRow,
+    width: f32,
+) -> bool {
+    let p = palette(ui.ctx());
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 28.0), Sense::click());
+    if response.hovered() {
+        ui.painter().rect_filled(rect, CornerRadius::ZERO, p.bg_300);
+    }
+    let art = match what {
+        Find::Spell => Art::Spell(row.id),
+        Find::Item => Art::Item(row.id),
+    };
+    let mut x = rect.left() + 6.0;
+    if let Some(tex) = cx.look.pic("", Some(art)).tex {
+        let r = Rect::from_min_size(egui::pos2(x, rect.center().y - 10.0), Vec2::splat(20.0));
+        ui.painter().image(
+            tex,
+            r,
+            Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            egui::Color32::WHITE,
+        );
+    }
+    x += 28.0;
+    let id_w = ui
+        .painter()
+        .text(
+            egui::pos2(rect.right() - 6.0, rect.center().y),
+            Align2::RIGHT_CENTER,
+            row.id.to_string(),
+            Face::Plex.at(11.5),
+            p.ink_muted,
+        )
+        .width();
+    let room = (rect.right() - 6.0 - id_w - 12.0 - x).max(0.0);
+    let name = fit_to(ui, &row.name, Face::PlexMedium.at(12.0), room);
+    let name_w = ui
+        .painter()
+        .text(
+            egui::pos2(x, rect.center().y),
+            Align2::LEFT_CENTER,
+            name,
+            Face::PlexMedium.at(12.0),
+            p.ink,
+        )
+        .width();
+    let rest = room - name_w - 10.0;
+    if rest > 40.0 && !row.text.is_empty() {
+        let text = fit_to(
+            ui,
+            row.text.lines().next().unwrap_or(""),
+            Face::Plex.at(11.5),
+            rest,
+        );
+        ui.painter().text(
+            egui::pos2(x + name_w + 10.0, rect.center().y),
+            Align2::LEFT_CENTER,
+            text,
+            Face::Plex.at(11.5),
+            p.ink_muted,
+        );
+    }
+    response.clicked()
+}
+
+/// `text` cut with an ellipsis to fit `width` in `font`.
+fn fit_to(ui: &Ui, text: &str, font: egui::FontId, width: f32) -> String {
+    let w = |s: &str| {
+        ui.fonts_mut(|f| {
+            f.layout_no_wrap(s.to_owned(), font.clone(), egui::Color32::WHITE)
+                .size()
+                .x
+        })
+    };
+    if w(text) <= width {
+        return text.to_owned();
+    }
+    let mut chars: Vec<char> = text.chars().collect();
+    while !chars.is_empty() {
+        chars.pop();
+        let s: String = chars.iter().collect::<String>() + "…";
+        if w(&s) <= width {
+            return s;
+        }
+    }
+    String::new()
+}
+
 /// An entry's fields in a card, with its removal.
 fn entry_card(ui: &mut Ui, cx: &mut Cx<'_>, title: &str, base: Vec<Key>, fields: &[(&str, Kind)]) {
     let mut remove = false;
@@ -1715,6 +1977,8 @@ fn grid(ui: &mut Ui, cx: &mut Cx<'_>, base: &[Key], fields: &[(&str, Kind)]) {
                         forms::label(ui, f);
                         check(ui, cx, "", path, false);
                     });
+                } else if let Some(what) = find_of(f) {
+                    find(ui, cx, f, path, what, w);
                 } else {
                     input(ui, cx, f, path, kind.clone(), w, "");
                 }
@@ -2234,7 +2498,11 @@ fn actions(ui: &mut Ui, cx: &mut Cx<'_>) {
                 if current.is_some() {
                     let mut id = base.clone();
                     id.push(name("id"));
-                    input(ui, cx, "ID", id, Kind::Scalar, w, "0");
+                    match current.as_ref().and_then(|a| a["type"].as_str()) {
+                        Some("spell") => find(ui, cx, "spell", id, Find::Spell, w),
+                        Some("item") => find(ui, cx, "item", id, Find::Item, w),
+                        _ => input(ui, cx, "ID", id, Kind::Scalar, w, "0"),
+                    }
                     let mut usable = base.clone();
                     usable.push(name("usable"));
                     ui.vertical(|ui| {
@@ -2499,7 +2767,7 @@ fn bags(ui: &mut Ui, cx: &mut Cx<'_>) {
                     if v.is_number() {
                         // An ID alone: made a stack to give it a count.
                         ui.horizontal(|ui| {
-                            field(ui, cx, base.clone(), Kind::Number, 140.0, "item ID");
+                            find(ui, cx, "", base.clone(), Find::Item, 300.0);
                             if forms::text_button(ui, "as a stack").clicked() {
                                 cx.set(base.clone(), Some(json!({ "id": v, "count": 1 })));
                             }
@@ -2508,12 +2776,15 @@ fn bags(ui: &mut Ui, cx: &mut Cx<'_>) {
                             }
                         });
                     } else {
+                        let mut id = base.clone();
+                        id.push(name("id"));
+                        find(ui, cx, "item", id, Find::Item, 300.0);
+                        ui.add_space(6.0);
                         grid(
                             ui,
                             cx,
                             &base,
                             &[
-                                ("id", Kind::Number),
                                 ("count", Kind::Number),
                                 ("bound", Kind::Bool),
                                 ("locked", Kind::Bool),
@@ -2929,6 +3200,12 @@ fn known(
     width: f32,
 ) -> bool {
     let lower = name.to_ascii_lowercase();
+    if let Some(what) = find_of(name)
+        && *kind == Kind::Number
+    {
+        find(ui, cx, "", path, what, width);
+        return true;
+    }
     if (lower == "equiploc" || lower == "inventorytype") && *kind == Kind::Text {
         let now = at(cx.root, &path)
             .and_then(Json::as_str)
@@ -3208,17 +3485,124 @@ fn bindings(ui: &mut Ui, cx: &mut Cx<'_>, base: &[Key], value: &Json) {
     }
 }
 
+/// The CVars (S065): each set one with its value and the client's default,
+/// a new one found by name among the flavor's (wowlua's recorded ones),
+/// starting at its default; typed by name where wowlua has none.
+fn cvars(ui: &mut Ui, cx: &mut Cx<'_>, base: &[Key], value: &Json, kind: &Kind) {
+    let p = palette(ui.ctx());
+    // (the CVars read once per flavor)
+    let id = egui::Id::unique(("wowlua-studio-cvars", cx.look.flavor.to_owned()));
+    let known: std::sync::Arc<Vec<crate::system::CVarInfo>> = match ui.data(|d| d.get_temp(id)) {
+        Some(c) => c,
+        None => {
+            let c = std::sync::Arc::new(cx.system.cvars(cx.look.flavor));
+            ui.data_mut(|d| d.insert_temp(id, c.clone()));
+            c
+        }
+    };
+    if known.len() <= 1 {
+        return map_rows(ui, cx, base, value, kind, ("CVar", "value", "+ CVar"));
+    }
+    let info = |n: &str| known.iter().find(|c| c.name.eq_ignore_ascii_case(n));
+    let entries: Vec<String> = value
+        .as_object()
+        .map(|o| o.keys().cloned().collect())
+        .unwrap_or_default();
+    for k in &entries {
+        let mut path = base.to_vec();
+        path.push(name(k));
+        let cvar = info(k);
+        forms::bar(ui, |ui| {
+            cell(
+                ui,
+                260.0,
+                egui::RichText::new(k)
+                    .font(Face::PlexMedium.at(12.0))
+                    .color(p.ink),
+            );
+            field(ui, cx, path.clone(), kind.clone(), 160.0, "");
+            let note = match cvar {
+                Some(c) if c.read_only => format!("default {} · read-only", c.default),
+                Some(c) if c.secure => {
+                    format!("default {} · secure: addons can't set it", c.default)
+                }
+                Some(c) => format!("default {}", c.default),
+                None => "not one of the client's".to_owned(),
+            };
+            ui.label(
+                egui::RichText::new(note)
+                    .font(Face::Plex.at(11.5))
+                    .color(p.ink_muted),
+            );
+            if widgets::button(ui, ButtonKind::Tertiary, "remove", true, None).clicked() {
+                cx.set(path.clone(), None);
+            }
+        });
+    }
+    // A new one: found by name.
+    let search = format!("{}/find", path_of(base));
+    let typed = {
+        let buffer = cx.buffers.entry(search.clone()).or_default();
+        forms::text_input(ui, buffer, 260.0, "find a CVar…");
+        buffer.trim().to_ascii_lowercase()
+    };
+    if !typed.is_empty() {
+        let found: Vec<&crate::system::CVarInfo> = known
+            .iter()
+            .filter(|c| c.name.to_ascii_lowercase().contains(&typed))
+            .filter(|c| !entries.iter().any(|e| e.eq_ignore_ascii_case(&c.name)))
+            .take(12)
+            .collect();
+        if found.is_empty() {
+            caption(ui, "No CVar of this flavor's client has that in its name.");
+        }
+        let names: Vec<String> = found.iter().map(|c| c.name.clone()).collect();
+        if let Some(picked) = controls::suggestions(ui, &names)
+            && let Some(c) = info(&picked)
+        {
+            let mut path = base.to_vec();
+            path.push(name(&c.name));
+            let v = parse(kind, &c.default)
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| json!(c.default));
+            cx.set(path, Some(v));
+            cx.buffers.insert(search, String::new());
+        }
+    }
+    caption(
+        ui,
+        &format!(
+            "The {} CVars of this flavor's client, with their defaults as wowlua recorded them.",
+            known.len()
+        ),
+    );
+}
+
 /// Keys and values (`cvars`, `bindings`, `stats`).
 fn map(ui: &mut Ui, cx: &mut Cx<'_>, base: &[Key], value: &Json, kind: &Kind, part: &str) {
     if part == "bindings" {
         return bindings(ui, cx, base, value);
     }
-    let (key_head, value_head, word) = match part {
-        "cvars" => ("CVar", "value", "+ CVar"),
-        "bindings" => ("key", "action", "+ binding"),
+    if part == "cvars" {
+        return cvars(ui, cx, base, value, kind);
+    }
+    let heads = match part {
         "stats" => ("stat", "value", "+ stat"),
         _ => ("key", "value", "+ entry"),
     };
+    map_rows(ui, cx, base, value, kind, heads);
+}
+
+/// Keys and values as typed: a key's name, its value.
+fn map_rows(
+    ui: &mut Ui,
+    cx: &mut Cx<'_>,
+    base: &[Key],
+    value: &Json,
+    kind: &Kind,
+    (key_head, value_head, word): (&str, &str, &str),
+) {
     let p = palette(ui.ctx());
     ui.horizontal(|ui| {
         cell(
