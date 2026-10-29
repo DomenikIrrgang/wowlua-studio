@@ -911,6 +911,7 @@ impl Studio {
                                     workspace,
                                     system,
                                     &wowlua_version,
+                                    profiles,
                                 ) {
                                     manifest_action = Some(a);
                                 }

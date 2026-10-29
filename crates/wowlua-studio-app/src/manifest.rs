@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use egui::{CornerRadius, Rect, Ui, UiBuilder, Vec2};
 use serde_json::Value as Json;
+use wowlua_studio_ui::controls;
 use wowlua_studio_ui::forms::{self, CalloutKind};
 use wowlua_studio_ui::widgets::{self, ButtonKind};
 use wowlua_studio_ui::{Face, Palette, palette};
@@ -66,9 +67,32 @@ enum How {
     Json,
     /// A link to another page.
     Link(Go),
-    /// Numbers by sub-key, side by side: the key and its label.
-    Fields(&'static [(&'static str, &'static str)]),
+    /// Several of a known set, each a chip.
+    Toggles(&'static [&'static str]),
+    /// fmt's indent: a tab, or 2, 4 or 8 spaces.
+    Indent,
+    /// A number one step at a time with presets; `default` when unset.
+    Steps {
+        min: f64,
+        max: Option<f64>,
+        step: f64,
+        unit: &'static str,
+        presets: &'static [(&'static str, f64)],
+        default: f64,
+    },
+    /// Minimums in % by sub-key (coverage's): each on or off, a slider.
+    Minimums(&'static [(&'static str, &'static str)]),
+    /// A screen: its size, DPI scale and the game's UI Scale.
+    Screen,
+    /// One of the package's world profiles (`tests/profiles/*.json`).
+    WorldProfile,
 }
+
+/// The game's UI Scale slider (Blizzard's Graphics.lua, wowlua T508).
+const UI_SCALE: (f64, f64, f64) = (0.65, 1.15, 0.01);
+
+/// The screens offered; `custom…` types another.
+const SCREENS: &[(u32, u32)] = &[(1920, 1080), (2560, 1440), (3840, 2160)];
 
 /// The pages a row leads to.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -182,8 +206,20 @@ fn rows() -> Vec<Row> {
             "Lints by code: allow, warn or deny.",
             Json,
         ),
-        r("fmt", &["fmt", "indent"], "", Number),
-        r("fmt", &["fmt", "line-width"], "", Number),
+        r("fmt", &["fmt", "indent"], "A tab, or spaces.", Indent),
+        r(
+            "fmt",
+            &["fmt", "line-width"],
+            "Where wowlua fmt wraps.",
+            Steps {
+                min: 40.0,
+                max: None,
+                step: 1.0,
+                unit: "columns",
+                presets: &[("80", 80.0), ("100", 100.0), ("120", 120.0), ("160", 160.0)],
+                default: 100.0,
+            },
+        ),
         r(
             "fmt",
             &["fmt", "quote-style"],
@@ -206,7 +242,7 @@ fn rows() -> Vec<Row> {
             "test",
             &["test", "profile"],
             "The world profile of test files that name none.",
-            Text,
+            WorldProfile,
         ),
         r(
             "test",
@@ -218,18 +254,13 @@ fn rows() -> Vec<Row> {
             "test",
             &["test", "screen"],
             "The emulated client's screen for tests.",
-            Fields(&[
-                ("width", "width"),
-                ("height", "height"),
-                ("dpiScale", "dpi scale"),
-                ("uiScale", "ui scale"),
-            ]),
+            Screen,
         ),
         r(
             "test",
             &["test", "coverage"],
-            "Minimums in %: wowlua test --coverage fails below one. Empty: none.",
-            Fields(&[
+            "Minimums in %: wowlua test --coverage fails below one that is on.",
+            Minimums(&[
                 ("lines", "lines"),
                 ("statements", "statements"),
                 ("branches", "branches"),
@@ -246,8 +277,18 @@ fn rows() -> Vec<Row> {
         r(
             "test",
             &["test", "reporters"],
-            "pretty, junit, tap, json, github, lcov, cobertura, coverage-json, html",
-            List,
+            "What wowlua test writes; pretty when none.",
+            Toggles(&[
+                "pretty",
+                "junit",
+                "tap",
+                "json",
+                "github",
+                "lcov",
+                "cobertura",
+                "coverage-json",
+                "html",
+            ]),
         ),
         r(
             "publish",
@@ -370,6 +411,8 @@ struct Fx<'a> {
     root: &'a Json,
     changes: Vec<(Vec<Key>, Option<Json>, bool)>,
     buffers: &'a mut HashMap<String, String>,
+    /// The workspace's world profiles, by name.
+    profiles: &'a [String],
 }
 
 impl Fx<'_> {
@@ -505,39 +548,109 @@ fn edit_value(
                 }
             });
         }
-        How::Fields(subs) => {
-            // (the fields share the column: as many as fit side by side)
-            let gap = 8.0;
-            let cell = ((width - gap * (subs.len() as f32 - 1.0)) / subs.len() as f32).max(64.0);
-            ui.spacing_mut().item_spacing.x = gap;
+        How::Toggles(options) => {
+            let mut on = strings(now.as_ref());
+            if controls::toggle_chips(ui, options, &mut on) {
+                fx.set(path, list(on), false);
+            }
+        }
+        How::Indent => {
+            let at = match &now {
+                None => 0,
+                Some(Json::String(s)) if s == "tab" => 0,
+                Some(v) => match v.as_u64() {
+                    Some(2) => 1,
+                    Some(4) => 2,
+                    _ => 3,
+                },
+            };
+            let id = format!("mf-{}", path.join("."));
+            if let Some(i) = widgets::seg(ui, &id, &["tab", "2", "4", "8"], at, true) {
+                let value = match i {
+                    0 => Json::String("tab".into()),
+                    1 => Json::from(2),
+                    2 => Json::from(4),
+                    _ => Json::from(8),
+                };
+                fx.set(path, Some(value), false);
+            }
+        }
+        How::Steps {
+            min,
+            max,
+            step,
+            unit,
+            presets,
+            default,
+        } => {
+            let before = now.as_ref().and_then(Json::as_f64).unwrap_or(default);
+            let mut v = before;
             ui.horizontal_wrapped(|ui| {
+                controls::stepper(ui, &path.join("."), &mut v, Some(min), max, step, unit);
+                if let Some(p) = controls::presets(ui, presets, v) {
+                    v = p;
+                }
+            });
+            if (v - before).abs() > 1e-9 {
+                fx.set(path, Some(json_number(v)), false);
+            }
+        }
+        How::Minimums(subs) => {
+            ui.vertical(|ui| {
                 for (sub, label) in subs {
                     let mut keys = path.to_vec();
                     keys.push(sub);
-                    let value = fx.get(&keys).cloned();
-                    let text = shown(value.as_ref(), &How::Number);
-                    let key = keys.join(".");
-                    let mut buffer = fx.buffers.remove(&key).unwrap_or_else(|| text.clone());
-                    let down = egui::Layout::top_down(egui::Align::Min);
-                    ui.allocate_ui_with_layout(Vec2::new(cell, 56.0), down, |ui| {
-                        ui.set_width(cell);
-                        ui.label(
-                            egui::RichText::new(*label)
-                                .font(Face::Plex.at(11.0))
-                                .color(palette(ui.ctx()).ink_muted),
-                        );
-                        let response = forms::text_input(ui, &mut buffer, cell, "");
-                        if response.changed() {
-                            if let Ok(value) = parse(&buffer, &How::Number) {
-                                fx.set(&keys, value, true);
-                            }
-                        } else if !response.has_focus() {
-                            buffer = text;
+                    let current = fx.get(&keys).and_then(Json::as_f64);
+                    let mut on = current.is_some();
+                    if forms::checkbox(ui, &mut on, label, None) {
+                        fx.set(&keys, on.then(|| json_number(80.0)), false);
+                    }
+                    if let Some(c) = current {
+                        let mut v = c;
+                        let id = keys.join(".");
+                        let ticks = [(0.0, "0%"), (50.0, "50%"), (100.0, "100%")];
+                        if controls::slider(
+                            ui, &id, &mut v, 0.0, 100.0, 0.5, 1.0, "%", &ticks, width,
+                        ) {
+                            fx.set(&keys, Some(json_number(v)), true);
                         }
-                    });
-                    fx.buffers.insert(key, buffer);
+                    }
+                    ui.add_space(4.0);
                 }
             });
+        }
+        How::Screen => screen(ui, fx, path, width),
+        How::WorldProfile => {
+            let current = now.as_ref().and_then(Json::as_str).unwrap_or("").to_owned();
+            let mut names: Vec<String> = vec!["none · a plain level 1 character".into()];
+            names.extend(fx.profiles.iter().cloned());
+            if !current.is_empty() && !fx.profiles.contains(&current) {
+                names.push(format!("{current} · not in tests/profiles"));
+            }
+            let mut index = fx.profiles.iter().position(|n| *n == current).map_or(
+                if current.is_empty() {
+                    0
+                } else {
+                    names.len() - 1
+                },
+                |i| i + 1,
+            );
+            let opts: Vec<(&str, bool)> = names.iter().map(|n| (n.as_str(), true)).collect();
+            if forms::select(
+                ui,
+                &format!("mf-{}", path.join(".")),
+                &opts,
+                &mut index,
+                width.min(300.0),
+            ) {
+                let value = fx
+                    .profiles
+                    .get(index.wrapping_sub(1))
+                    .map(|n| Json::String(n.clone()));
+                if index == 0 || value.is_some() {
+                    fx.set(path, value, false);
+                }
+            }
         }
         How::Flag => {
             let mut on = now.as_ref().and_then(Json::as_bool).unwrap_or(false);
@@ -574,7 +687,20 @@ fn edit_value(
                 );
             }
         }
-        How::Text | How::Number | How::List | How::Json => {
+        How::List => {
+            let mut items = strings(now.as_ref());
+            if controls::tags(
+                ui,
+                &path.join("."),
+                &mut items,
+                "type, then Enter",
+                width,
+                &|_| None,
+            ) {
+                fx.set(path, list(items), false);
+            }
+        }
+        How::Text | How::Number | How::Json => {
             let text = shown(now.as_ref(), &how);
             let key = path.join(".");
             let buffer = fx.buffers.entry(key).or_insert_with(|| text.clone());
@@ -602,6 +728,156 @@ fn edit_value(
             }
         }
     }
+}
+
+/// A JSON list of strings as strings.
+fn strings(v: Option<&Json>) -> Vec<String> {
+    v.and_then(Json::as_array)
+        .map(|a| {
+            a.iter()
+                .map(|v| v.as_str().map_or_else(|| v.to_string(), str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Strings as a JSON list; none when empty (the key is removed).
+fn list(items: Vec<String>) -> Option<Json> {
+    (!items.is_empty()).then(|| Json::Array(items.into_iter().map(Json::String).collect()))
+}
+
+/// A number as JSON: whole numbers without a fraction.
+fn json_number(v: f64) -> Json {
+    if v.fract() == 0.0 && v.abs() < 1e15 {
+        Json::from(v as i64)
+    } else {
+        serde_json::Number::from_f64(v).map_or(Json::Null, Json::Number)
+    }
+}
+
+/// A screen (`test.screen`): its size (three, or custom), its DPI scale and
+/// the game's own UI Scale control: off leaves the client's scale.
+fn screen(ui: &mut Ui, fx: &mut Fx<'_>, path: &[&str], width: f32) {
+    let key = |sub: &'static str| {
+        let mut k = path.to_vec();
+        k.push(sub);
+        k
+    };
+    let get = |fx: &Fx<'_>, sub: &'static str| fx.get(&key(sub)).and_then(Json::as_f64);
+    let w = get(fx, "width");
+    let h = get(fx, "height");
+    let id = path.join(".");
+    ui.vertical(|ui| {
+        // The size.
+        let mut labels: Vec<String> = SCREENS.iter().map(|(w, h)| format!("{w} × {h}")).collect();
+        labels.push("custom…".into());
+        let custom_key = format!("{id}.custom");
+        let mut custom: bool = ui
+            .data(|d| d.get_temp(egui::Id::unique(&custom_key)))
+            .unwrap_or(false);
+        let at = match (w, h) {
+            (None, None) => 0,
+            (Some(w), Some(h)) => SCREENS
+                .iter()
+                .position(|(sw, sh)| f64::from(*sw) == w && f64::from(*sh) == h)
+                .unwrap_or(SCREENS.len()),
+            _ => SCREENS.len(),
+        };
+        let mut index = if custom { SCREENS.len() } else { at };
+        let opts: Vec<(&str, bool)> = labels.iter().map(|l| (l.as_str(), true)).collect();
+        if forms::select(
+            ui,
+            &format!("mf-{id}-size"),
+            &opts,
+            &mut index,
+            width.min(240.0),
+        ) {
+            custom = index == SCREENS.len();
+            if let Some((sw, sh)) = SCREENS.get(index) {
+                fx.set(&key("width"), Some(Json::from(*sw)), false);
+                fx.set(&key("height"), Some(Json::from(*sh)), false);
+            }
+            ui.data_mut(|d| d.insert_temp(egui::Id::unique(&custom_key), custom));
+        }
+        if custom || index == SCREENS.len() {
+            ui.horizontal_wrapped(|ui| {
+                let mut cw = w.unwrap_or(1920.0);
+                let mut ch = h.unwrap_or(1080.0);
+                if controls::stepper(
+                    ui,
+                    &format!("{id}.width"),
+                    &mut cw,
+                    Some(640.0),
+                    Some(7680.0),
+                    1.0,
+                    "×",
+                ) {
+                    fx.set(&key("width"), Some(json_number(cw)), true);
+                }
+                if controls::stepper(
+                    ui,
+                    &format!("{id}.height"),
+                    &mut ch,
+                    Some(480.0),
+                    Some(4320.0),
+                    1.0,
+                    "px",
+                ) {
+                    fx.set(&key("height"), Some(json_number(ch)), true);
+                }
+            });
+        }
+        ui.add_space(4.0);
+        // The DPI scale.
+        let dpis = [1.0, 1.25, 1.5, 2.0];
+        let dpi = get(fx, "dpiScale").unwrap_or(1.0);
+        let dpi_labels: Vec<String> = dpis.iter().map(|d| format!("dpi {d}")).collect();
+        let mut at = dpis
+            .iter()
+            .position(|d| (d - dpi).abs() < 1e-9)
+            .unwrap_or(0);
+        let opts: Vec<(&str, bool)> = dpi_labels.iter().map(|l| (l.as_str(), true)).collect();
+        if forms::select(
+            ui,
+            &format!("mf-{id}-dpi"),
+            &opts,
+            &mut at,
+            width.min(240.0),
+        ) {
+            fx.set(&key("dpiScale"), Some(json_number(dpis[at])), false);
+        }
+        ui.add_space(4.0);
+        // The game's UI Scale: a check box, then its slider.
+        let scale = get(fx, "uiScale");
+        let mut on = scale.is_some();
+        if forms::checkbox(
+            ui,
+            &mut on,
+            "Use UI Scale",
+            Some("off: the client's own scale"),
+        ) {
+            fx.set(&key("uiScale"), on.then(|| json_number(1.0)), false);
+        }
+        if let Some(s) = scale {
+            let mut v = s;
+            let (min, max, step) = UI_SCALE;
+            let ticks = [(0.65, "65%"), (1.0, "100%"), (1.15, "115%")];
+            if controls::slider(
+                ui,
+                &format!("{id}.uiScale"),
+                &mut v,
+                min,
+                max,
+                step,
+                100.0,
+                "%",
+                &ticks,
+                width,
+            ) {
+                fx.set(&key("uiScale"), Some(json_number(v)), true);
+            }
+        }
+    });
 }
 
 /// The flavors (S064): the package's, each removed but the last; one added
@@ -877,6 +1153,7 @@ pub fn bar(
 
 /// A wowlua.json tab's form: its sections on the left, the one shown (or
 /// what the search finds) on the right.
+#[allow(clippy::too_many_arguments)]
 pub fn form(
     ui: &mut Ui,
     manifests: &mut Manifests,
@@ -885,6 +1162,7 @@ pub fn form(
     workspace: &Workspace,
     system: &dyn System,
     wowlua_version: &str,
+    world_profiles: &[String],
 ) -> Option<Action> {
     let p = palette(ui.ctx());
     let rect = ui.max_rect();
@@ -988,6 +1266,7 @@ pub fn form(
             root: &root,
             changes: Vec::new(),
             buffers: &mut state.buffers,
+            profiles: world_profiles,
         };
         if query.is_empty() && state.section == deps_section {
             // The dependencies: the TOC's other AddOns, then the view of

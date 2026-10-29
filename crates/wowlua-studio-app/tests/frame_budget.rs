@@ -861,6 +861,7 @@ fn the_settings_page_stays_within_the_budget() {
                         &workspace,
                         &NoSystem,
                         "0.13.6",
+                        &[],
                     );
                 });
             }

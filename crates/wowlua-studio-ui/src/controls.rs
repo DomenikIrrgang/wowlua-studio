@@ -49,7 +49,9 @@ fn number_box(
         .data(|d| d.get_temp(id))
         .unwrap_or_else(|| shown.to_owned());
     let font = Face::Plex.at(12.5);
-    let inner = rect.shrink2(Vec2::new(8.0, 4.0));
+    // (one row of the font, centred in the box, as forms::text_input)
+    let row = ui.fonts_mut(|f| f.row_height(&font));
+    let inner = Rect::from_center_size(rect.center(), Vec2::new(rect.width() - 16.0, row));
     let mut child = ui.new_child(UiBuilder::new().max_rect(inner));
     let output = TextEdit::singleline(&mut text)
         .id(id)

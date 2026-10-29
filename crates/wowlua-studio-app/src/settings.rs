@@ -6,6 +6,7 @@
 use std::path::PathBuf;
 
 use egui::{CornerRadius, Sense, Ui, Vec2};
+use wowlua_studio_ui::controls;
 use wowlua_studio_ui::forms::{self, CalloutKind};
 use wowlua_studio_ui::widgets::{self, BadgeKind, ButtonKind};
 use wowlua_studio_ui::{Face, Palette, palette};
@@ -92,8 +93,6 @@ pub struct SettingsState {
     pub recording: Option<String>,
     /// The flavor whose Blizzard UI the installation row shows (S064).
     ui_flavor: Option<String>,
-    /// Text being typed into a text setting, by its label.
-    buffers: std::collections::HashMap<&'static str, String>,
 }
 
 impl SettingsState {
@@ -119,6 +118,27 @@ impl SettingsState {
     }
 }
 
+/// How a number is set.
+#[derive(Clone, Copy)]
+enum Num {
+    /// From `min` to `max` in `step`s, shown with `suffix`, `ticks` under.
+    Slider {
+        min: f64,
+        max: f64,
+        step: f64,
+        suffix: &'static str,
+        ticks: &'static [(f64, &'static str)],
+    },
+    /// One `step` at a time, in `unit`, with `presets` beside.
+    Stepper {
+        min: f64,
+        max: f64,
+        step: f64,
+        unit: &'static str,
+        presets: &'static [(&'static str, f64)],
+    },
+}
+
 /// How a setting is set.
 enum Kind {
     Flag(fn(&Settings) -> bool, fn(&mut Settings, bool)),
@@ -127,7 +147,8 @@ enum Kind {
         fn(&Settings) -> String,
         fn(&mut Settings, &str),
     ),
-    Text(fn(&Settings) -> String, fn(&mut Settings, &str)),
+    /// A number, never typed from blank: a slider or a stepper (S065).
+    Number(fn(&Settings) -> f64, fn(&mut Settings, f64), Num),
     /// A value of this computer and its button.
     Action(Act),
     /// A key to save, never shown again.
@@ -179,12 +200,20 @@ fn rows() -> Vec<Row> {
             Appearance,
             "interface size",
             "Studio draws its own interface on the GPU: one scale for all of it, in percent.",
-            Text(
-                |s| format!("{}%", s.interface_size),
-                |s, v| {
-                    if let Ok(n) = v.trim().trim_end_matches('%').trim().parse::<u32>() {
-                        s.interface_size = n.clamp(50, 200);
-                    }
+            Number(
+                |s| f64::from(s.interface_size),
+                |s, v| s.interface_size = (v.round() as u32).clamp(50, 200),
+                Num::Slider {
+                    min: 50.0,
+                    max: 200.0,
+                    step: 5.0,
+                    suffix: "%",
+                    ticks: &[
+                        (50.0, "50%"),
+                        (100.0, "100%"),
+                        (150.0, "150%"),
+                        (200.0, "200%"),
+                    ],
                 },
             ),
         ),
@@ -208,12 +237,15 @@ fn rows() -> Vec<Row> {
             Editor,
             "font size",
             "IBM Plex Mono, as everywhere in wowlua.",
-            Text(
-                |s| format!("{}", s.font_size),
-                |s, v| {
-                    if let Ok(n) = v.trim().parse::<f32>() {
-                        s.font_size = n.clamp(8.0, 32.0);
-                    }
+            Number(
+                |s| f64::from(s.font_size),
+                |s, v| s.font_size = (v as f32).clamp(8.0, 32.0),
+                Num::Stepper {
+                    min: 8.0,
+                    max: 32.0,
+                    step: 1.0,
+                    unit: "px",
+                    presets: &[("12", 12.0), ("13", 13.0), ("14", 14.0), ("16", 16.0)],
                 },
             ),
         ),
@@ -311,17 +343,16 @@ fn rows() -> Vec<Row> {
         row(
             LanguageServer,
             "worker threads",
-            "For per-file work; 1: none.",
-            Text(
-                |s| {
-                    if s.check_threads == 0 {
-                        "all cores".into()
-                    } else {
-                        s.check_threads.to_string()
-                    }
-                },
-                |s, v| {
-                    s.check_threads = v.trim().parse::<u32>().unwrap_or(0);
+            "For per-file work; 0: all cores, 1: none.",
+            Number(
+                |s| f64::from(s.check_threads),
+                |s, v| s.check_threads = v.max(0.0).round() as u32,
+                Num::Stepper {
+                    min: 0.0,
+                    max: 256.0,
+                    step: 1.0,
+                    unit: "threads",
+                    presets: &[("all cores", 0.0), ("1 · none", 1.0)],
                 },
             ),
         ),
@@ -897,16 +928,48 @@ fn row(
                         }
                     }
                 }
-                Kind::Text(get, set) => {
+                Kind::Number(get, set, how) => {
                     let now = get(settings);
-                    let buffer = state.buffers.entry(r.label).or_insert_with(|| now.clone());
-                    let response = forms::text_input(ui, buffer, control, "");
-                    if response.lost_focus() {
-                        set(settings, buffer);
-                        *buffer = get(settings);
+                    let mut v = now;
+                    let id = format!("set-{}", r.label);
+                    match how {
+                        Num::Slider {
+                            min,
+                            max,
+                            step,
+                            suffix,
+                            ticks,
+                        } => {
+                            controls::slider(
+                                ui, &id, &mut v, *min, *max, *step, 1.0, suffix, ticks, control,
+                            );
+                        }
+                        Num::Stepper {
+                            min,
+                            max,
+                            step,
+                            unit,
+                            presets,
+                        } => {
+                            ui.horizontal_wrapped(|ui| {
+                                controls::stepper(
+                                    ui,
+                                    &id,
+                                    &mut v,
+                                    Some(*min),
+                                    Some(*max),
+                                    *step,
+                                    unit,
+                                );
+                                if let Some(p) = controls::presets(ui, presets, v) {
+                                    v = p;
+                                }
+                            });
+                        }
+                    }
+                    if (v - now).abs() > 1e-9 {
+                        set(settings, v);
                         action = Some(Action::Changed);
-                    } else if !response.has_focus() {
-                        *buffer = now;
                     }
                 }
                 Kind::Secret => {
@@ -1101,10 +1164,10 @@ mod tests {
             .into_iter()
             .find(|r| r.label == "interface size")
             .unwrap();
-        if let Kind::Text(get, set) = size.kind {
-            set(&mut s, "125%");
-            assert_eq!(get(&s), "125%");
-            set(&mut s, "900");
+        if let Kind::Number(get, set, _) = size.kind {
+            set(&mut s, 125.0);
+            assert_eq!(get(&s), 125.0);
+            set(&mut s, 900.0);
             assert_eq!(s.interface_size, 200, "clamped");
         }
     }
