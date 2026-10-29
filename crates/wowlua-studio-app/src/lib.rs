@@ -2602,6 +2602,29 @@ impl Studio {
                 self.run(ctx, Command::ShowPage(Page::Files));
                 self.open_file(&path, ctx);
             }
+            ship::Action::SetTargetProfile {
+                manifest,
+                target,
+                profile,
+            } => {
+                use crate::world::json::Key;
+                let path = vec![
+                    Key::Name("publish".into()),
+                    Key::Name("targets".into()),
+                    Key::Name(target),
+                    Key::Name("profile".into()),
+                ];
+                if let Err(e) = manifest::set_key(
+                    &mut self.editors,
+                    &*self.host.system,
+                    &manifest,
+                    path,
+                    Some(serde_json::Value::String(profile)),
+                ) {
+                    let note = Notification::new(Kind::Error, "wowlua.json", e);
+                    self.notify(note, ctx);
+                }
+            }
             ship::Action::GoTo(path, line, column) => {
                 let at = lsp::Wire {
                     line: (line as usize).saturating_sub(1),

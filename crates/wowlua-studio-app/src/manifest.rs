@@ -2363,6 +2363,33 @@ fn profiles_section(
     }
 }
 
+/// A key of a manifest set (S067): in its tab when it is open (unsaved,
+/// as the form does), else in the file.
+pub fn set_key(
+    editors: &mut Editors,
+    system: &dyn System,
+    manifest: &Path,
+    path: Vec<Key>,
+    value: Option<Json>,
+) -> Result<(), String> {
+    if let Some(tab) = editors.find(manifest) {
+        apply(editors, tab, vec![(path, value, false)]);
+        return Ok(());
+    }
+    let text = system.read_file(manifest)?;
+    let out = with_key(&text, &path, value.as_ref())
+        .ok_or_else(|| format!("{} is no JSON object", manifest.display()))?;
+    system.write_file(manifest, &out)
+}
+
+/// `text` with a key set (`None`: removed), the rest as written.
+fn with_key(text: &str, path: &[Key], value: Option<&Json>) -> Option<String> {
+    let (range, with) = json::set(text, path, value)?;
+    let mut out = text.to_owned();
+    out.replace_range(range, &with);
+    Some(out)
+}
+
 /// The changes, as edits of the manifest's text.
 fn apply(editors: &mut Editors, tab: usize, changes: Vec<(Vec<Key>, Option<Json>, bool)>) {
     for (path, value, typing) in changes {
@@ -2393,6 +2420,20 @@ pub fn requirement_for(version: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_target_s_profile_is_set_in_the_file() {
+        let text = "{\n  \"publish\": {\n    \"targets\": {\n      \"curseforge\": { \"type\": \"curseforge\" }\n    }\n  }\n}\n";
+        let path: Vec<Key> = ["publish", "targets", "curseforge", "profile"]
+            .iter()
+            .map(|k| Key::Name((*k).to_owned()))
+            .collect();
+        let out = with_key(text, &path, Some(&Json::String("readable".into()))).expect("set");
+        let v: Json = serde_json::from_str(&out).expect("JSON");
+        assert_eq!(v["publish"]["targets"]["curseforge"]["profile"], "readable");
+        assert_eq!(v["publish"]["targets"]["curseforge"]["type"], "curseforge");
+        assert!(with_key("[", &path, None).is_none());
+    }
 
     #[test]
     fn the_next_versions_are_suggested() {

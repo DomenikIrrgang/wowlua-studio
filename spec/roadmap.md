@@ -373,8 +373,16 @@ Studio's own settings only. Flavors come from wowlua's flavor table
 everywhere (S064); build profiles are edited in wowlua.json's build
 section, the coverage minimums and the test screen as fields. Buttons lead
 with their verb's icon (Option D) and settings are picked, not typed from
-blank: sliders, steppers with presets, tags, chips and pickers (S065). The
-frame budget holds: 0.05 ms median,
+blank: sliders, steppers with presets, tags, chips and pickers (S065):
+world profiles' CVars found among the client's with their defaults
+(wowlua's `cvars`), key bindings recorded and their actions picked from
+Blizzard's UI, spell and item IDs found by name or ID in the installation
+(items in its `ItemSparse`). World profiles' classes, races and powers
+come from wowlua's flavor table (S066, wowlua T512 and T513): every power
+of a class on its own slider, the faction following the race, only the
+classes the race can be, its racial spells shown. A publish target's
+build profile is picked on the ship page and written to `wowlua.json`
+(S067). The frame budget holds: 0.05 ms median,
 0.12 ms p99. GitHub's sign-in uses
 the "wowlua studio" OAuth App (its client ID built in; no secret). Not yet:
 checked by hand on macOS only.
@@ -439,14 +447,18 @@ and tests it on Windows and Linux (S058). On each, with SuuUI's workspace:
 10. **M10**: the system theme following the OS; the interface size; record
     a key and use it; word wrap at the window; save the Claude key; open
     `wowlua.json`, edit a key in its form and see the json view; search the
-    registry and add a dependency in its dependencies section.
+    registry and add a dependency in its dependencies section; pick a flavor
+    from the table; open a build profile from the ship page in
+    `wowlua.json`'s build section; in a world profile pick a race and see
+    the faction and classes follow, a druid's powers, a CVar, a binding by
+    pressing its key, a spell and an item by name; pick a target's profile
+    and see `wowlua.json` follow.
 
 ## Open questions
 
 Asked when their milestone starts; nothing here is decided yet.
 
 - Installers and code signing per system (first release).
-- The GitHub app Studio signs in with, and who registers it (M12).
 - Whether "sign in with Claude" is possible for a third-party app (M14).
 
 ## Design changes owed

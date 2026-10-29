@@ -52,6 +52,12 @@ pub enum Action {
     PickInstallation,
     /// A build profile's settings, in its wowlua.json's form (S064).
     EditProfile(PathBuf, String),
+    /// A publish target's build profile, set in its wowlua.json (S067).
+    SetTargetProfile {
+        manifest: PathBuf,
+        target: String,
+        profile: String,
+    },
 }
 
 /// A build (or install) running.
@@ -86,6 +92,9 @@ pub struct ShipState {
     dev_building: Option<Vec<String>>,
     /// Targets switched off for the next publish.
     off: BTreeSet<String>,
+    /// The targets' profiles picked, shown until the package read again
+    /// has them (wowlua.json's tab may be unsaved).
+    target_profiles: HashMap<String, String>,
     tokens: HashMap<String, TokenState>,
     tokens_asked: bool,
     token_text: HashMap<String, String>,
@@ -142,6 +151,14 @@ impl ShipState {
                         .find(|p| p.name == "release")
                         .or(facts.profiles.first())
                         .map(|p| p.name.clone());
+                }
+                if let Ok(facts) = &read {
+                    self.target_profiles.retain(|name, profile| {
+                        facts
+                            .targets
+                            .iter()
+                            .any(|t| &t.name == name && &t.profile != profile)
+                    });
                 }
                 self.facts = Some(read);
             }
@@ -1353,6 +1370,104 @@ pub fn checks(facts: &ShipFacts) -> Vec<(Option<bool>, String, String)> {
     out
 }
 
+/// A publish target's row in the targets table: published or not, its
+/// name, project, build profile (written to wowlua.json, S067) and token.
+fn target_row(
+    ui: &mut Ui,
+    state: &mut ShipState,
+    facts: &ShipFacts,
+    t: &ShipTarget,
+    system: &dyn System,
+    p: &Palette,
+) -> Option<Action> {
+    let mut action = None;
+    let mut checked = t.enabled && !state.off.contains(&t.name);
+    // (in a cell of the row's height, centred as the rest)
+    ui.allocate_ui_with_layout(
+        egui::Vec2::new(18.0, forms::CONTROL_H),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            if !t.enabled {
+                ui.disable();
+            }
+            if forms::checkbox(ui, &mut checked, "", None) {
+                if checked {
+                    state.off.remove(&t.name);
+                } else {
+                    state.off.insert(t.name.clone());
+                }
+            }
+        },
+    );
+    strong(ui, &t.name, p);
+    caption(ui, &t.project, p);
+    // Its build profile, written to wowlua.json.
+    let shown = state
+        .target_profiles
+        .get(&t.name)
+        .unwrap_or(&t.profile)
+        .clone();
+    let mut names: Vec<&str> = facts.profiles.iter().map(|p| p.name.as_str()).collect();
+    if !names.contains(&shown.as_str()) {
+        names.push(&shown);
+    }
+    let mut index = names.iter().position(|n| *n == shown).unwrap_or(0);
+    let opts: Vec<(&str, bool)> = names.iter().map(|n| (*n, true)).collect();
+    if forms::select(
+        ui,
+        &format!("ship-target-profile-{}", t.name),
+        &opts,
+        &mut index,
+        112.0,
+    ) && names[index] != shown
+    {
+        let profile = names[index].to_owned();
+        state
+            .target_profiles
+            .insert(t.name.clone(), profile.clone());
+        action = Some(Action::SetTargetProfile {
+            manifest: facts.manifest.clone(),
+            target: t.name.clone(),
+            profile,
+        });
+    }
+    ui.horizontal(|ui| {
+        let (word, more) = token_text(state.tokens.get(&t.name));
+        match word {
+            "saved" => {
+                ui.label(
+                    egui::RichText::new("token saved")
+                        .font(Face::Plex.at(12.0))
+                        .color(p.success),
+                );
+                if forms::text_button(ui, "remove").clicked() {
+                    system.ship_token(&t.kind, None);
+                }
+            }
+            "from" => caption(ui, &format!("token from ${}", more.unwrap_or_default()), p),
+            "reading" => caption(ui, "reading the token…", p),
+            _ => {
+                if let Some(why) = more {
+                    caption(ui, &why, p);
+                }
+                let input = state.token_text.entry(t.kind.clone()).or_default();
+                ui.add(
+                    egui::TextEdit::singleline(input)
+                        .password(true)
+                        .desired_width(110.0)
+                        .font(Face::Plex.at(12.0))
+                        .hint_text("token"),
+                );
+                if widgets::button(ui, ButtonKind::Secondary, "save", true, None).clicked() {
+                    let token = input.clone();
+                    system.ship_token(&t.kind, Some(token));
+                }
+            }
+        }
+    });
+    action
+}
+
 fn publish_tab(
     ui: &mut Ui,
     state: &mut ShipState,
@@ -1361,6 +1476,7 @@ fn publish_tab(
     system: &dyn System,
     p: &Palette,
 ) -> Option<Action> {
+    let mut action = None;
     let checks = checks(facts);
     let failing = checks.iter().any(|(ok, _, _)| *ok == Some(false));
     let on: Vec<&ShipTarget> = facts
@@ -1411,49 +1527,24 @@ fn publish_tab(
                     if facts.targets.is_empty() {
                         caption(ui, "No publish targets: add one under publish.targets in wowlua.json.", p);
                     }
-                    for t in &facts.targets {
-                        ui.horizontal_wrapped(|ui| {
-                            let mut checked = t.enabled && !state.off.contains(&t.name);
-                            ui.add_enabled_ui(t.enabled, |ui| {
-                                if forms::checkbox(ui, &mut checked, "", None) {
-                                    if checked {
-                                        state.off.remove(&t.name);
-                                    } else {
-                                        state.off.insert(t.name.clone());
+                    if !facts.targets.is_empty() {
+                        egui::Grid::new("ship-targets")
+                            .num_columns(5)
+                            .spacing([10.0, 6.0])
+                            .show(ui, |ui| {
+                                for h in ["", "target", "project", "profile", "token"] {
+                                    caption(ui, h, p);
+                                }
+                                ui.end_row();
+                                for t in &facts.targets {
+                                    if let Some(a) = target_row(ui, state, facts, t, system, p) {
+                                        action = Some(a);
                                     }
+                                    ui.end_row();
                                 }
                             });
-                            strong(ui, &t.name, p);
-                            caption(ui, &format!("{} · {}", t.project, t.profile), p);
-                            let (word, more) = token_text(state.tokens.get(&t.name));
-                            match word {
-                                "saved" => {
-                                    ui.label(egui::RichText::new("token saved").font(Face::Plex.at(12.0)).color(p.success));
-                                    if forms::text_button(ui, "remove").clicked() {
-                                        system.ship_token(&t.kind, None);
-                                    }
-                                }
-                                "from" => caption(ui, &format!("token from ${}", more.unwrap_or_default()), p),
-                                "reading" => caption(ui, "reading the token…", p),
-                                _ => {
-                                    if let Some(why) = more {
-                                        caption(ui, &why, p);
-                                    }
-                                    let input = state.token_text.entry(t.kind.clone()).or_default();
-                                    ui.add(
-                                        egui::TextEdit::singleline(input)
-                                            .password(true)
-                                            .desired_width(150.0)
-                                            .font(Face::Plex.at(12.0))
-                                            .hint_text(format!("{} token", t.kind)),
-                                    );
-                                    if widgets::button(ui, ButtonKind::Secondary, "save", true, None).clicked() {
-                                        let token = input.clone();
-                                        system.ship_token(&t.kind, Some(token));
-                                    }
-                                }
-                            }
-                        });
+                    }
+                    for t in &facts.targets {
                         if let Some(said) = state.token_said.get(&t.kind) {
                             match said {
                                 Ok(s) => caption(ui, &format!("{}: {s}", t.kind), p),
@@ -1554,7 +1645,7 @@ fn publish_tab(
             }
         }
     });
-    None
+    action
 }
 
 /// What each target got (or would get), and the run's problems.
