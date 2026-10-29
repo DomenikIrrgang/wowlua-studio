@@ -775,68 +775,118 @@ fn screen(ui: &mut Ui, cx: &mut Cx<'_>) {
     }
 }
 
-/// The classes a flavor has, by file name and short name.
-pub fn classes(flavor: &str) -> Vec<(&'static str, &'static str)> {
-    let mut out = vec![
-        ("WARRIOR", "WAR"),
-        ("PALADIN", "PAL"),
-        ("HUNTER", "HUN"),
-        ("ROGUE", "ROG"),
-        ("PRIEST", "PRI"),
-        ("SHAMAN", "SHA"),
-        ("MAGE", "MAG"),
-        ("WARLOCK", "LOC"),
-        ("DRUID", "DRU"),
-    ];
-    let later = |from: &[&str]| from.contains(&flavor) || flavor.is_empty();
-    // (MoP Classic has the Death Knight and the Monk, retail all of them)
-    if later(&["mists", "standard"]) {
-        out.extend([("DEATHKNIGHT", "DK"), ("MONK", "MNK")]);
-    }
-    if later(&["standard"]) {
-        out.extend([("DEMONHUNTER", "DH"), ("EVOKER", "EVO")]);
-    }
-    out
-}
-
-/// The races a flavor has, by file name.
-pub fn races(flavor: &str) -> Vec<&'static str> {
-    let mut out = vec![
-        "Human", "Dwarf", "NightElf", "Gnome", "Orc", "Scourge", "Tauren", "Troll",
-    ];
-    let later = |from: &[&str]| from.contains(&flavor) || flavor.is_empty();
-    if later(&["tbc", "mists", "standard"]) {
-        out.extend(["BloodElf", "Draenei"]);
-    }
-    if later(&["mists", "standard"]) {
-        out.extend(["Worgen", "Goblin", "Pandaren"]);
-    }
-    if later(&["standard"]) {
-        out.extend([
-            "Nightborne",
-            "HighmountainTauren",
-            "VoidElf",
-            "LightforgedDraenei",
-            "ZandalariTroll",
-            "KulTiran",
-            "DarkIronDwarf",
-            "Vulpera",
-            "MagharOrc",
-            "Mechagnome",
-            "Dracthyr",
-            "EarthenDwarf",
-        ]);
-    }
-    out
-}
-
-const POWER: &[&str] = &[
-    "0 · mana",
-    "1 · rage",
-    "2 · focus",
-    "3 · energy",
-    "6 · runic power",
+/// The classes' short names on their art tiles.
+const SHORT: &[(&str, &str)] = &[
+    ("WARRIOR", "WAR"),
+    ("PALADIN", "PAL"),
+    ("HUNTER", "HUN"),
+    ("ROGUE", "ROG"),
+    ("PRIEST", "PRI"),
+    ("SHAMAN", "SHA"),
+    ("MAGE", "MAG"),
+    ("WARLOCK", "LOC"),
+    ("DRUID", "DRU"),
+    ("DEATHKNIGHT", "DK"),
+    ("MONK", "MNK"),
+    ("DEMONHUNTER", "DH"),
+    ("EVOKER", "EVO"),
 ];
+
+/// The flavor as wowlua's table has it; retail's (every class and race)
+/// for one it doesn't know.
+fn flavor_of(flavor: &str) -> Option<&'static wowlua_flavors::Flavor> {
+    let table = wowlua_flavors::table();
+    table.flavor(flavor).or_else(|| table.flavor("standard"))
+}
+
+/// The classes a flavor has (wowlua's flavor table, in the client's
+/// order), by file name and short name.
+pub fn classes(flavor: &str) -> Vec<(&'static str, &'static str)> {
+    flavor_of(flavor)
+        .map(|f| {
+            f.classes
+                .iter()
+                .map(|c| {
+                    let file = c.file.as_str();
+                    let short = SHORT
+                        .iter()
+                        .find(|(f, _)| *f == file)
+                        .map_or_else(|| &file[..file.len().min(3)], |(_, s)| *s);
+                    (file, short)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The races a flavor has (wowlua's flavor table), by file name.
+pub fn races(flavor: &str) -> Vec<&'static str> {
+    flavor_of(flavor)
+        .map(|f| f.races.iter().map(String::as_str).collect())
+        .unwrap_or_default()
+}
+
+/// The powers a class has on a flavor (wowlua's table), the shown one
+/// first.
+fn powers_of(flavor: &str, class: &str) -> Vec<&'static str> {
+    flavor_of(flavor)
+        .and_then(|f| f.class(class))
+        .map(|c| c.powers.iter().map(String::as_str).collect())
+        .unwrap_or_default()
+}
+
+/// Every power a class has (T512): one slider each up to its maximum, in
+/// `powers.<TOKEN>`, the flavor's defaults while unset; which one shows.
+fn class_powers(ui: &mut Ui, cx: &mut Cx<'_>, base: &[Key], class: &str, width: f32) {
+    let flavor = cx.look.flavor;
+    let powers = powers_of(flavor, class);
+    let table = wowlua_flavors::table();
+    let f = flavor_of(flavor);
+    ui.horizontal_wrapped(|ui| {
+        for token in &powers {
+            let default = f.and_then(|f| f.power_default(token));
+            let mut now: Vec<Key> = base.to_vec();
+            now.extend([name("powers"), name(token), name("current")]);
+            let mut max: Vec<Key> = base.to_vec();
+            max.extend([name("powers"), name(token), name("max")]);
+            let label = token.to_ascii_lowercase().replace('_', " ");
+            pool(
+                ui,
+                cx,
+                &label,
+                now,
+                max,
+                width,
+                default.map_or(100.0, |d| d.max),
+            );
+        }
+    });
+    // Which power the unit shows (a druid's form): one of the class's.
+    if powers.len() > 1 {
+        let mut path: Vec<Key> = base.to_vec();
+        path.push(name("powerType"));
+        let shown = at(cx.root, &path)
+            .and_then(Json::as_f64)
+            .and_then(|id| table.power_token(id as u32))
+            .unwrap_or(powers[0]);
+        let mut index = powers.iter().position(|t| *t == shown).unwrap_or(0);
+        let labels: Vec<String> = powers
+            .iter()
+            .map(|t| t.to_ascii_lowercase().replace('_', " "))
+            .collect();
+        let opts: Vec<(&str, bool)> = labels.iter().map(|l| (l.as_str(), true)).collect();
+        ui.vertical(|ui| {
+            ui.set_width(width);
+            forms::label(ui, "shown power");
+            if forms::select(ui, &path_of(&path), &opts, &mut index, width)
+                && let Some(id) = table.power_type(powers[index])
+            {
+                cx.set(path, Some(number(f64::from(id))));
+            }
+        });
+    }
+}
+
 const SEX: &[&str] = &["2 · male", "3 · female", "1 · unknown"];
 const ROLES: &[&str] = &["TANK", "HEALER", "DAMAGER", "NONE"];
 
@@ -935,13 +985,33 @@ fn character(ui: &mut Ui, cx: &mut Cx<'_>) {
     ui.horizontal(|ui| {
         let w = col(ui, 4);
         pool(ui, cx, "health", p("health"), p(&health_max), w, 100.0);
-        pool(ui, cx, "power", p("power"), p(&power_max), w, 100.0);
-        choice(ui, cx, "power type", p("powerType"), POWER, w);
+        // (with a class, its powers below; without, the one power)
+        if class.is_empty() {
+            pool(ui, cx, "power", p("power"), p(&power_max), w, 100.0);
+            let tokens: Vec<String> = wowlua_flavors::table()
+                .power_types
+                .iter()
+                .map(|t| {
+                    format!(
+                        "{} · {}",
+                        t.id,
+                        t.token.to_ascii_lowercase().replace('_', " ")
+                    )
+                })
+                .collect();
+            let options: Vec<&str> = tokens.iter().map(String::as_str).collect();
+            choice(ui, cx, "power type", p("powerType"), &options, w);
+        }
         ui.vertical(|ui| {
             check(ui, cx, "dead", p("dead"), false);
             check(ui, cx, "pvp", p("pvp"), false);
         });
     });
+    if !class.is_empty() {
+        ui.add_space(10.0);
+        let w = col(ui, 4);
+        class_powers(ui, cx, &base, &class, w);
+    }
     caption(
         ui,
         "Applied as mock.setPlayer. Leave a field empty for the client's default.",
