@@ -56,7 +56,9 @@ mod tests {
         assert_eq!(label("camelot"), "camelot · WoW Forever");
         assert_eq!(label("forever"), "camelot · WoW Forever");
         assert_eq!(label("standard"), "standard · Retail · coming soon");
-        assert_eq!(label("mists"), "mists · unknown to wowlua");
+        assert_eq!(label("mists"), "mists · MoP Classic · coming soon");
+        assert_eq!(label("cata"), "cata · unknown to wowlua");
+        assert_eq!(max_level("mists"), 90);
         assert!(supported("camelot") && !supported("vanilla"));
         assert_eq!(supported_ids(), ["camelot"]);
         assert_eq!(all().next().map(|f| f.id.as_str()), Some("camelot"));

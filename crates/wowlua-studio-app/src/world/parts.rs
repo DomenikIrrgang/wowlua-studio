@@ -745,14 +745,13 @@ pub fn classes(flavor: &str) -> Vec<(&'static str, &'static str)> {
         ("WARLOCK", "LOC"),
         ("DRUID", "DRU"),
     ];
-    // (of wowlua's flavors, only retail has the later classes)
-    if flavor == "standard" || flavor.is_empty() {
-        out.extend([
-            ("DEATHKNIGHT", "DK"),
-            ("MONK", "MNK"),
-            ("DEMONHUNTER", "DH"),
-            ("EVOKER", "EVO"),
-        ]);
+    let later = |from: &[&str]| from.contains(&flavor) || flavor.is_empty();
+    // (MoP Classic has the Death Knight and the Monk, retail all of them)
+    if later(&["mists", "standard"]) {
+        out.extend([("DEATHKNIGHT", "DK"), ("MONK", "MNK")]);
+    }
+    if later(&["standard"]) {
+        out.extend([("DEMONHUNTER", "DH"), ("EVOKER", "EVO")]);
     }
     out
 }
@@ -763,14 +762,14 @@ pub fn races(flavor: &str) -> Vec<&'static str> {
         "Human", "Dwarf", "NightElf", "Gnome", "Orc", "Scourge", "Tauren", "Troll",
     ];
     let later = |from: &[&str]| from.contains(&flavor) || flavor.is_empty();
-    if later(&["tbc", "standard"]) {
+    if later(&["tbc", "mists", "standard"]) {
         out.extend(["BloodElf", "Draenei"]);
+    }
+    if later(&["mists", "standard"]) {
+        out.extend(["Worgen", "Goblin", "Pandaren"]);
     }
     if later(&["standard"]) {
         out.extend([
-            "Worgen",
-            "Goblin",
-            "Pandaren",
             "Nightborne",
             "HighmountainTauren",
             "VoidElf",
@@ -2806,6 +2805,8 @@ mod tests {
     fn a_flavor_s_classes_and_races() {
         assert_eq!(classes("camelot").len(), 9);
         assert_eq!(classes("tbc").len(), 9);
+        assert_eq!(classes("mists").len(), 11);
+        assert!(races("mists").contains(&"Pandaren") && !races("mists").contains(&"Nightborne"));
         assert_eq!(classes("standard").len(), 13);
         assert!(races("vanilla").len() == 8 && races("tbc").contains(&"Draenei"));
     }
