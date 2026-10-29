@@ -86,6 +86,12 @@ enum How {
     Screen,
     /// One of the package's world profiles (`tests/profiles/*.json`).
     WorldProfile,
+    /// A version, typed, with the next ones suggested.
+    Version,
+    /// A version requirement: `^`, `~` or `=`, then a version.
+    Requirement,
+    /// The changelog: a file, git's history or none.
+    Changelog,
 }
 
 /// The game's UI Scale slider (Blizzard's Graphics.lua, wowlua T508).
@@ -127,13 +133,13 @@ fn rows() -> Vec<Row> {
             "package",
             &["package", "version"],
             "SemVer 2.0. A -beta.N or -alpha.N suffix publishes as a beta or alpha file.",
-            Text,
+            Version,
         ),
         r(
             "package",
             &["package", "wowlua"],
-            "Required compiler version (semver requirement).",
-            Text,
+            "The wowlua the package needs: ^ any later minor, ~ any later patch, = exactly.",
+            Requirement,
         ),
         r(
             "package",
@@ -293,8 +299,8 @@ fn rows() -> Vec<Row> {
         r(
             "publish",
             &["publish", "changelog"],
-            "Path, \"git\", or null.",
-            Text,
+            "The release notes wowlua publish uploads.",
+            Changelog,
         ),
         r(
             "publish",
@@ -413,6 +419,8 @@ struct Fx<'a> {
     buffers: &'a mut HashMap<String, String>,
     /// The workspace's world profiles, by name.
     profiles: &'a [String],
+    /// The wowlua built into Studio.
+    wowlua: &'a str,
 }
 
 impl Fx<'_> {
@@ -620,6 +628,70 @@ fn edit_value(
             });
         }
         How::Screen => screen(ui, fx, path, width),
+        How::Version => {
+            let text = shown(now.as_ref(), &How::Text);
+            typed_text(ui, fx, path, &text, width, "1.0.0");
+            let next = next_versions(&text);
+            if let Some(v) = controls::suggestions(ui, &next) {
+                fx.set(path, Some(Json::String(v)), false);
+            }
+        }
+        How::Requirement => {
+            let text = shown(now.as_ref(), &How::Text);
+            let (op, version) = match text.chars().next() {
+                Some(c @ ('^' | '~' | '=')) => (c, text[1..].trim().to_owned()),
+                _ => ('^', text.trim().to_owned()),
+            };
+            let at = ['^', '~', '='].iter().position(|c| *c == op).unwrap_or(0);
+            ui.horizontal(|ui| {
+                let id = format!("mf-{}", path.join("."));
+                if let Some(i) = widgets::seg(ui, &id, &["^", "~", "="], at, true) {
+                    let op = ['^', '~', '='][i];
+                    fx.set(path, Some(Json::String(format!("{op}{version}"))), false);
+                }
+                let key = format!("{}.version", path.join("."));
+                let buffer = fx
+                    .buffers
+                    .entry(key.clone())
+                    .or_insert_with(|| version.clone());
+                let response = forms::text_input(ui, buffer, (width - 120.0).max(100.0), "0.13");
+                let typed = (response.changed() && !buffer.trim().is_empty())
+                    .then(|| format!("{op}{}", buffer.trim()));
+                if typed.is_none() && !response.has_focus() {
+                    *buffer = version.clone();
+                }
+                if let Some(requirement) = typed {
+                    fx.set(path, Some(Json::String(requirement)), true);
+                }
+            });
+            let built_in = requirement_for(fx.wowlua);
+            if built_in != text {
+                let label = format!("{built_in} · the wowlua built into Studio");
+                if controls::suggestions(ui, std::slice::from_ref(&label)).is_some() {
+                    fx.set(path, Some(Json::String(built_in)), false);
+                }
+            }
+        }
+        How::Changelog => {
+            let at = match &now {
+                Some(Json::String(s)) if s == "git" => 1,
+                Some(Json::Null) => 2,
+                _ => 0,
+            };
+            let id = format!("mf-{}", path.join("."));
+            if let Some(i) = widgets::seg(ui, &id, &["a file", "git", "none"], at, true) {
+                let value = match i {
+                    0 => Json::String("CHANGELOG.md".into()),
+                    1 => Json::String("git".into()),
+                    _ => Json::Null,
+                };
+                fx.set(path, Some(value), false);
+            }
+            if at == 0 {
+                let text = shown(now.as_ref(), &How::Text);
+                typed_text(ui, fx, path, &text, width, "CHANGELOG.md");
+            }
+        }
         How::WorldProfile => {
             let current = now.as_ref().and_then(Json::as_str).unwrap_or("").to_owned();
             let mut names: Vec<String> = vec!["none · a plain level 1 character".into()];
@@ -728,6 +800,46 @@ fn edit_value(
             }
         }
     }
+}
+
+/// A text typed into the form, kept while it is typed.
+fn typed_text(ui: &mut Ui, fx: &mut Fx<'_>, path: &[&str], text: &str, width: f32, hint: &str) {
+    let key = path.join(".");
+    let buffer = fx.buffers.entry(key).or_insert_with(|| text.to_owned());
+    let response = forms::text_input(ui, buffer, width, hint);
+    if response.changed() {
+        let value = (!buffer.trim().is_empty()).then(|| Json::String(buffer.clone()));
+        fx.set(path, value, true);
+    } else if !response.has_focus() {
+        *buffer = text.to_owned();
+    }
+}
+
+/// The versions after `version`: a beta's next beta and its release; a
+/// release's next patch, minor and first beta of the next minor.
+pub fn next_versions(version: &str) -> Vec<String> {
+    let (base, pre) = version
+        .trim()
+        .split_once('-')
+        .unwrap_or((version.trim(), ""));
+    let mut n = base.split('.').map(|p| p.parse::<u64>().unwrap_or(0));
+    let (major, minor, patch) = (
+        n.next().unwrap_or(0),
+        n.next().unwrap_or(0),
+        n.next().unwrap_or(0),
+    );
+    if let Some((kind, number)) = pre.split_once('.') {
+        let number = number.parse::<u64>().unwrap_or(0);
+        return vec![
+            format!("{major}.{minor}.{patch}-{kind}.{}", number + 1),
+            format!("{major}.{minor}.{patch}"),
+        ];
+    }
+    vec![
+        format!("{major}.{minor}.{}", patch + 1),
+        format!("{major}.{}.0", minor + 1),
+        format!("{major}.{}.0-beta.1", minor + 1),
+    ]
 }
 
 /// A JSON list of strings as strings.
@@ -1267,6 +1379,7 @@ pub fn form(
             changes: Vec::new(),
             buffers: &mut state.buffers,
             profiles: world_profiles,
+            wowlua: wowlua_version,
         };
         if query.is_empty() && state.section == deps_section {
             // The dependencies: the TOC's other AddOns, then the view of
@@ -1827,6 +1940,12 @@ pub fn requirement_for(version: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_next_versions_are_suggested() {
+        assert_eq!(next_versions("0.6.0-beta.1"), ["0.6.0-beta.2", "0.6.0"]);
+        assert_eq!(next_versions("1.2.3"), ["1.2.4", "1.3.0", "1.3.0-beta.1"]);
+    }
 
     #[test]
     fn requirements_allow_the_wowlua_built_in() {
