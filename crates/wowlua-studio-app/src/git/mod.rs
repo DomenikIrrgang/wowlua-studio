@@ -2,6 +2,8 @@
 //! and the status bar show of the repository. The state keeps the last
 //! answers from the repository and asks again when files change.
 
+pub mod bar;
+pub mod editor;
 pub mod model;
 pub mod page;
 
@@ -75,6 +77,12 @@ pub struct GitState {
     pub busy: Option<String>,
     /// A push to follow the pull under way (the changes panel's sync).
     pub then_push: bool,
+    /// The status bar's branch list open, and what is typed to find one.
+    pub bar_open: bool,
+    pub bar_query: String,
+    /// What the screenshot harness asked to show once the repository is
+    /// read (`commit`, `new`, `switch:<branch>`, `discard`).
+    pub harness: Option<String>,
     asked: HashSet<String>,
     stale: bool,
     last_fetch: Option<Instant>,
@@ -83,6 +91,13 @@ pub struct GitState {
     pub blame: HashMap<String, (u64, Vec<BlameLine>)>,
     /// A file's text at HEAD, for the editor's gutter (S070).
     pub head: HashMap<String, Option<String>>,
+    /// The gutter's marks of a file, by the document's version.
+    pub marks: HashMap<String, (u64, Vec<(usize, crate::editor::view::GitMark)>)>,
+    /// When a file's blame was last asked for (asked again at most every
+    /// 1.5 s while it is edited).
+    pub blame_at: HashMap<String, Instant>,
+    /// A gutter mark's hunk shown: the file, its line, where.
+    pub mark_popup: Option<(String, usize, egui::Pos2)>,
     head_asked: HashSet<String>,
 }
 
@@ -106,11 +121,17 @@ impl Default for GitState {
             dialog: None,
             busy: None,
             then_push: false,
+            bar_open: false,
+            bar_query: String::new(),
+            harness: None,
             asked: HashSet::new(),
             stale: true,
             last_fetch: None,
             blame: HashMap::new(),
             head: HashMap::new(),
+            marks: HashMap::new(),
+            blame_at: HashMap::new(),
+            mark_popup: None,
             head_asked: HashSet::new(),
         }
     }
@@ -126,6 +147,7 @@ impl GitState {
             root: root.map(Path::to_path_buf),
             format_and_check: self.format_and_check,
             side_by_side: self.side_by_side,
+            harness: self.harness.take(),
             ..GitState::default()
         };
     }
@@ -140,6 +162,7 @@ impl GitState {
         {
             self.head.clear();
             self.head_asked.clear();
+            self.marks.clear();
             self.asked.remove("log");
             self.asked.remove("branches");
         }
@@ -237,6 +260,21 @@ impl GitState {
                 }
             }
             None => {}
+        }
+    }
+
+    /// A file's diff asked for when not known yet.
+    pub fn want_diff(&mut self, system: &dyn System, path: &str, of: DiffOf) {
+        if !self.diffs.contains_key(&(path.to_owned(), of.clone())) {
+            let key = format!("diff {path} {of:?}");
+            self.ask(
+                system,
+                &key,
+                GitRequest::Diff {
+                    path: path.to_owned(),
+                    of,
+                },
+            );
         }
     }
 
@@ -352,6 +390,7 @@ impl GitState {
                                 self.asked.remove("branches");
                                 self.head.clear();
                                 self.head_asked.clear();
+                                self.marks.clear();
                             }
                             // (a selected file that no longer changed: none)
                             if let Some(Selected::File(path, _)) = &self.selected
@@ -492,10 +531,56 @@ impl GitState {
                 }
             }
             GitEvent::HeadText { path, text } => {
+                self.marks.remove(&path);
                 self.head.insert(path, text);
             }
         }
-        let _ = system;
+        self.harness_step(system);
+    }
+
+    /// The screenshot harness's step, once what it needs is read.
+    fn harness_step(&mut self, system: &dyn System) {
+        let Some(what) = self.harness.clone() else {
+            return;
+        };
+        if self.status.is_none() {
+            return;
+        }
+        match what.as_str() {
+            "branches" => {
+                self.bar_open = true;
+                self.ask(system, "branches", GitRequest::Branches);
+            }
+            "commit" => {
+                let Some(c) = self.log.get(1).or(self.log.first()) else {
+                    return;
+                };
+                self.selected = Some(Selected::Commit(c.hash.clone()));
+            }
+            "new" => {
+                self.dialog = Some(Dialog::NewBranch {
+                    from: None,
+                    name: String::new(),
+                    switch: true,
+                    bad: None,
+                });
+            }
+            "discard" => {
+                let Some(f) = self.status.as_ref().and_then(|s| s.files.first()) else {
+                    return;
+                };
+                self.dialog = Some(Dialog::Discard {
+                    what: format!("the changes to {}", f.path),
+                    request: GitRequest::Discard(vec![f.path.clone()]),
+                });
+            }
+            other => {
+                if let Some(target) = other.strip_prefix("switch:") {
+                    page::start_switch(self, system, target.to_owned());
+                }
+            }
+        }
+        self.harness = None;
     }
 
     /// The commits ahead and behind, for the status bar.

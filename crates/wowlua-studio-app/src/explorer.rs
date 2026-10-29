@@ -75,6 +75,7 @@ impl Explorer {
         ui: &mut Ui,
         workspace: &Workspace,
         system: &dyn System,
+        git: &crate::git::GitState,
     ) -> Option<PathBuf> {
         let p = palette(ui.ctx());
         let rows = match self.rows.take() {
@@ -114,7 +115,7 @@ impl Explorer {
             rows.len(),
             |ui, range| {
                 for i in range {
-                    if self.row(ui, p, workspace, &rows[i]) {
+                    if self.row(ui, p, workspace, &rows[i], git) {
                         clicked = Some(i);
                     }
                 }
@@ -125,7 +126,14 @@ impl Explorer {
     }
 
     /// Draws a row; returns whether it was clicked.
-    fn row(&self, ui: &mut Ui, p: &Palette, workspace: &Workspace, row: &Row) -> bool {
+    fn row(
+        &self,
+        ui: &mut Ui,
+        p: &Palette,
+        workspace: &Workspace,
+        row: &Row,
+        git: &crate::git::GitState,
+    ) -> bool {
         let (rect, response) =
             ui.allocate_exact_size(Vec2::new(ui.available_width(), row_h()), Sense::click());
         let selected = match row {
@@ -221,12 +229,44 @@ impl Explorer {
         } else {
             Face::Plex
         };
-        let text = widgets::galley(ui, name, face.at(12.5), p.ink, 0.0);
+        // Git (M11): a changed file's name in its change's colour and its
+        // letter at the right; a folder with changes, a dot.
+        let (ink, letter, dot) = match row {
+            Row::File { path, .. } => match git.change_of(path) {
+                Some(c) => (
+                    crate::git::page::change_color(c, p),
+                    Some((c.letter(), crate::git::page::change_color(c, p))),
+                    false,
+                ),
+                None => (p.ink, None, false),
+            },
+            // (a package's row has its kind and version at the right: its
+            // folders show the dot)
+            Row::Folder { path, .. } => (p.ink, None, git.folder_changed(path)),
+            Row::Package { .. } => (p.ink, None, false),
+        };
+        if let Some((letter, color)) = letter {
+            ui.painter().text(
+                Pos2::new(rect.right() - 16.0, cy),
+                Align2::CENTER_CENTER,
+                letter,
+                Face::PlexSemiBold.at(11.0),
+                color,
+            );
+        }
+        if dot {
+            ui.painter().rect_filled(
+                Rect::from_center_size(Pos2::new(rect.right() - 16.0, cy), Vec2::splat(6.0)),
+                CornerRadius::ZERO,
+                p.warning,
+            );
+        }
+        let text = widgets::galley(ui, name, face.at(12.5), ink, 0.0);
         let text_x = x + 42.0;
         ui.painter().with_clip_rect(rect).galley(
             Pos2::new(text_x, cy - text.size().y / 2.0),
             text.clone(),
-            p.ink,
+            ink,
         );
         if !meta.is_empty() {
             let at = text_x + text.size().x + 8.0;

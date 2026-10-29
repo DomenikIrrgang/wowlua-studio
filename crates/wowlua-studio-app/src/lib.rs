@@ -709,9 +709,12 @@ impl Studio {
             warning: checks_off.is_some(),
             right: &right,
             inset: self.notes.tray_width(),
+            lead: git::bar::width(ui, &self.git),
         };
-        let session_end = chrome::status_bar(ui, status, &self.host.wowlua_version, &session);
+        let (lead_x, session_end) =
+            chrome::status_bar(ui, status, &self.host.wowlua_version, &session);
         let cy = status.center().y;
+        git::bar::button(ui, &mut self.git, &*self.host.system, lead_x, cy);
         let job_w = if self.workspace.is_some() {
             self.jobs.button(ui, session_end + 14.0, cy)
         } else {
@@ -729,6 +732,15 @@ impl Studio {
             layout.reveal(panel, dock::Dock::Bottom);
         }
         self.notes.tray_button(ui, status);
+        if let Some(git::bar::Action::ShowGit) = git::bar::list(
+            &ctx,
+            &mut self.git,
+            &*self.host.system,
+            lead_x,
+            status.top(),
+        ) {
+            self.queue(Command::ShowPage(Page::Git));
+        }
 
         let area_top = title.bottom();
         if self.workspace.is_some() {
@@ -827,7 +839,7 @@ impl Studio {
         let mut actions = Vec::new();
         let mut content = |ui: &mut Ui, panel: Panel| match panel {
             Panel::Explorer => {
-                if let Some(path) = explorer.show(ui, workspace, system) {
+                if let Some(path) = explorer.show(ui, workspace, system, git_state) {
                     opened = Some(path);
                 }
             }
@@ -840,10 +852,27 @@ impl Studio {
                     .map_or(&[][..], Vec::as_slice);
                 // The tests' lenses and the coverage of the active file.
                 let active = editors.active().map(|t| t.doc.path.clone());
-                let lenses = active
+                let mut lenses = active
                     .as_deref()
                     .map(|path| tests::lenses(tests_state, workspace, path))
                     .unwrap_or_default();
+                // Git (M11): the changes since the last commit, a merge's
+                // conflicts and their lenses, the cursor line's blame.
+                let (git_marks, blame) = match (active.as_deref(), editors.active()) {
+                    (Some(path), Some(tab)) => {
+                        let (marks, conflicts, blame) = git::editor::of(
+                            git_state,
+                            system,
+                            path,
+                            &tab.doc,
+                            studio_settings.blame,
+                        );
+                        lenses.extend(git::editor::conflict_lenses(path, &conflicts));
+                        let line = tab.doc.selection.head.line;
+                        (marks, blame.map(|b| (line, b)))
+                    }
+                    _ => (Vec::new(), None),
+                };
                 let tests_at: Vec<usize> = active
                     .as_deref()
                     .and_then(|path| tests_state.discovered.get(path))
@@ -890,6 +919,8 @@ impl Studio {
                     breakpoints: &breakpoints,
                     stopped,
                     inline: &inline,
+                    git_marks: &git_marks,
+                    blame: blame.as_ref().map(|(l, t)| (*l, t.as_str())),
                 };
                 // (below the debugger's bar, when it has one)
                 let rest = ui.available_rect_before_wrap();
@@ -1072,6 +1103,8 @@ impl Studio {
                         breakpoints: &[],
                         stopped: None,
                         inline: &[],
+                        git_marks: &[],
+                        blame: None,
                     };
                     let tab = &mut editors.tabs[i];
                     ui.scope_builder(UiBuilder::new().max_rect(rect), |ui| {
@@ -1142,6 +1175,11 @@ impl Studio {
             self.ship_action(a, ctx);
         }
         git::page::dialogs(ctx, &mut self.git, &*self.host.system);
+        if let Some(git::editor::PopupAction::ShowGit) =
+            git::editor::popup(ctx, &mut self.git, &*self.host.system)
+        {
+            self.queue(Command::ShowPage(Page::Git));
+        }
         if let Some(a) = git_action {
             self.git_action(a, ctx);
         }
@@ -1334,6 +1372,17 @@ impl Studio {
             A::Close(i) => self.close_tab(i),
             // (taken above)
             A::ToggleBreakpoint(_) | A::EditBreakpoint(_) | A::Manifest { .. } => {}
+            A::GitMark(line, at) => {
+                if let Some(rel) = self.git.relative(&doc.path) {
+                    self.git.mark_popup = Some((rel, line, at));
+                }
+            }
+            A::Blame(line) => {
+                if let Some(hash) = git::editor::blame_commit(&self.git, &doc.path, line) {
+                    self.git.selected = Some(git::Selected::Commit(hash));
+                    self.queue(Command::ShowPage(Page::Git));
+                }
+            }
             A::Hover(at) => self.lsp.hover(doc, at, system),
             A::Complete(at) => self.lsp.complete(doc, at, system),
             A::Resolve(label) => {
@@ -2422,6 +2471,12 @@ impl Studio {
         self.world.json_view = json;
     }
 
+    /// A part of Git's once the repository is read (the screenshot
+    /// harness's `git:`): the branch list, a commit, a dialog.
+    pub fn git_show(&mut self, what: &str) {
+        self.git.harness = Some(what.to_owned());
+    }
+
     /// The ship page on a tab and a profile (the screenshot harness's
     /// `ship:`).
     pub fn ship_show(&mut self, tab: &str, profile: Option<&str>) {
@@ -2945,6 +3000,11 @@ impl Studio {
             }
             C::Debug { file, test } => self.debug_test(&file, test.as_deref()),
             C::Profile { file, test } => self.profile_test(&file, test.as_deref(), ctx),
+            C::Conflict { file, line, take } => {
+                if let Some(i) = self.editors.find(&file) {
+                    git::editor::resolve(&mut self.editors.tabs[i].doc, line, take);
+                }
+            }
         }
     }
 

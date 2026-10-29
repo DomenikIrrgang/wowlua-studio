@@ -39,7 +39,7 @@ pub fn age(time: i64) -> String {
 }
 
 /// The colour of a change's letter.
-fn change_color(change: Change, p: &Palette) -> Color32 {
+pub(crate) fn change_color(change: Change, p: &Palette) -> Color32 {
     match change {
         Change::Modified | Change::Renamed => p.warning,
         Change::Added | Change::Untracked => p.success,
@@ -403,7 +403,7 @@ pub fn changes(ui: &mut Ui, state: &mut GitState, system: &dyn System) -> Option
 }
 
 /// A switch asked for: straight away without changes, else the dialog.
-fn start_switch(state: &mut GitState, system: &dyn System, target: String) {
+pub(crate) fn start_switch(state: &mut GitState, system: &dyn System, target: String) {
     let has_changes = state.status.as_ref().is_some_and(|s| !s.files.is_empty());
     if has_changes {
         if let Some(root) = state.root() {
@@ -772,7 +772,7 @@ fn code_line(ui: &Ui, system: &dyn System, text: &str, color: Color32) -> Layout
 }
 
 /// A row of a diff: the sign, the line's number, its text on a ground.
-fn diff_row(
+pub(crate) fn diff_row(
     ui: &mut Ui,
     system: &dyn System,
     sign: &str,
@@ -1082,6 +1082,12 @@ fn file_view(
 fn commit_view(ui: &mut Ui, state: &mut GitState, system: &dyn System, hash: &str) {
     let p = palette(ui.ctx());
     let Some(c) = state.log.iter().find(|c| c.hash == hash).cloned() else {
+        forms::padded(ui, 20, 14, |ui| {
+            caption(
+                ui,
+                "This commit is older than the history shows (its last 200 commits).",
+            );
+        });
         return;
     };
     forms::padded(ui, 20, 14, |ui| {

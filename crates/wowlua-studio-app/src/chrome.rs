@@ -411,13 +411,21 @@ pub struct Session<'a> {
     pub right: &'a [String],
     /// Room kept at the right end (the notifications' tray).
     pub inset: f32,
+    /// Room kept after wowlua's version (the branch, M11).
+    pub lead: f32,
 }
 
 /// The status bar: wowlua's version and the session, and at its right
 /// the flavor and the client. The theme is a setting, not here (S021).
-/// Returns where the session's text ends: the background jobs and the
-/// problems follow it.
-pub fn status_bar(ui: &mut Ui, rect: Rect, wowlua_version: &str, session: &Session<'_>) -> f32 {
+/// Returns where the room after the version starts (the branch's) and
+/// where the session's text ends: the background jobs and the problems
+/// follow it.
+pub fn status_bar(
+    ui: &mut Ui,
+    rect: Rect,
+    wowlua_version: &str,
+    session: &Session<'_>,
+) -> (f32, f32) {
     let p = palette(ui.ctx());
     let painter = ui.painter().clone();
     painter.rect_filled(rect, CornerRadius::ZERO, p.bg_200);
@@ -435,6 +443,10 @@ pub fn status_bar(ui: &mut Ui, rect: Rect, wowlua_version: &str, session: &Sessi
         p.success,
     );
     x = r.right() + 14.0;
+    let lead = x - 6.0;
+    if session.lead > 0.0 {
+        x += session.lead + 8.0;
+    }
     let r = painter.text(
         Pos2::new(x, cy),
         Align2::LEFT_CENTER,
@@ -448,7 +460,7 @@ pub fn status_bar(ui: &mut Ui, rect: Rect, wowlua_version: &str, session: &Sessi
     );
     let end = r.right();
     if rect.width() < NARROW {
-        return end;
+        return (lead, end);
     }
     let mut right = rect.right() - 10.0 - session.inset;
     for item in session.right.iter().rev() {
@@ -461,7 +473,7 @@ pub fn status_bar(ui: &mut Ui, rect: Rect, wowlua_version: &str, session: &Sessi
         );
         right = r.left() - 14.0;
     }
-    end
+    (lead, end)
 }
 
 /// The workspace's errors and warnings in the status bar, from `x`.
