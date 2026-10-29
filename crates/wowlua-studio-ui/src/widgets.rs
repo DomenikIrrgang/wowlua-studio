@@ -130,6 +130,26 @@ pub fn check_mark(painter: &egui::Painter, center: egui::Pos2, color: Color32) {
     );
 }
 
+/// How wide [`button`] draws a primary, secondary or tertiary button with
+/// this label (its verb's icon included), to leave room for it.
+pub fn button_width(ui: &Ui, label: &str, small: bool) -> f32 {
+    let icon = crate::verbs::icon_for(label);
+    let (pad, size, icon_s, gap) = if small {
+        (12.0, 12.0, 14.0, 6.0)
+    } else {
+        (16.0, 13.0, 16.0, 8.0)
+    };
+    let shown = if icon.is_some() {
+        label.trim_start_matches("+ ")
+    } else {
+        label
+    };
+    let (font, spacing) = label_font(size);
+    let text = galley(ui, shown, font, Color32::WHITE, spacing);
+    let icon_w = if icon.is_some() { icon_s + gap } else { 0.0 };
+    pad * 2.0 + icon_w + text.size().x
+}
+
 /// A command button (Option D): 36 px, or 28 px `small` (Studio's); an
 /// inline one as tall as its text. It leads with `icon`, else the icon of
 /// its label's verb; a removing tertiary or inline action is danger.

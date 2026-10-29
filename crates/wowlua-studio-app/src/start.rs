@@ -468,11 +468,15 @@ impl StartPage {
                         }),
                     });
                     field(ui, "flavors", |ui| {
-                        ui.horizontal_wrapped(|ui| {
-                            ui.spacing_mut().item_spacing.x = 20.0;
-                            // wowlua's flavor table; those coming soon can't be
-                            // picked yet (S034, S064).
-                            for f in crate::flavors::all() {
+                        // wowlua's flavor table, three to a row (a scope
+                        // doesn't wrap); those coming soon can't be picked
+                        // yet (S034, S064).
+                        let all: Vec<&wowlua_flavors::Flavor> = crate::flavors::all().collect();
+                        for row in all.chunks(3) {
+                            grid(ui, w, 3, |ui, col, _| {
+                                let Some(f) = row.get(col) else {
+                                    return;
+                                };
                                 let mut on = form.flavors.contains(&f.id);
                                 let help = if f.is_supported() {
                                     f.name.clone()
@@ -487,14 +491,14 @@ impl StartPage {
                                         }
                                     }
                                 });
-                            }
-                        });
+                            });
+                        }
                     });
                     grid(ui, w, 2, |ui, col, cw| match col {
                         0 => field(ui, "folder", |ui| {
                             ui.horizontal(|ui| {
                                 ui.spacing_mut().item_spacing.x = 8.0;
-                                let choose_w = 84.0;
+                                let choose_w = widgets::button_width(ui, "choose…", false);
                                 if forms::text_input(
                                     ui,
                                     &mut form.folder,
@@ -664,7 +668,7 @@ impl StartPage {
                         0 => field(ui, "folder", |ui| {
                             ui.horizontal(|ui| {
                                 ui.spacing_mut().item_spacing.x = 8.0;
-                                let choose_w = 84.0;
+                                let choose_w = widgets::button_width(ui, "choose…", false);
                                 let input = forms::text_input(
                                     ui,
                                     &mut form.folder,
