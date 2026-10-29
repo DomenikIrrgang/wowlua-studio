@@ -220,6 +220,49 @@ fn stepped(
     });
 }
 
+/// A pool (health, power) under its label: how much is left on a slider up
+/// to the maximum, the maximum a stepper (S065).
+#[allow(clippy::too_many_arguments)]
+fn pool(
+    ui: &mut Ui,
+    cx: &mut Cx<'_>,
+    label: &str,
+    now: Vec<Key>,
+    max: Vec<Key>,
+    width: f32,
+    default_max: f64,
+) {
+    ui.vertical(|ui| {
+        ui.set_width(width);
+        forms::label(ui, label);
+        let mut top = at(cx.root, &max)
+            .and_then(Json::as_f64)
+            .unwrap_or(default_max)
+            .max(1.0);
+        let mut left = at(cx.root, &now)
+            .and_then(Json::as_f64)
+            .unwrap_or(top)
+            .min(top);
+        if controls::slider(
+            ui,
+            &path_of(&now),
+            &mut left,
+            0.0,
+            top,
+            1.0,
+            1.0,
+            "",
+            &[],
+            width,
+        ) {
+            cx.set(now.clone(), Some(number(left)));
+        }
+        if controls::stepper(ui, &path_of(&max), &mut top, Some(1.0), None, 1.0, "max") {
+            cx.set(max, Some(number(top)));
+        }
+    });
+}
+
 /// A level's presets: 1, 10, the flavor's highest.
 fn level_presets(max: u32) -> Vec<(String, f64)> {
     vec![
@@ -891,23 +934,8 @@ fn character(ui: &mut Ui, cx: &mut Cx<'_>) {
     let power_max = max_key(data.as_ref(), "maxPower", "powerMax");
     ui.horizontal(|ui| {
         let w = col(ui, 4);
-        let half = (w - 8.0) / 2.0;
-        ui.vertical(|ui| {
-            ui.set_width(w);
-            forms::label(ui, "health · max");
-            ui.horizontal(|ui| {
-                field(ui, cx, p("health"), Kind::Number, half, "100");
-                field(ui, cx, p(&health_max), Kind::Number, half, "100");
-            });
-        });
-        ui.vertical(|ui| {
-            ui.set_width(w);
-            forms::label(ui, "power · max");
-            ui.horizontal(|ui| {
-                field(ui, cx, p("power"), Kind::Number, half, "0");
-                field(ui, cx, p(&power_max), Kind::Number, half, "100");
-            });
-        });
+        pool(ui, cx, "health", p("health"), p(&health_max), w, 100.0);
+        pool(ui, cx, "power", p("power"), p(&power_max), w, 100.0);
         choice(ui, cx, "power type", p("powerType"), POWER, w);
         ui.vertical(|ui| {
             check(ui, cx, "dead", p("dead"), false);
@@ -1250,28 +1278,15 @@ fn units(ui: &mut Ui, cx: &mut Cx<'_>) {
                                 &yards.map(|(l, n)| (l.to_owned(), n)),
                                 20.0,
                             );
-                            ui.vertical(|ui| {
-                                ui.set_width(w);
-                                forms::label(ui, "health · max");
-                                ui.horizontal(|ui| {
-                                    field(
-                                        ui,
-                                        cx,
-                                        unit_path(&key, "health"),
-                                        Kind::Number,
-                                        half,
-                                        "100",
-                                    );
-                                    field(
-                                        ui,
-                                        cx,
-                                        unit_path(&key, &health_max),
-                                        Kind::Number,
-                                        half,
-                                        "100",
-                                    );
-                                });
-                            });
+                            pool(
+                                ui,
+                                cx,
+                                "health",
+                                unit_path(&key, "health"),
+                                unit_path(&key, &health_max),
+                                w,
+                                100.0,
+                            );
                             ui.vertical(|ui| {
                                 ui.set_width(w);
                                 forms::label(ui, "npc ID · classification");
