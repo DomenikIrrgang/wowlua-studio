@@ -1009,7 +1009,7 @@ impl Studio {
             }
             Panel::Parts => world::parts_panel(ui, world_state, editors, workspace, system),
             Panel::BuildProfiles => {
-                if let Some(a) = ship::profiles(ui, ship_state, editors, workspace, system) {
+                if let Some(a) = ship::profiles(ui, ship_state, workspace, system) {
                     ship_action = Some(a);
                 }
             }
@@ -1998,7 +1998,7 @@ impl Studio {
                 Event::FilesChanged(paths) => {
                     self.explorer.changed(&paths);
                     self.ship.files_changed();
-                    self.manifests.deps.files_changed();
+                    self.manifests.files_changed();
                     if let Some(w) = &self.workspace
                         && paths.iter().any(|p| p.ends_with("wowlua.json"))
                     {
@@ -2057,6 +2057,7 @@ impl Studio {
                 Event::Spells(query, found) => self.world.spells_found(query, found),
                 Event::ClassSpells(class, found) => self.world.class_spells_found(class, found),
                 Event::Ship(event) => self.ship.event(event),
+                Event::Profiles { dir, read } => self.manifests.profiles_read(dir, read),
                 Event::Deps(event) => self.manifests.deps.event(event),
                 Event::Settings(info) => self.settings_page.info(info),
                 Event::Updates(check) => self.settings_page.updates(check),
@@ -2581,6 +2582,13 @@ impl Studio {
                     let note = Notification::new(Kind::Error, "save", e);
                     self.notify(note, ctx);
                 }
+            }
+            ship::Action::EditProfile(path, profile) => {
+                // The profile in its wowlua.json's form, in the editor.
+                self.manifests.show_profile(&path, &profile);
+                self.editors.as_json.remove(&path);
+                self.run(ctx, Command::ShowPage(Page::Files));
+                self.open_file(&path, ctx);
             }
             ship::Action::GoTo(path, line, column) => {
                 let at = lsp::Wire {

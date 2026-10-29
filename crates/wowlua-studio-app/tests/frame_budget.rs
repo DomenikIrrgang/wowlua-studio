@@ -727,7 +727,7 @@ fn the_ship_page_stays_within_the_budget() {
         let started = Instant::now();
         let mut output = ctx.run_ui(input, |ui| {
             ui.scope_builder(UiBuilder::new().max_rect(left), |ui| {
-                ship::profiles(ui, &mut state, &mut editors, &workspace, &NoSystem);
+                ship::profiles(ui, &mut state, &workspace, &NoSystem);
             });
             ui.scope_builder(UiBuilder::new().max_rect(main), |ui| {
                 ship::ship(ui, &mut state, &workspace, &NoSystem, Some(&installation));

@@ -705,6 +705,14 @@ impl System for NativeSystem {
         self.spawn(move || Event::Ship(ShipEvent::Read(Box::new(crate::ship::read(&root)))));
     }
 
+    fn profiles_read(&self, dir: &Path) {
+        let dir = dir.to_path_buf();
+        self.spawn(move || {
+            let read = crate::ship::read(&dir).map(|facts| facts.profiles);
+            Event::Profiles { dir, read }
+        });
+    }
+
     fn ship_tokens(&self, targets: Vec<wowlua_studio_app::system::ShipTarget>) {
         self.spawn(move || Event::Ship(ShipEvent::Tokens(crate::ship::tokens(&targets))));
     }

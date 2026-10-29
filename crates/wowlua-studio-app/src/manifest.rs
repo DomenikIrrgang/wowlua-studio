@@ -16,7 +16,7 @@ use wowlua_studio_ui::{Face, Palette, palette};
 use crate::deps::{self, DepsState};
 use crate::editor::Editors;
 use crate::editor::doc::EditKind;
-use crate::system::{System, Workspace};
+use crate::system::{BuildProfile, System, Workspace};
 use crate::world::json::{self, Key};
 use crate::world::pos_of;
 use crate::world::schema::{self, Kind};
@@ -38,7 +38,7 @@ pub const SECTIONS: &[(&str, &str)] = &[
     ),
     (
         "build",
-        "What goes into a build. Build profiles are on the ship page.",
+        "What goes into a build, and the build profiles the ship page builds.",
     ),
     ("check", "How wowlua checks the sources."),
     ("fmt", "wowlua fmt and format on save."),
@@ -66,6 +66,8 @@ enum How {
     Json,
     /// A link to another page.
     Link(Go),
+    /// Numbers by sub-key, side by side: the key and its label.
+    Fields(&'static [(&'static str, &'static str)]),
 }
 
 /// The pages a row leads to.
@@ -169,12 +171,6 @@ fn rows() -> Vec<Row> {
             Choice(&["split", "shared"]),
         ),
         r(
-            "build",
-            &["profiles"],
-            "The build profiles: edited on the ship page.",
-            Link(Go::Ship),
-        ),
-        r(
             "check",
             &["check", "mode"],
             "",
@@ -221,14 +217,31 @@ fn rows() -> Vec<Row> {
         r(
             "test",
             &["test", "screen"],
-            "width, height, dpiScale, uiScale",
-            Json,
+            "The emulated client's screen for tests.",
+            Fields(&[
+                ("width", "width"),
+                ("height", "height"),
+                ("dpiScale", "dpi scale"),
+                ("uiScale", "ui scale"),
+            ]),
         ),
         r(
             "test",
             &["test", "coverage"],
-            "Minimums by kind (lines, branches, functions, conditions) and exclude.",
-            Json,
+            "Minimums in %: wowlua test --coverage fails below one. Empty: none.",
+            Fields(&[
+                ("lines", "lines"),
+                ("statements", "statements"),
+                ("branches", "branches"),
+                ("functions", "functions"),
+                ("conditions", "conditions"),
+            ]),
+        ),
+        r(
+            "test",
+            &["test", "coverage", "exclude"],
+            "Files left out of coverage (globs).",
+            List,
         ),
         r(
             "test",
@@ -290,6 +303,8 @@ pub struct Manifests {
     views: HashMap<PathBuf, ManifestState>,
     schema: Option<Option<Json>>,
     pub deps: DepsState,
+    /// The build profiles, by the package's folder (S064).
+    profiles: HashMap<PathBuf, ProfilesView>,
 }
 
 impl Manifests {
@@ -302,6 +317,42 @@ impl Manifests {
             self.deps.opened();
         }
     }
+
+    /// The form of `path` on its build section, a profile shown (the ship
+    /// page's "edit in wowlua.json", S064).
+    pub fn show_profile(&mut self, path: &Path, profile: &str) {
+        self.show_section(path, "build");
+        if let Some(dir) = path.parent() {
+            self.profiles.entry(dir.to_path_buf()).or_default().selected = Some(profile.to_owned());
+        }
+    }
+
+    /// The build profiles of the package in `dir`, as wowlua resolves them.
+    pub fn profiles_read(&mut self, dir: PathBuf, read: Result<Vec<BuildProfile>, String>) {
+        let view = self.profiles.entry(dir).or_default();
+        view.reading = false;
+        view.read = Some(read);
+    }
+
+    /// Files changed on disk: what wowlua resolves is read again.
+    pub fn files_changed(&mut self) {
+        for view in self.profiles.values_mut() {
+            view.stale = true;
+        }
+        self.deps.files_changed();
+    }
+}
+
+/// A package's build profiles in its form.
+#[derive(Default)]
+struct ProfilesView {
+    read: Option<Result<Vec<BuildProfile>, String>>,
+    reading: bool,
+    stale: bool,
+    selected: Option<String>,
+    /// A new profile's name being typed.
+    new_profile: Option<String>,
+    buffers: HashMap<String, String>,
 }
 
 /// A wowlua.json's form: its section, what is searched, what is typed.
@@ -451,6 +502,40 @@ fn edit_value(
                 };
                 if widgets::button(ui, ButtonKind::Secondary, label, true, None).clicked() {
                     *go = Some(to);
+                }
+            });
+        }
+        How::Fields(subs) => {
+            // (the fields share the column: as many as fit side by side)
+            let gap = 8.0;
+            let cell = ((width - gap * (subs.len() as f32 - 1.0)) / subs.len() as f32).max(64.0);
+            ui.spacing_mut().item_spacing.x = gap;
+            ui.horizontal_wrapped(|ui| {
+                for (sub, label) in subs {
+                    let mut keys = path.to_vec();
+                    keys.push(sub);
+                    let value = fx.get(&keys).cloned();
+                    let text = shown(value.as_ref(), &How::Number);
+                    let key = keys.join(".");
+                    let mut buffer = fx.buffers.remove(&key).unwrap_or_else(|| text.clone());
+                    let down = egui::Layout::top_down(egui::Align::Min);
+                    ui.allocate_ui_with_layout(Vec2::new(cell, 56.0), down, |ui| {
+                        ui.set_width(cell);
+                        ui.label(
+                            egui::RichText::new(*label)
+                                .font(Face::Plex.at(11.0))
+                                .color(palette(ui.ctx()).ink_muted),
+                        );
+                        let response = forms::text_input(ui, &mut buffer, cell, "");
+                        if response.changed() {
+                            if let Ok(value) = parse(&buffer, &How::Number) {
+                                fx.set(&keys, value, true);
+                            }
+                        } else if !response.has_focus() {
+                            buffer = text;
+                        }
+                    });
+                    fx.buffers.insert(key, buffer);
                 }
             });
         }
@@ -724,6 +809,7 @@ pub fn form(
         views,
         schema,
         deps: deps_state,
+        profiles,
     } = manifests;
     let state = views.entry(path.clone()).or_default();
     let doc = &editors.tabs[tab].doc;
@@ -859,6 +945,11 @@ pub fn form(
                     for r in shown {
                         row(ui, &mut fx, r, p, &mut go);
                     }
+                    if query.is_empty() && name == "build" {
+                        let view = profiles.entry(dir.clone()).or_default();
+                        let schema = schema.as_ref().and_then(Option::as_ref);
+                        profiles_section(ui, view, &root, schema, &mut fx.changes, system, &dir, p);
+                    }
                     caption(
                         ui,
                         "Every key is the schema's, with completion and checks in the json view too. An edit rewrites only that value in wowlua.json, keeping its order.",
@@ -878,6 +969,459 @@ pub fn form(
             None
         }
         other => other.map(Action::Go),
+    }
+}
+
+// ---------------------------------------------------------- build profiles
+
+type Change = (Vec<Key>, Option<Json>, bool);
+
+/// A profile's settings the designed rows draw; the schema's form has the
+/// others.
+const PROFILE_DESIGNED: &[&str] = &[
+    "inherits",
+    "bundle",
+    "minify",
+    "minify-libraries",
+    "optimize",
+    "exclude",
+    "config",
+];
+
+/// A profile's settings in wowlua's schema: its fields, by name.
+fn profile_fields(schema: &Json) -> Vec<schema::Field> {
+    use crate::editor::json::resolve;
+    let Some(profiles) = schema.get("properties").and_then(|p| p.get("profiles")) else {
+        return Vec::new();
+    };
+    let profiles = resolve(schema, profiles);
+    let Some(settings) = profiles.get("additionalProperties") else {
+        return Vec::new();
+    };
+    schema::fields(schema, settings).0
+}
+
+/// A profile's edits of `wowlua.json`.
+struct ProfileFx<'a> {
+    root: &'a Json,
+    profile: &'a BuildProfile,
+    changes: &'a mut Vec<Change>,
+    buffers: &'a mut HashMap<String, String>,
+}
+
+impl ProfileFx<'_> {
+    /// The value this profile sets.
+    fn own(&self, keys: &[&str]) -> Option<&Json> {
+        let mut v = self.root.get("profiles")?.get(&self.profile.name)?;
+        for k in keys {
+            v = v.get(*k)?;
+        }
+        Some(v)
+    }
+
+    /// The value as wowlua resolves it (as of the last read).
+    fn effective(&self, keys: &[&str]) -> Option<&Json> {
+        let mut v = &self.profile.effective;
+        for k in keys {
+            v = v.get(*k)?;
+        }
+        Some(v)
+    }
+
+    fn set(&mut self, keys: &[&str], value: Option<Json>, typing: bool) {
+        let mut path: Vec<Key> = vec!["profiles".into(), Key::Name(self.profile.name.clone())];
+        path.extend(keys.iter().map(|k| Key::Name((*k).to_owned())));
+        self.changes.push((path, value, typing));
+    }
+}
+
+/// How a profile's setting is set.
+enum Ctl<'a> {
+    Flag,
+    Pick(&'a [String]),
+    Text(&'a Kind, &'a str),
+}
+
+/// A profile's setting as a row: its name and help, its control, and
+/// whether it is inherited (or a reset of the profile's own value).
+fn profile_row(
+    ui: &mut Ui,
+    fx: &mut ProfileFx<'_>,
+    label: &str,
+    keys: &[&str],
+    help: &str,
+    ctl: Ctl<'_>,
+    p: &Palette,
+) {
+    let width = ui.available_width();
+    let control = 380.0_f32.min(width * 0.5);
+    let path_text = format!("profiles.{}.{}", fx.profile.name, keys.join("."));
+    forms::centred_row(
+        ui,
+        ("profile", path_text.clone()),
+        width - control - 16.0,
+        control,
+        |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(
+                    egui::RichText::new(label)
+                        .font(Face::PlexMedium.at(12.5))
+                        .color(p.ink),
+                );
+                ui.label(
+                    egui::RichText::new(&path_text)
+                        .font(Face::Plex.at(11.0))
+                        .color(p.ink_faint),
+                );
+            });
+            if !help.is_empty() {
+                caption(ui, help, p);
+            }
+        },
+        |ui| {
+            let own = fx.own(keys).cloned();
+            let effective = fx.effective(keys).cloned();
+            ui.horizontal_wrapped(|ui| {
+                match ctl {
+                    Ctl::Flag => {
+                        let mut on = own
+                            .as_ref()
+                            .or(effective.as_ref())
+                            .and_then(Json::as_bool)
+                            .unwrap_or(false);
+                        let word = if on { "on" } else { "off" };
+                        if forms::checkbox(ui, &mut on, word, None) {
+                            fx.set(keys, Some(Json::Bool(on)), false);
+                        }
+                    }
+                    Ctl::Pick(values) => {
+                        let now = own
+                            .as_ref()
+                            .or(effective.as_ref())
+                            .and_then(Json::as_str)
+                            .unwrap_or("")
+                            .to_owned();
+                        let mut list = values.to_vec();
+                        if !now.is_empty() && !list.contains(&now) {
+                            list.push(now.clone());
+                        }
+                        let mut index = list.iter().position(|v| *v == now).unwrap_or(0);
+                        let opts: Vec<(&str, bool)> =
+                            list.iter().map(|o| (o.as_str(), true)).collect();
+                        let id = format!("mf-{path_text}");
+                        if forms::select(ui, &id, &opts, &mut index, control.min(240.0)) {
+                            fx.set(keys, Some(Json::String(list[index].clone())), false);
+                        }
+                    }
+                    Ctl::Text(kind, hint) => {
+                        let how = match kind {
+                            Kind::Number => How::Number,
+                            Kind::Numbers | Kind::Json => How::List,
+                            _ => How::Text,
+                        };
+                        let text = shown(own.as_ref(), &how);
+                        let inherited = shown(effective.as_ref(), &how);
+                        let buffer = fx
+                            .buffers
+                            .entry(path_text.clone())
+                            .or_insert_with(|| text.clone());
+                        let hint = if inherited.is_empty() {
+                            hint.to_owned()
+                        } else {
+                            inherited
+                        };
+                        let response = forms::text_input(ui, buffer, control.min(240.0), &hint);
+                        if response.changed() {
+                            if let Ok(value) = parse(buffer, &how) {
+                                let value = match (&value, &how) {
+                                    (Some(_), How::Text) => Some(Json::String(buffer.clone())),
+                                    _ => value,
+                                };
+                                fx.set(keys, value, true);
+                            }
+                        } else if !response.has_focus() {
+                            *buffer = text;
+                        }
+                    }
+                }
+                if own.is_some() {
+                    if forms::text_button(ui, "reset").clicked() {
+                        fx.set(keys, None, false);
+                    }
+                } else {
+                    ui.label(
+                        egui::RichText::new("inherited")
+                            .font(Face::Plex.at(10.5))
+                            .color(p.ink_faint),
+                    );
+                }
+            });
+        },
+    );
+    ui.add_space(4.0);
+    let y = ui.cursor().top();
+    ui.painter().line_segment(
+        [
+            egui::pos2(ui.min_rect().left(), y),
+            egui::pos2(ui.min_rect().right(), y),
+        ],
+        egui::Stroke::new(1.0, p.line),
+    );
+    ui.add_space(6.0);
+}
+
+/// The build section's profiles (S064): one shown at a time, each of its
+/// settings set here or inherited; a new one added.
+#[allow(clippy::too_many_arguments)]
+fn profiles_section(
+    ui: &mut Ui,
+    view: &mut ProfilesView,
+    root: &Json,
+    schema: Option<&Json>,
+    changes: &mut Vec<Change>,
+    system: &dyn System,
+    dir: &Path,
+    p: &Palette,
+) {
+    if (view.read.is_none() || view.stale) && !view.reading {
+        view.reading = true;
+        view.stale = false;
+        system.profiles_read(dir);
+    }
+    ui.add_space(14.0);
+    ui.label(
+        egui::RichText::new("profiles")
+            .font(Face::PlexMedium.at(14.0))
+            .color(p.ink),
+    );
+    caption(
+        ui,
+        "How wowlua build makes each profile. The ship page builds them; their settings are edited here. A setting not set comes from what the profile inherits, or wowlua's default.",
+        p,
+    );
+    ui.add_space(6.0);
+    let profiles = match &view.read {
+        Some(Ok(list)) => list.clone(),
+        Some(Err(why)) => {
+            forms::callout(ui, CalloutKind::Error, |ui| {
+                forms::paragraph(ui, why, 12.0, 18.0, p.ink);
+            });
+            return;
+        }
+        None => {
+            caption(ui, "reading the profiles…", p);
+            return;
+        }
+    };
+    if view
+        .selected
+        .as_ref()
+        .is_none_or(|s| !profiles.iter().any(|p| &p.name == s))
+    {
+        view.selected = profiles
+            .iter()
+            .find(|p| p.name == "release")
+            .or(profiles.first())
+            .map(|p| p.name.clone());
+    }
+    // The profiles, and a new one.
+    let names: Vec<&str> = profiles.iter().map(|p| p.name.as_str()).collect();
+    let at = names
+        .iter()
+        .position(|n| Some(*n) == view.selected.as_deref())
+        .unwrap_or(0);
+    let mut added: Option<Option<String>> = None;
+    ui.horizontal_wrapped(|ui| {
+        if let Some(i) = widgets::seg(
+            ui,
+            &format!("mf-profiles-{}", dir.display()),
+            &names,
+            at,
+            true,
+        ) {
+            view.selected = Some(names[i].to_owned());
+        }
+        match &mut view.new_profile {
+            None => {
+                if forms::text_button(ui, "new profile").clicked() {
+                    view.new_profile = Some(String::new());
+                }
+            }
+            Some(name) => {
+                forms::text_input(ui, name, 160.0, "readable");
+                let valid = !name.trim().is_empty() && !names.contains(&name.trim());
+                ui.add_enabled_ui(valid, |ui| {
+                    if widgets::button(
+                        ui,
+                        ButtonKind::Secondary,
+                        "add, inheriting release",
+                        true,
+                        None,
+                    )
+                    .clicked()
+                    {
+                        added = Some(Some(name.trim().to_owned()));
+                    }
+                });
+                if forms::text_button(ui, "cancel").clicked() {
+                    added = Some(None);
+                }
+            }
+        }
+    });
+    if let Some(added) = added {
+        view.new_profile = None;
+        if let Some(name) = added {
+            changes.push((
+                vec!["profiles".into(), Key::Name(name.clone())],
+                Some(serde_json::json!({ "inherits": "release" })),
+                false,
+            ));
+            view.selected = Some(name);
+            view.stale = true;
+        }
+    }
+    let Some(profile) = view
+        .selected
+        .as_ref()
+        .and_then(|s| profiles.iter().find(|p| &p.name == s))
+    else {
+        return;
+    };
+    ui.add_space(4.0);
+    if profile.chain.len() > 1 {
+        caption(
+            ui,
+            &format!(
+                "{} inherits {}",
+                profile.name,
+                profile.chain[..profile.chain.len() - 1].join(" → ")
+            ),
+            p,
+        );
+    }
+    if let Some(why) = &profile.problem {
+        forms::callout(ui, CalloutKind::Error, |ui| {
+            forms::paragraph(ui, why, 12.0, 18.0, p.ink);
+        });
+        return;
+    }
+    ui.add_space(6.0);
+    let mut fx = ProfileFx {
+        root,
+        profile,
+        changes,
+        buffers: &mut view.buffers,
+    };
+    let levels: Vec<String> = ["none", "strip", "compact", "rename", "max"]
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect();
+    let cache: Vec<String> = vec!["off".into(), "safe".into()];
+    profile_row(
+        ui,
+        &mut fx,
+        "bundle",
+        &["bundle"],
+        "Into one file.",
+        Ctl::Flag,
+        p,
+    );
+    profile_row(
+        ui,
+        &mut fx,
+        "minify",
+        &["minify"],
+        "",
+        Ctl::Pick(&levels),
+        p,
+    );
+    profile_row(
+        ui,
+        &mut fx,
+        "minify libraries",
+        &["minify-libraries"],
+        "",
+        Ctl::Flag,
+        p,
+    );
+    profile_row(
+        ui,
+        &mut fx,
+        "inline",
+        &["optimize", "inline"],
+        "",
+        Ctl::Flag,
+        p,
+    );
+    profile_row(
+        ui,
+        &mut fx,
+        "cache globals",
+        &["optimize", "cache-globals"],
+        "",
+        Ctl::Pick(&cache),
+        p,
+    );
+    profile_row(
+        ui,
+        &mut fx,
+        "remove dead code",
+        &["optimize", "dead-code"],
+        "",
+        Ctl::Flag,
+        p,
+    );
+    profile_row(
+        ui,
+        &mut fx,
+        "constants",
+        &["optimize", "constants"],
+        "",
+        Ctl::Flag,
+        p,
+    );
+    profile_row(
+        ui,
+        &mut fx,
+        "exclude",
+        &["exclude"],
+        "Files left out of this profile's build (globs).",
+        Ctl::Text(&Kind::Numbers, "src/Diagnostics/**"),
+        p,
+    );
+    let fields = schema.map(profile_fields).unwrap_or_default();
+    let mut left = Vec::new();
+    for f in fields
+        .iter()
+        .filter(|f| !PROFILE_DESIGNED.contains(&f.name.as_str()))
+    {
+        let keys = [f.name.as_str()];
+        match &f.kind {
+            Kind::Bool => profile_row(ui, &mut fx, &f.name, &keys, &f.help, Ctl::Flag, p),
+            Kind::Choice(values) => {
+                profile_row(ui, &mut fx, &f.name, &keys, &f.help, Ctl::Pick(values), p)
+            }
+            Kind::Text | Kind::Number | Kind::Scalar => profile_row(
+                ui,
+                &mut fx,
+                &f.name,
+                &keys,
+                &f.help,
+                Ctl::Text(&f.kind, ""),
+                p,
+            ),
+            _ => left.push(f.name.clone()),
+        }
+    }
+    if fields.is_empty() {
+        caption(
+            ui,
+            "wowlua's schema is not here: edit the other settings in the json.",
+            p,
+        );
+    } else if !left.is_empty() {
+        caption(ui, &format!("In the json: {}.", left.join(", ")), p);
     }
 }
 

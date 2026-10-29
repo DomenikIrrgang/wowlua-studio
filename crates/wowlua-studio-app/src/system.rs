@@ -177,6 +177,12 @@ pub enum Event {
     ClassSpells(String, Vec<ClassSpell>),
     /// The ship page's news (S061).
     Ship(ShipEvent),
+    /// The build profiles of the package in a folder, as wowlua resolves
+    /// them, for its wowlua.json's form (S064).
+    Profiles {
+        dir: PathBuf,
+        read: Result<Vec<BuildProfile>, String>,
+    },
     /// The dependencies page's news (S062).
     Deps(DepsEvent),
     /// The settings page's facts of this computer (S062).
@@ -1549,6 +1555,8 @@ pub trait System {
     }
     /// What the ship page shows of the package (→ [`ShipEvent::Read`]).
     fn ship_read(&self, _root: &Path) {}
+    /// The build profiles of the package in `dir` (→ [`Event::Profiles`]).
+    fn profiles_read(&self, _dir: &Path) {}
     /// The targets' tokens' states (→ [`ShipEvent::Tokens`]): the OS
     /// credential store may ask the user first.
     fn ship_tokens(&self, _targets: Vec<ShipTarget>) {}
