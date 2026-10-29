@@ -762,6 +762,7 @@ pub fn studio(
         .show(ui, |ui| {
             forms::padded(ui, 24, 8, |ui| {
                 ui.set_width(ui.available_width());
+                let notices = ui.cursor().top();
                 if query.is_empty() {
                     match section {
                         Section::Claude => {
@@ -824,6 +825,9 @@ pub fn studio(
                         _ => {}
                     }
                 }
+                if ui.cursor().top() > notices {
+                    ui.add_space(10.0);
+                }
                 let all = rows();
                 let shown: Vec<&Row> = all
                     .iter()
@@ -874,9 +878,17 @@ fn row(
     let mut action = None;
     let width = ui.available_width();
     let control = 360.0_f32.min(width * 0.5);
+    // (both columns centred on the row: each pads by half of what it is
+    // shorter than the other, by their heights of the last frame)
+    let id = egui::Id::unique(("wowlua-studio-setting-row", r.label));
+    let (left_h, right_h): (f32, f32) = ui.data(|d| d.get_temp(id)).unwrap_or_default();
+    let tall = left_h.max(right_h);
+    let mut measured = (0.0, 0.0);
     ui.horizontal(|ui| {
         ui.vertical(|ui| {
             ui.set_width(width - control - 16.0);
+            ui.add_space(((tall - left_h) / 2.0).max(0.0));
+            let top = ui.cursor().top();
             ui.horizontal_wrapped(|ui| {
                 ui.label(
                     egui::RichText::new(r.label)
@@ -898,10 +910,13 @@ fn row(
                         .color(p.ink_muted),
                 );
             }
+            measured.0 = ui.min_rect().bottom() - top;
         });
         ui.vertical(|ui| {
             ui.set_width(control);
             ui.set_max_width(control);
+            ui.add_space(((tall - right_h) / 2.0).max(0.0));
+            let top = ui.cursor().top();
             match &r.kind {
                 Kind::Flag(get, set) => {
                     let mut on = get(settings);
@@ -1026,8 +1041,13 @@ fn row(
                     });
                 }
             }
+            measured.1 = ui.min_rect().bottom() - top;
         });
     });
+    if (measured.0 - left_h).abs() > 0.5 || (measured.1 - right_h).abs() > 0.5 {
+        ui.data_mut(|d| d.insert_temp(id, measured));
+        ui.ctx().request_repaint();
+    }
     ui.add_space(4.0);
     let y = ui.cursor().top();
     ui.painter().line_segment(
