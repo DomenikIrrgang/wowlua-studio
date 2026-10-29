@@ -98,7 +98,31 @@ enum How {
     Lints,
     /// A texture: one of the package's, or a game texture by its path.
     Texture,
+    /// A folder of the package (relative), typed or chosen; its default.
+    Folder(&'static str),
+    /// An SPDX licence: a common one, or another typed.
+    License,
 }
+
+/// The licences offered first (SPDX).
+const LICENSES: &[&str] = &[
+    "MIT",
+    "Apache-2.0",
+    "GPL-3.0-or-later",
+    "GPL-2.0-or-later",
+    "LGPL-3.0-or-later",
+    "MPL-2.0",
+    "BSD-3-Clause",
+    "BSD-2-Clause",
+    "ISC",
+    "Unlicense",
+    "CC0-1.0",
+];
+
+/// The client's locales.
+const LOCALES: &[&str] = &[
+    "enUS", "enGB", "deDE", "frFR", "esES", "esMX", "itIT", "ptBR", "ruRU", "koKR", "zhCN", "zhTW",
+];
 
 /// The game's UI Scale slider (Blizzard's Graphics.lua, wowlua T508).
 const UI_SCALE: (f64, f64, f64) = (0.65, 1.15, 0.01);
@@ -154,7 +178,27 @@ fn rows() -> Vec<Row> {
             Choice(&["addon", "library", "lua-library", "types"]),
         ),
         r("package", &["package", "description"], "", Text),
+        r("package", &["package", "authors"], "", List),
+        r(
+            "package",
+            &["package", "license"],
+            "SPDX licence expression.",
+            License,
+        ),
         r("package", &["package", "repository"], "", Text),
+        r("package", &["package", "homepage"], "", Text),
+        r(
+            "package",
+            &["package", "keywords"],
+            "Words the registry finds the package by.",
+            List,
+        ),
+        r(
+            "package",
+            &["package", "main"],
+            "A library's main module (src/init.wowlua when not set).",
+            Text,
+        ),
         r(
             "addon",
             &["addon", "name"],
@@ -218,10 +262,82 @@ fn rows() -> Vec<Row> {
             Choice(&["split", "shared"]),
         ),
         r(
+            "build",
+            &["build", "src"],
+            "Where the sources are.",
+            Folder("src"),
+        ),
+        r(
+            "build",
+            &["build", "out"],
+            "Where builds go.",
+            Folder("dist"),
+        ),
+        r(
+            "build",
+            &["build", "libs-dir"],
+            "Where libraries are embedded.",
+            Folder("libs"),
+        ),
+        r(
+            "build",
+            &["build", "exclude"],
+            "Sources left out of builds (globs).",
+            List,
+        ),
+        r(
+            "build",
+            &["build", "keep"],
+            "Files kept as they are (globs).",
+            List,
+        ),
+        r(
+            "build",
+            &["build", "toc-layout"],
+            "One TOC, or one per flavor.",
+            Choice(&["auto", "single", "per-flavor"]),
+        ),
+        r(
+            "build",
+            &["build", "locales"],
+            "Load the client's locale only, or all.",
+            Choice(&["client", "all"]),
+        ),
+        r(
+            "build",
+            &["build", "locales-dir"],
+            "Where the locales are.",
+            Folder("locales"),
+        ),
+        r(
+            "build",
+            &["build", "locale-base"],
+            "The locale the others fall back to.",
+            Values(LOCALES.iter().map(|l| (*l).to_owned()).collect()),
+        ),
+        r(
             "check",
             &["check", "mode"],
             "",
             Choice(&["nocheck", "basic", "strict"]),
+        ),
+        r(
+            "check",
+            &["check", "strict"],
+            "Files checked strictly in basic mode (globs).",
+            List,
+        ),
+        r(
+            "check",
+            &["check", "globals"],
+            "Globals the code may use without declaring them.",
+            List,
+        ),
+        r(
+            "check",
+            &["check", "lua"],
+            "Check plain .lua files too.",
+            Flag,
         ),
         r(
             "check",
@@ -442,6 +558,9 @@ struct Fx<'a> {
     wowlua: &'a str,
     /// The package's textures as the game names them.
     textures: &'a [String],
+    /// The package's folder, and the system to choose folders with.
+    dir: &'a Path,
+    system: &'a dyn System,
 }
 
 impl Fx<'_> {
@@ -745,6 +864,70 @@ fn edit_value(
                 &current,
                 width,
                 "Interface\\Icons\\INV_Misc_QuestionMark",
+            );
+        }
+        How::Folder(default) => {
+            let current = now.as_ref().and_then(Json::as_str).unwrap_or("").to_owned();
+            ui.horizontal(|ui| {
+                let choose_w = widgets::button_width(ui, "choose…", true);
+                typed_text(
+                    ui,
+                    fx,
+                    path,
+                    &current,
+                    (width - choose_w - 8.0).max(120.0),
+                    default,
+                );
+                if widgets::button(ui, ButtonKind::Secondary, "choose…", true, None).clicked()
+                    && let Some(picked) = fx
+                        .system
+                        .pick_folder(path.last().copied().unwrap_or("folder"))
+                {
+                    // (relative to the package, as wowlua.json writes it)
+                    let rel = picked
+                        .strip_prefix(fx.dir)
+                        .map(|r| r.to_string_lossy().replace('\\', "/"))
+                        .unwrap_or_else(|_| picked.to_string_lossy().into_owned());
+                    fx.set(path, Some(Json::String(rel)), false);
+                }
+            });
+        }
+        How::License => {
+            let current = now.as_ref().and_then(Json::as_str).unwrap_or("").to_owned();
+            let mut names: Vec<String> = vec!["(not set)".into()];
+            names.extend(LICENSES.iter().map(|l| (*l).to_owned()));
+            if !current.is_empty() && !LICENSES.contains(&current.as_str()) {
+                names.push(format!("{current} · another licence"));
+            }
+            let mut index = if current.is_empty() {
+                0
+            } else {
+                LICENSES
+                    .iter()
+                    .position(|l| *l == current)
+                    .map_or(names.len() - 1, |i| i + 1)
+            };
+            let opts: Vec<(&str, bool)> = names.iter().map(|n| (n.as_str(), true)).collect();
+            if forms::select(
+                ui,
+                &format!("mf-{}", path.join(".")),
+                &opts,
+                &mut index,
+                width.min(300.0),
+            ) {
+                if index == 0 {
+                    fx.set(path, None, false);
+                } else if let Some(l) = LICENSES.get(index - 1) {
+                    fx.set(path, Some(Json::String((*l).to_owned())), false);
+                }
+            }
+            typed_text(
+                ui,
+                fx,
+                path,
+                &current,
+                width.min(300.0),
+                "or another SPDX expression",
             );
         }
         How::Lints => {
@@ -1613,6 +1796,8 @@ pub fn form(
             profiles: world_profiles,
             wowlua: wowlua_version,
             textures: state.textures.as_deref().unwrap_or(&[]),
+            dir: &dir,
+            system,
         };
         if query.is_empty() && state.section == deps_section {
             // The dependencies: the TOC's other AddOns, then the view of
