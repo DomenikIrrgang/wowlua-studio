@@ -92,6 +92,8 @@ enum How {
     Requirement,
     /// The changelog: a file, git's history or none.
     Changelog,
+    /// Extra TOC directives: one of wowlua's known ones, and its value.
+    TocExtra,
 }
 
 /// The game's UI Scale slider (Blizzard's Graphics.lua, wowlua T508).
@@ -169,6 +171,12 @@ fn rows() -> Vec<Row> {
             &["addon", "saved-variables-per-character"],
             "",
             List,
+        ),
+        r(
+            "addon",
+            &["addon", "toc-extra"],
+            "TOC lines wowlua doesn't write from wowlua.json, written as they are.",
+            TocExtra,
         ),
         r(
             "addon",
@@ -691,6 +699,69 @@ fn edit_value(
                 let text = shown(now.as_ref(), &How::Text);
                 typed_text(ui, fx, path, &text, width, "CHANGELOG.md");
             }
+        }
+        How::TocExtra => {
+            let set: Vec<(String, String)> = now
+                .as_ref()
+                .and_then(Json::as_object)
+                .map(|o| {
+                    o.iter()
+                        .map(|(k, v)| {
+                            (
+                                k.clone(),
+                                v.as_str().map_or_else(|| v.to_string(), str::to_owned),
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let p = palette(ui.ctx());
+            ui.vertical(|ui| {
+                for (key, value) in &set {
+                    let keys: Vec<&str> = path.iter().copied().chain([key.as_str()]).collect();
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(key)
+                                .font(Face::PlexMedium.at(12.0))
+                                .color(p.ink),
+                        );
+                        typed_text(ui, fx, &keys, value, (width - 200.0).max(120.0), "");
+                        if widgets::button(ui, ButtonKind::Tertiary, "remove", true, None).clicked()
+                        {
+                            fx.set(&keys, None, false);
+                        }
+                    });
+                    if let Some(d) = wowlua_toc::extra_directives()
+                        .iter()
+                        .find(|d| d.name.eq_ignore_ascii_case(key))
+                    {
+                        caption(ui, d.meaning, p);
+                    }
+                    ui.add_space(4.0);
+                }
+                // (the known ones not set yet; any X- field can be typed in the json)
+                let offered: Vec<&wowlua_toc::KnownDirective> = wowlua_toc::extra_directives()
+                    .iter()
+                    .filter(|d| !set.iter().any(|(k, _)| k.eq_ignore_ascii_case(d.name)))
+                    .collect();
+                if !offered.is_empty() {
+                    let mut names: Vec<&str> = vec!["add a directive"];
+                    names.extend(offered.iter().map(|d| d.name));
+                    let opts: Vec<(&str, bool)> = names.iter().map(|n| (*n, true)).collect();
+                    let mut at = 0;
+                    if forms::select(
+                        ui,
+                        &format!("mf-{}-add", path.join(".")),
+                        &opts,
+                        &mut at,
+                        width.min(300.0),
+                    ) && at > 0
+                    {
+                        let keys: Vec<&str> = path.iter().copied().chain([names[at]]).collect();
+                        fx.set(&keys, Some(Json::String(String::new())), false);
+                    }
+                }
+            });
         }
         How::WorldProfile => {
             let current = now.as_ref().and_then(Json::as_str).unwrap_or("").to_owned();

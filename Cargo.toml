@@ -58,6 +58,7 @@ wowlua-pkg = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "211a1b98
 wowlua-test = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "211a1b982f0a1bdd93f06390a852fd49bc8c6ae7" }
 wowlua-lsp = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "211a1b982f0a1bdd93f06390a852fd49bc8c6ae7" }
 wowlua-span = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "211a1b982f0a1bdd93f06390a852fd49bc8c6ae7" }
+wowlua-toc = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "211a1b982f0a1bdd93f06390a852fd49bc8c6ae7" }
 wowlua-syntax = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "211a1b982f0a1bdd93f06390a852fd49bc8c6ae7" }
 
 [workspace.lints.rust]

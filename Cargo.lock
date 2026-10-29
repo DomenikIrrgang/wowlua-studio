@@ -5865,6 +5865,7 @@ dependencies = [
  "serde_json",
  "wowlua-flavors",
  "wowlua-studio-ui",
+ "wowlua-toc",
 ]
 
 [[package]]
