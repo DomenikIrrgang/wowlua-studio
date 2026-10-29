@@ -139,6 +139,9 @@ const DESIGNED: &[&str] = &[
     "equipment",
     "bags",
     "savedVariables",
+    "money",
+    "position",
+    "screen",
 ];
 
 /// Game art read from the installation, as textures (S060): asked for

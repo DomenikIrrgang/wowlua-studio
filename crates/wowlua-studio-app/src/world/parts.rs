@@ -478,9 +478,258 @@ pub fn designed(ui: &mut Ui, cx: &mut Cx<'_>, part: &str) -> Option<Action> {
         "equipment" => equipment(ui, cx),
         "bags" => bags(ui, cx),
         "savedVariables" => return saved_variables(ui, cx),
+        "money" => money(ui, cx),
+        "position" => position(ui, cx),
+        "screen" => screen(ui, cx),
         _ => {}
     }
     None
+}
+
+/// The money (S065): gold, silver and copper, kept in copper.
+fn money(ui: &mut Ui, cx: &mut Cx<'_>) {
+    let path = vec![name("money")];
+    let copper = at(cx.root, &path)
+        .and_then(Json::as_f64)
+        .unwrap_or(0.0)
+        .max(0.0)
+        .round();
+    let (mut g, mut s, mut c) = (
+        (copper / 10_000.0).floor(),
+        ((copper / 100.0) % 100.0).floor(),
+        copper % 100.0,
+    );
+    let mut changed = false;
+    ui.horizontal_wrapped(|ui| {
+        changed |= controls::stepper(ui, "money.gold", &mut g, Some(0.0), None, 1.0, "gold");
+        changed |= controls::stepper(
+            ui,
+            "money.silver",
+            &mut s,
+            Some(0.0),
+            Some(99.0),
+            1.0,
+            "silver",
+        );
+        changed |= controls::stepper(
+            ui,
+            "money.copper",
+            &mut c,
+            Some(0.0),
+            Some(99.0),
+            1.0,
+            "copper",
+        );
+    });
+    if changed {
+        cx.set(path, Some(number(g * 10_000.0 + s * 100.0 + c)));
+    }
+    caption(ui, "Applied as mock.player:setMoney, in copper.");
+}
+
+/// Where the character is (S065): the map and zone, the place on the map
+/// as sliders, the facing on a compass, `UnitPosition`'s coordinates as
+/// fields.
+fn position(ui: &mut Ui, cx: &mut Cx<'_>) {
+    let p = |f: &str| vec![name("position"), name(f)];
+    let w = col(ui, 3);
+    ui.horizontal(|ui| {
+        stepped(
+            ui,
+            cx,
+            "map ID",
+            p("mapID"),
+            w,
+            (Some(0.0), None),
+            "",
+            &[],
+            0.0,
+        );
+        input(ui, cx, "zone", p("zone"), Kind::Text, w, "Elwynn Forest");
+        input(
+            ui,
+            cx,
+            "sub-zone",
+            p("subZone"),
+            Kind::Text,
+            w,
+            "Northshire Valley",
+        );
+    });
+    ui.add_space(8.0);
+    let width = ui.available_width().min(520.0);
+    for (key, label) in [("x", "x · across the map"), ("y", "y · down the map")] {
+        forms::label(ui, label);
+        let path = p(key);
+        let mut v = at(cx.root, &path).and_then(Json::as_f64).unwrap_or(0.5);
+        let ticks = [(0.0, "0%"), (0.5, "50%"), (1.0, "100%")];
+        if controls::slider(
+            ui,
+            &path_of(&path),
+            &mut v,
+            0.0,
+            1.0,
+            0.001,
+            100.0,
+            "%",
+            &ticks,
+            width,
+        ) {
+            cx.set(path, Some(number(v)));
+        }
+        ui.add_space(4.0);
+    }
+    forms::label(ui, "facing · counter-clockwise from north");
+    let path = p("facing");
+    let mut v = at(cx.root, &path).and_then(Json::as_f64).unwrap_or(0.0);
+    let tau = std::f64::consts::TAU;
+    let ticks = [
+        (0.0, "N"),
+        (tau / 4.0, "W"),
+        (tau / 2.0, "S"),
+        (tau * 0.75, "E"),
+        (tau, "N"),
+    ];
+    if controls::slider(
+        ui,
+        &path_of(&path),
+        &mut v,
+        0.0,
+        tau,
+        // (radians kept, shown in whole degrees)
+        std::f64::consts::PI / 180.0,
+        180.0 / std::f64::consts::PI,
+        "°",
+        &ticks,
+        width,
+    ) {
+        cx.set(path, Some(number(v)));
+    }
+    ui.add_space(8.0);
+    forms::label(ui, "world · UnitPosition's coordinates");
+    ui.horizontal_wrapped(|ui| {
+        for (key, unit, step) in [
+            ("y", "y", 0.1),
+            ("x", "x", 0.1),
+            ("z", "z", 0.1),
+            ("instanceID", "instance", 1.0),
+        ] {
+            let path = vec![name("position"), name("world"), name(key)];
+            let before = at(cx.root, &path).and_then(Json::as_f64).unwrap_or(0.0);
+            let mut v = before;
+            if controls::stepper(ui, &path_of(&path), &mut v, None, None, step, unit)
+                && (v - before).abs() > 1e-9
+            {
+                cx.set(path, Some(number(v)));
+            }
+        }
+    });
+    caption(ui, "Applied as mock.moveTo.");
+}
+
+/// The screen (S065): its size (three, or custom), its DPI scale and the
+/// game's own UI Scale control; off leaves the client's scale.
+fn screen(ui: &mut Ui, cx: &mut Cx<'_>) {
+    const SIZES: &[(u32, u32)] = &[(1920, 1080), (2560, 1440), (3840, 2160)];
+    let p = |f: &str| vec![name("screen"), name(f)];
+    let width = ui.available_width().min(520.0);
+    let w = at(cx.root, &p("width")).and_then(Json::as_f64);
+    let h = at(cx.root, &p("height")).and_then(Json::as_f64);
+    let mut labels: Vec<String> = SIZES.iter().map(|(w, h)| format!("{w} × {h}")).collect();
+    labels.push("custom…".into());
+    let at_size = match (w, h) {
+        (None, None) => 0,
+        (Some(w), Some(h)) => SIZES
+            .iter()
+            .position(|(sw, sh)| f64::from(*sw) == w && f64::from(*sh) == h)
+            .unwrap_or(SIZES.len()),
+        _ => SIZES.len(),
+    };
+    let custom_id = egui::Id::unique("wowlua-studio-profile-screen-custom");
+    let custom: bool = ui.data(|d| d.get_temp(custom_id)).unwrap_or(false);
+    let mut index = if custom { SIZES.len() } else { at_size };
+    forms::label(ui, "size");
+    let opts: Vec<(&str, bool)> = labels.iter().map(|l| (l.as_str(), true)).collect();
+    if forms::select(
+        ui,
+        "profile-screen-size",
+        &opts,
+        &mut index,
+        width.min(240.0),
+    ) {
+        ui.data_mut(|d| d.insert_temp(custom_id, index == SIZES.len()));
+        if let Some((sw, sh)) = SIZES.get(index) {
+            cx.set(p("width"), Some(json!(sw)));
+            cx.set(p("height"), Some(json!(sh)));
+        }
+    }
+    if index == SIZES.len() {
+        ui.horizontal_wrapped(|ui| {
+            for (key, unit, fallback, (lo, hi)) in [
+                ("width", "×", 1920.0, (640.0, 7680.0)),
+                ("height", "px", 1080.0, (480.0, 4320.0)),
+            ] {
+                let path = p(key);
+                let mut v = at(cx.root, &path)
+                    .and_then(Json::as_f64)
+                    .unwrap_or(fallback);
+                if controls::stepper(ui, &path_of(&path), &mut v, Some(lo), Some(hi), 1.0, unit) {
+                    cx.set(path, Some(number(v)));
+                }
+            }
+        });
+    }
+    ui.add_space(6.0);
+    forms::label(ui, "DPI scale");
+    let dpis = [1.0, 1.25, 1.5, 2.0];
+    let dpi = at(cx.root, &p("dpiScale"))
+        .and_then(Json::as_f64)
+        .unwrap_or(1.0);
+    let names: Vec<String> = dpis.iter().map(|d| format!("{d}")).collect();
+    let mut at_dpi = dpis
+        .iter()
+        .position(|d| (d - dpi).abs() < 1e-9)
+        .unwrap_or(0);
+    let opts: Vec<(&str, bool)> = names.iter().map(|l| (l.as_str(), true)).collect();
+    if forms::select(
+        ui,
+        "profile-screen-dpi",
+        &opts,
+        &mut at_dpi,
+        width.min(240.0),
+    ) {
+        cx.set(p("dpiScale"), Some(number(dpis[at_dpi])));
+    }
+    ui.add_space(6.0);
+    let path = p("uiScale");
+    let scale = at(cx.root, &path).and_then(Json::as_f64);
+    let mut on = scale.is_some();
+    if forms::checkbox(
+        ui,
+        &mut on,
+        "Use UI Scale",
+        Some("off: the client's own scale"),
+    ) {
+        cx.set(path.clone(), on.then(|| number(1.0)));
+    }
+    if let Some(s) = scale {
+        let mut v = s;
+        let ticks = [(0.65, "65%"), (1.0, "100%"), (1.15, "115%")];
+        if controls::slider(
+            ui,
+            &path_of(&path),
+            &mut v,
+            0.65,
+            1.15,
+            0.01,
+            100.0,
+            "%",
+            &ticks,
+            width,
+        ) {
+            cx.set(path, Some(number(v)));
+        }
+    }
 }
 
 /// The classes a flavor has, by file name and short name.
