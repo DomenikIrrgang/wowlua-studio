@@ -439,11 +439,24 @@ pub fn tags(
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 6.0;
-                            ui.label(
-                                egui::RichText::new(item)
-                                    .font(Face::Plex.at(12.0))
-                                    .color(p.ink),
-                            );
+                            // (a tag no wider than the field: a long one is
+                            // cut with …, its whole text under the pointer)
+                            let text_w = ui.fonts_mut(|f| {
+                                f.layout_no_wrap(item.clone(), Face::Plex.at(12.0), p.ink)
+                                    .size()
+                                    .x
+                            });
+                            let room = (width - 8.0 - 7.0 - 2.0 - 6.0 - 18.0 - 8.0).max(40.0);
+                            ui.allocate_ui(Vec2::new(text_w.min(room), 18.0), |ui| {
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(item)
+                                            .font(Face::Plex.at(12.0))
+                                            .color(p.ink),
+                                    )
+                                    .truncate(),
+                                );
+                            });
                             if let Some((m, _)) = &info {
                                 let c = if bad { p.error } else { p.ink_muted };
                                 ui.label(egui::RichText::new(m).font(Face::Plex.at(11.0)).color(c));
@@ -467,20 +480,33 @@ pub fn tags(
                         });
                     });
             }
-            let output = TextEdit::singleline(&mut typed)
-                .id(id.with("input"))
-                .frame(Frame::NONE)
-                .margin(Margin::symmetric(4, 3))
-                .font(Face::Plex.at(12.0))
-                .text_color(p.ink)
-                .hint_text(
-                    egui::RichText::new(placeholder)
+            // The field to type in: one cell as tall as a tag, its text
+            // and hint centred on it, in from the edge as in every field.
+            let cell = Vec2::new(90.0_f32.max(ui.available_width() - 4.0), 22.0);
+            let down = egui::Layout::left_to_right(egui::Align::Center);
+            let row = ui.fonts_mut(|f| f.row_height(&Face::Plex.at(12.0)));
+            let response = ui
+                .allocate_ui_with_layout(cell, down, |ui| {
+                    ui.set_min_size(cell);
+                    ui.add_space(6.0);
+                    TextEdit::singleline(&mut typed)
+                        .id(id.with("input"))
+                        .frame(Frame::NONE)
+                        .margin(Margin::ZERO)
+                        .min_size(Vec2::new(cell.x - 10.0, row))
                         .font(Face::Plex.at(12.0))
-                        .color(p.ink_muted),
-                )
-                .desired_width(90.0_f32.max(ui.available_width() - 4.0))
-                .show(ui);
-            let response = output.response.response;
+                        .text_color(p.ink)
+                        .hint_text(
+                            egui::RichText::new(placeholder)
+                                .font(Face::Plex.at(12.0))
+                                .color(p.ink_muted),
+                        )
+                        .desired_width(cell.x - 10.0)
+                        .show(ui)
+                        .response
+                        .response
+                })
+                .inner;
             focused = response.has_focus();
             let enter = response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
             let comma = typed.ends_with(',');

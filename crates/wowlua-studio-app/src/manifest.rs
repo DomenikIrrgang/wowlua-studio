@@ -719,7 +719,8 @@ fn edit_value(
             ui.vertical(|ui| {
                 for (key, value) in &set {
                     let keys: Vec<&str> = path.iter().copied().chain([key.as_str()]).collect();
-                    ui.horizontal(|ui| {
+                    // (the name centred on its value's field)
+                    forms::bar(ui, |ui| {
                         ui.label(
                             egui::RichText::new(key)
                                 .font(Face::PlexMedium.at(12.0))

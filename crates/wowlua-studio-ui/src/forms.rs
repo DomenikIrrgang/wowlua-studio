@@ -194,11 +194,24 @@ pub fn select(
     );
     widgets::focus_ring(ui, rect, &response);
     let mut changed = false;
+    // (the list is as wide as its longest option, never narrower than the
+    // box)
+    let widest = options
+        .iter()
+        .map(|(text, _)| {
+            ui.fonts_mut(|f| {
+                f.layout_no_wrap((*text).to_owned(), Face::Plex.at(13.0), p.ink)
+                    .size()
+                    .x
+            })
+        })
+        .fold(0.0_f32, f32::max);
+    let list_w = width.max(widest + 8.0 + 16.0);
     egui::Popup::menu(&response)
         .id(egui::Id::unique(("wowlua-studio-select", id)))
-        .width(width)
+        .width(list_w)
         .show(|ui| {
-            ui.set_min_width(width - 8.0);
+            ui.set_min_width(list_w - 8.0);
             for (i, &(text, can)) in options.iter().enumerate() {
                 let w = ui.available_width();
                 let (r, row) = ui.allocate_exact_size(
