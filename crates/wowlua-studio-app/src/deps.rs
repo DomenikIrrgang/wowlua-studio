@@ -199,7 +199,7 @@ pub fn show(ui: &mut Ui, state: &mut DepsState, workspace: &Workspace, system: &
     let p = palette(ui.ctx());
     // The bar.
     forms::padded(ui, 16, 8, |ui| {
-        ui.horizontal(|ui| {
+        forms::bar(ui, |ui| {
             ui.label(
                 egui::RichText::new("dependencies")
                     .font(Face::PlexMedium.at(12.5))

@@ -47,6 +47,55 @@ pub fn help(ui: &mut Ui, text: &str) -> Response {
     paragraph(ui, text, 12.0, 18.0, p.ink_muted)
 }
 
+/// A page's bar: one row `CONTROL_H` tall, its title and controls centred
+/// on it (a plain horizontal row centres only on its first item's height).
+pub fn bar<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+    ui.allocate_ui_with_layout(
+        Vec2::new(ui.available_width(), CONTROL_H),
+        egui::Layout::left_to_right(egui::Align::Center),
+        add,
+    )
+    .inner
+}
+
+/// A row of two columns, `left` and `control` wide, centred on each other:
+/// the shorter pads by half of what it lacks, by their heights of the last
+/// frame (one more frame when a height changes). `id` names the row.
+pub fn centred_row(
+    ui: &mut Ui,
+    id: impl std::hash::Hash + std::fmt::Debug,
+    left: f32,
+    control: f32,
+    add_left: impl FnOnce(&mut Ui),
+    add_control: impl FnOnce(&mut Ui),
+) {
+    let id = egui::Id::unique(("wowlua-studio-centred-row", id));
+    let (left_h, control_h): (f32, f32) = ui.data(|d| d.get_temp(id)).unwrap_or_default();
+    let tall = left_h.max(control_h);
+    let mut measured = (0.0, 0.0);
+    ui.horizontal(|ui| {
+        ui.vertical(|ui| {
+            ui.set_width(left);
+            ui.add_space(((tall - left_h) / 2.0).max(0.0));
+            let top = ui.cursor().top();
+            add_left(ui);
+            measured.0 = ui.min_rect().bottom() - top;
+        });
+        ui.vertical(|ui| {
+            ui.set_width(control);
+            ui.set_max_width(control);
+            ui.add_space(((tall - control_h) / 2.0).max(0.0));
+            let top = ui.cursor().top();
+            add_control(ui);
+            measured.1 = ui.min_rect().bottom() - top;
+        });
+    });
+    if (measured.0 - left_h).abs() > 0.5 || (measured.1 - control_h).abs() > 0.5 {
+        ui.data_mut(|d| d.insert_temp(id, measured));
+        ui.ctx().request_repaint();
+    }
+}
+
 /// A one-line text input, `width` wide; `hint` shows while it is empty.
 pub fn text_input(ui: &mut Ui, text: &mut String, width: f32, hint: &str) -> Response {
     let p = palette(ui.ctx());

@@ -384,9 +384,12 @@ fn row(ui: &mut Ui, fx: &mut Fx<'_>, r: &Row, p: &Palette, go: &mut Option<Go>) 
     let control = 380.0_f32.min(width * 0.5);
     let key = r.path.last().copied().unwrap_or("");
     let path_text = r.path.join(".");
-    ui.horizontal(|ui| {
-        ui.vertical(|ui| {
-            ui.set_width(width - control - 16.0);
+    forms::centred_row(
+        ui,
+        ("manifest", &path_text),
+        width - control - 16.0,
+        control,
+        |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.label(
                     egui::RichText::new(key)
@@ -402,12 +405,9 @@ fn row(ui: &mut Ui, fx: &mut Fx<'_>, r: &Row, p: &Palette, go: &mut Option<Go>) 
             if !r.desc.is_empty() {
                 caption(ui, r.desc, p);
             }
-        });
-        ui.vertical(|ui| {
-            ui.set_width(control);
-            edit_value(ui, fx, r.path, r.how.clone(), control, go);
-        });
-    });
+        },
+        |ui| edit_value(ui, fx, r.path, r.how.clone(), control, go),
+    );
     ui.add_space(4.0);
     let y = ui.cursor().top();
     ui.painter().line_segment(
@@ -654,7 +654,7 @@ pub fn show(
     let mut action = None;
     // The bar: the package, the view, saving, finding a key.
     forms::padded(ui, 16, 8, |ui| {
-        ui.horizontal(|ui| {
+        forms::bar(ui, |ui| {
             ui.label(
                 egui::RichText::new("wowlua.json")
                     .font(Face::PlexMedium.at(12.5))
