@@ -181,6 +181,14 @@ pub fn claude_key(key: Option<&str>) {
     }
 }
 
+/// The GitHub sign-in's token, for pushing, pulling and fetching from
+/// github.com (M11); none when signed out.
+pub fn github_token() -> Option<String> {
+    wowlua_driver::credentials::get(GITHUB)
+        .ok()
+        .filter(|t| !t.is_empty())
+}
+
 /// Signs out of GitHub: the token and the account's name are forgotten.
 pub fn github_sign_out() {
     let _ = wowlua_driver::credentials::remove(GITHUB);

@@ -23,6 +23,10 @@ pub struct Settings {
     pub reduce_motion: bool,
     pub font_size: f32,
     pub format_on_save: bool,
+    /// Who last changed the cursor's line, faintly after it (S070).
+    pub blame: bool,
+    /// Minutes between Studio's own fetches (0: never; S070).
+    pub git_fetch_minutes: u32,
     pub inlay_hints: bool,
     pub code_lenses: bool,
     pub coverage_gutter: bool,
@@ -86,6 +90,8 @@ impl Default for Settings {
             reduce_motion: false,
             font_size: 13.0,
             format_on_save: true,
+            blame: true,
+            git_fetch_minutes: 5,
             inlay_hints: true,
             code_lenses: true,
             coverage_gutter: true,

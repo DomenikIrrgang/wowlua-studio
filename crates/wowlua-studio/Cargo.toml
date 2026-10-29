@@ -46,6 +46,7 @@ wowlua-studio-ui.workspace = true
 wowlua-lsp.workspace = true
 wowlua-span.workspace = true
 wowlua-syntax.workspace = true
+wowlua-fmt.workspace = true
 # The test runner with the renderer's camera, for screenshot tests (M4).
 wowlua-test = { workspace = true, features = ["native", "camera"] }
 

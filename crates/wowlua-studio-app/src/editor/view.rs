@@ -46,7 +46,7 @@ pub fn set_font_size(size: f32) {
 }
 
 /// The code's type size: 13 px by default.
-fn font_size() -> f32 {
+pub(crate) fn font_size() -> f32 {
     f32::from_bits(FONT_BITS.load(std::sync::atomic::Ordering::Relaxed))
 }
 
@@ -2395,7 +2395,7 @@ fn accept(tab: &mut Tab) {
 }
 
 /// The design system's syntax colours (`tok-*`).
-fn style(syntax: Syntax, font: &FontId, p: &Palette) -> TextFormat {
+pub(crate) fn style(syntax: Syntax, font: &FontId, p: &Palette) -> TextFormat {
     let (color, face) = match syntax {
         Syntax::Keyword => (p.syn_keyword, None),
         Syntax::Type => (p.syn_type, None),

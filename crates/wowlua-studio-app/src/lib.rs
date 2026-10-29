@@ -14,6 +14,7 @@ pub mod editor;
 pub mod explorer;
 pub mod flavors;
 pub mod game;
+pub mod git;
 pub mod jobs;
 pub mod keys;
 pub mod lsp;
@@ -130,6 +131,7 @@ pub struct Studio {
     world: world::WorldState,
     /// The ship page (M9, S061).
     ship: ship::ShipState,
+    git: git::GitState,
     /// The settings page (M10, S062).
     settings_page: settings::SettingsState,
     /// The wowlua.json tabs' forms (S063).
@@ -269,6 +271,7 @@ impl Studio {
             profiler: profiler::ProfilerState::default(),
             world: world::WorldState::default(),
             ship: ship::ShipState::default(),
+            git: git::GitState::default(),
             settings_page: settings::SettingsState::default(),
             manifests: manifest::Manifests::default(),
             queued_manifest: None,
@@ -472,6 +475,8 @@ impl Studio {
     pub fn ui(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
         self.events(&ctx);
+        self.git
+            .tick(&*self.host.system, self.settings.git_fetch_minutes);
         let focused = ctx.input(|i| i.focused);
         if focused && !self.focused {
             // Another window may have changed the recents, Git the branch.
@@ -479,6 +484,8 @@ impl Studio {
             if let Some(w) = &self.workspace {
                 self.branch = self.host.system.branch(&w.root);
             }
+            // (Git may have changed the repository outside Studio)
+            self.git.files_changed(&[]);
         }
         self.focused = focused;
         // The OS's theme can change under a `system` theme.
@@ -794,6 +801,8 @@ impl Studio {
         let mut world_action = None;
         let ship_state = &mut self.ship;
         let mut ship_action = None;
+        let git_state = &mut self.git;
+        let mut git_action = None;
         let settings_page = &mut self.settings_page;
         let manifests = &mut self.manifests;
         let mut manifest_action = None;
@@ -1081,6 +1090,21 @@ impl Studio {
                     profiler_action = Some(a);
                 }
             }
+            Panel::Changes => {
+                if let Some(a) = git::page::changes(ui, git_state, system) {
+                    git_action = Some(a);
+                }
+            }
+            Panel::History => {
+                if let Some(a) = git::page::history(ui, git_state, system) {
+                    git_action = Some(a);
+                }
+            }
+            Panel::Diff => {
+                if let Some(a) = git::page::main(ui, git_state, system) {
+                    git_action = Some(a);
+                }
+            }
             _ => dock::placeholder(ui, panel),
         };
         let changed = dock::show(ui, area, layout, &mut self.dock, &mut content);
@@ -1116,6 +1140,10 @@ impl Studio {
         }
         if let Some(a) = ship_action {
             self.ship_action(a, ctx);
+        }
+        git::page::dialogs(ctx, &mut self.git, &*self.host.system);
+        if let Some(a) = git_action {
+            self.git_action(a, ctx);
         }
         if let Some(a) = settings_action {
             self.settings_action(a, ctx);
@@ -2005,6 +2033,18 @@ impl Studio {
                     self.start.adopt.error = Some(error);
                 }
                 Event::FilesChanged(paths) => {
+                    self.git.files_changed(&paths);
+                    // (Git's own files are the git page's alone, but HEAD)
+                    let paths: Vec<PathBuf> = paths
+                        .into_iter()
+                        .filter(|p| {
+                            p.ends_with(".git/HEAD")
+                                || !p.components().any(|c| c.as_os_str() == ".git")
+                        })
+                        .collect();
+                    if paths.is_empty() {
+                        continue;
+                    }
                     self.explorer.changed(&paths);
                     self.ship.files_changed();
                     self.manifests.files_changed();
@@ -2064,6 +2104,7 @@ impl Studio {
                 Event::WorldSnapshots(found) => self.world.snapshots_read(found),
                 Event::GameArt(art, image) => self.world.art.read(ctx, art, image),
                 Event::Spells(query, found) => self.world.spells_found(query, found),
+                Event::Git(root, event) => self.git.event(&root, event, &*self.host.system),
                 Event::Found(what, flavor, query, rows) => {
                     self.world.found.insert((what, flavor, query), rows);
                 }
@@ -2181,6 +2222,9 @@ impl Studio {
             self.ship.selected = selected;
         }
         self.read_line_width(&workspace.root);
+        if !again {
+            self.git.opened(Some(&workspace.root));
+        }
         self.branch = self.host.system.branch(&workspace.root);
         self.reload_recents();
         self.recents.opened(&workspace, self.host.system.now());
@@ -2646,6 +2690,21 @@ impl Studio {
         }
     }
 
+    /// What the git page asks (M11).
+    fn git_action(&mut self, action: git::page::Action, ctx: &Context) {
+        match action {
+            git::page::Action::Open(path, line) => {
+                self.run(ctx, Command::ShowPage(Page::Files));
+                self.open_file(&path, ctx);
+                if let (Some(line), Some(tab)) = (line, self.editors.active_mut()) {
+                    let at = editor::doc::Pos::new(line.saturating_sub(1) as usize, 0);
+                    tab.doc.selection = editor::doc::Selection::caret(at);
+                }
+            }
+            git::page::Action::SignIn => self.settings_show("github"),
+        }
+    }
+
     /// What the world profiles page asks (S060).
     fn world_action(&mut self, action: world::Action, ctx: &Context) {
         match action {
@@ -2944,6 +3003,7 @@ impl Studio {
             self.search = search::SearchState::default();
             self.outline = None;
             self.branch = None;
+            self.git.opened(None);
             self.menus_changed = true;
             self.reload_recents();
         }

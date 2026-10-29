@@ -160,7 +160,11 @@ impl Layout {
             main,
             bottom,
             right,
-            left_width: if page == Page::Tests { 330.0 } else { 220.0 },
+            left_width: match page {
+                Page::Tests => 330.0,
+                Page::Git => 320.0,
+                _ => 220.0,
+            },
             right_width: 250.0,
             bottom_height: 170.0,
             floating: Vec::new(),

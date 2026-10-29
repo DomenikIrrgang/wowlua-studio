@@ -60,6 +60,7 @@ wowlua-lsp = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "2875af24
 wowlua-span = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "2875af24af57008cb143400408e8ac195539ca85" }
 wowlua-toc = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "2875af24af57008cb143400408e8ac195539ca85" }
 wowlua-syntax = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "2875af24af57008cb143400408e8ac195539ca85" }
+wowlua-fmt = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "2875af24af57008cb143400408e8ac195539ca85" }
 
 [workspace.lints.rust]
 # Denied, not forbidden: one macOS module may allow it (decision S022).
