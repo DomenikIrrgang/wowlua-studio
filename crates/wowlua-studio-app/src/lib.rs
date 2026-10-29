@@ -12,6 +12,7 @@ pub mod deps;
 pub mod dock;
 pub mod editor;
 pub mod explorer;
+pub mod flavors;
 pub mod game;
 pub mod jobs;
 pub mod keys;
@@ -2959,7 +2960,11 @@ impl Studio {
                 .iter()
                 .filter(|c| w.flavors.contains(&c.flavor))
             {
-                items.push(format!("{} · {}", client.client, client.folder));
+                items.push(format!(
+                    "{} · {}",
+                    flavors::name(&client.flavor),
+                    client.folder
+                ));
             }
         }
         items.retain(|i| !i.is_empty());

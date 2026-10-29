@@ -604,39 +604,131 @@ fn edit_value(
     }
 }
 
-/// The flavors: the package's, removed one by one; one added by name.
+/// The flavors (S064): the package's, each removed but the last; one added
+/// from wowlua's flavor table, those coming soon named but not picked.
 fn flavors(ui: &mut Ui, fx: &mut Fx<'_>, new: &mut String, p: &Palette) {
     let current: Vec<String> = fx
         .get(&["flavors"])
         .and_then(Json::as_object)
         .map(|o| o.keys().cloned().collect())
         .unwrap_or_default();
+    let width = ui.available_width();
+    let control = 380.0_f32.min(width * 0.5);
     for f in &current {
-        ui.horizontal(|ui| {
+        let clients: Vec<String> = wowlua_flavors::table()
+            .resolve(f)
+            .map(|flavor| {
+                wowlua_flavors::table()
+                    .clients_of(&flavor.id)
+                    .map(|c| format!("{} · {}", c.name, c.folders.join(", ")))
+                    .collect()
+            })
+            .unwrap_or_default();
+        forms::centred_row(
+            ui,
+            ("flavor", f.clone()),
+            width - control - 16.0,
+            control,
+            |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        egui::RichText::new(f)
+                            .font(Face::PlexMedium.at(12.5))
+                            .color(p.ink),
+                    );
+                    ui.label(
+                        egui::RichText::new(format!("flavors.{f}"))
+                            .font(Face::Plex.at(11.0))
+                            .color(p.ink_faint),
+                    );
+                });
+                let state = if crate::flavors::supported(f) {
+                    "supported"
+                } else {
+                    "coming soon"
+                };
+                caption(ui, &format!("{} · {state}", crate::flavors::name(f)), p);
+            },
+            |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    if !clients.is_empty() {
+                        caption(ui, &clients.join(" · "), p);
+                    }
+                    ui.add_enabled_ui(current.len() > 1, |ui| {
+                        if widgets::button(ui, ButtonKind::Ghost, "remove", true, None).clicked() {
+                            let keys = vec![Key::Name("flavors".into()), Key::Name(f.clone())];
+                            fx.changes.push((keys, None, false));
+                        }
+                    });
+                });
+            },
+        );
+        ui.add_space(10.0);
+    }
+    // (a flavor already there, under its id or an alias, is not offered)
+    let have = |id: &str| {
+        current.iter().any(|c| {
+            wowlua_flavors::table()
+                .resolve(c)
+                .is_some_and(|f| f.id == id)
+        })
+    };
+    let offered: Vec<&wowlua_flavors::Flavor> =
+        crate::flavors::all().filter(|f| !have(&f.id)).collect();
+    forms::centred_row(
+        ui,
+        ("flavor", "add".to_owned()),
+        width - control - 16.0,
+        control,
+        |ui| {
             ui.label(
-                egui::RichText::new(f)
+                egui::RichText::new("add a flavor")
                     .font(Face::PlexMedium.at(12.5))
                     .color(p.ink),
             );
-            if forms::text_button(ui, "remove").clicked() {
-                let keys = vec![Key::Name("flavors".into()), Key::Name(f.clone())];
-                fx.changes.push((keys, None, false));
+            caption(
+                ui,
+                "From wowlua's flavor table. Coming soon: named and checked, but the game page, the debugger and Blizzard's UI don't run it yet.",
+                p,
+            );
+        },
+        |ui| {
+            if offered.is_empty() {
+                caption(ui, "Every flavor wowlua knows is here.", p);
+                return;
             }
-        });
-    }
-    ui.horizontal(|ui| {
-        forms::text_input(ui, new, 200.0, "a flavor's ID or alias");
-        let name = new.trim().to_owned();
-        if widgets::button(ui, ButtonKind::Secondary, "add", true, None).clicked()
-            && !name.is_empty()
-            && !current.contains(&name)
-        {
-            let keys = vec![Key::Name("flavors".into()), Key::Name(name)];
-            fx.changes.push((keys, Some(serde_json::json!({})), false));
-            new.clear();
-        }
-    });
-    caption(ui, "camelot is WoW Forever (_forever_).", p);
+            let labels: Vec<String> = std::iter::once("pick a flavor".to_owned())
+                .chain(offered.iter().map(|f| crate::flavors::label(&f.id)))
+                .collect();
+            let opts: Vec<(&str, bool)> = labels
+                .iter()
+                .enumerate()
+                .map(|(i, l)| (l.as_str(), i == 0 || offered[i - 1].is_supported()))
+                .collect();
+            let mut at = offered
+                .iter()
+                .position(|f| f.id == *new)
+                .map_or(0, |i| i + 1);
+            ui.horizontal(|ui| {
+                if forms::select(ui, "mf-add-flavor", &opts, &mut at, control.min(260.0)) {
+                    *new = if at == 0 {
+                        String::new()
+                    } else {
+                        offered[at - 1].id.clone()
+                    };
+                }
+                let pick = (!new.is_empty()).then(|| new.clone());
+                if widgets::button(ui, ButtonKind::Secondary, "add", pick.is_some(), None).clicked()
+                    && let Some(id) = pick
+                {
+                    let keys = vec![Key::Name("flavors".into()), Key::Name(id)];
+                    fx.changes.push((keys, Some(serde_json::json!({})), false));
+                    new.clear();
+                }
+            });
+        },
+    );
+    ui.add_space(12.0);
 }
 
 /// Every other top-level key, by the schema: an object's fields, else the

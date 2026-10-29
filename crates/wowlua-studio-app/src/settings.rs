@@ -90,6 +90,8 @@ pub struct SettingsState {
     pub wowlua_version: String,
     /// The command whose keys are being recorded (S062).
     pub recording: Option<String>,
+    /// The flavor whose Blizzard UI the installation row shows (S064).
+    ui_flavor: Option<String>,
     /// Text being typed into a text setting, by its label.
     buffers: std::collections::HashMap<&'static str, String>,
 }
@@ -620,7 +622,6 @@ fn act_value(
     act: Act,
     state: &SettingsState,
     installation: Option<&Installation>,
-    flavor: &str,
 ) -> (String, &'static str) {
     let info = state.info.clone().unwrap_or_default();
     match act {
@@ -631,7 +632,7 @@ fn act_value(
             "change",
         ),
         Act::Wowlua => (format!("wowlua {} · built in", state.wowlua_version), ""),
-        Act::BlizzardUi => (format!("from the installation · {flavor}"), "refresh"),
+        Act::BlizzardUi => ("from the installation".to_owned(), "refresh"),
         Act::CheckCache => (
             info.check_cache.map_or("empty".into(), |b| {
                 format!("~/.wowlua/cache/check · {}", crate::ship::size(b))
@@ -706,9 +707,17 @@ pub fn studio(
             });
         });
     });
-    let flavor = workspace
-        .and_then(|w| w.flavors.first().cloned())
-        .unwrap_or_else(|| "camelot".into());
+    // The package's flavors, else the supported ones (S064).
+    let flavors: Vec<String> = workspace
+        .map(|w| w.flavors.clone())
+        .filter(|f| !f.is_empty())
+        .unwrap_or_else(crate::flavors::supported_ids);
+    let flavor = state
+        .ui_flavor
+        .clone()
+        .filter(|f| flavors.contains(f))
+        .or_else(|| flavors.first().cloned())
+        .unwrap_or_default();
     egui::ScrollArea::vertical()
         .id_salt("settings-rows")
         .auto_shrink([false, false])
@@ -797,7 +806,7 @@ pub fn studio(
                 }
                 for r in shown {
                     let where_ = (!query.is_empty()).then(|| r.section.label());
-                    let a = row(ui, r, where_, state, settings, system, installation, &flavor, p);
+                    let a = row(ui, r, where_, state, settings, system, installation, &flavors, &flavor, p);
                     if a.is_some() {
                         action = a;
                     }
@@ -825,6 +834,7 @@ fn row(
     settings: &mut Settings,
     system: &dyn System,
     installation: Option<&Installation>,
+    flavors: &[String],
     flavor: &str,
     p: &Palette,
 ) -> Option<Action> {
@@ -930,9 +940,23 @@ fn row(
                     });
                 }
                 Kind::Action(act) => {
-                    let (value, button) = act_value(*act, state, installation, flavor);
+                    let (value, button) = act_value(*act, state, installation);
                     // (a long value wraps in the column, the button after it)
                     ui.horizontal_wrapped(|ui| {
+                        // Blizzard's UI of one of the package's flavors (S064).
+                        if *act == Act::BlizzardUi && !flavors.is_empty() {
+                            let labels: Vec<String> =
+                                flavors.iter().map(|f| crate::flavors::label(f)).collect();
+                            let opts: Vec<(&str, bool)> = flavors
+                                .iter()
+                                .zip(&labels)
+                                .map(|(f, l)| (l.as_str(), crate::flavors::supported(f)))
+                                .collect();
+                            let mut at = flavors.iter().position(|f| f == flavor).unwrap_or(0);
+                            if forms::select(ui, "set-ui-flavor", &opts, &mut at, 200.0) {
+                                state.ui_flavor = Some(flavors[at].clone());
+                            }
+                        }
                         ui.add(
                             egui::Label::new(
                                 egui::RichText::new(value)

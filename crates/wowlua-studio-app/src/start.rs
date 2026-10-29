@@ -74,7 +74,8 @@ pub struct NewForm {
     kind: usize,
     /// `strict` or `basic`.
     check: usize,
-    camelot: bool,
+    /// The flavors picked, by id (S064): the supported ones can be.
+    flavors: Vec<String>,
     folder: String,
     /// The folder was typed: it no longer follows the name.
     folder_typed: bool,
@@ -94,7 +95,7 @@ impl Default for NewForm {
             name: String::new(),
             kind: 0,
             check: 0,
-            camelot: true,
+            flavors: crate::flavors::supported_ids(),
             folder: String::new(),
             folder_typed: false,
             git: 0,
@@ -469,12 +470,24 @@ impl StartPage {
                     field(ui, "flavors", |ui| {
                         ui.horizontal_wrapped(|ui| {
                             ui.spacing_mut().item_spacing.x = 20.0;
-                            forms::checkbox(ui, &mut form.camelot, "camelot", Some("WoW Forever"));
-                            // The emulated client runs camelot only (S034).
-                            ui.add_enabled_ui(false, |ui| {
-                                forms::checkbox(ui, &mut false, "retail", Some("planned"));
-                                forms::checkbox(ui, &mut false, "vanilla", Some("planned"));
-                            });
+                            // wowlua's flavor table; those coming soon can't be
+                            // picked yet (S034, S064).
+                            for f in crate::flavors::all() {
+                                let mut on = form.flavors.contains(&f.id);
+                                let help = if f.is_supported() {
+                                    f.name.clone()
+                                } else {
+                                    format!("{} · coming soon", f.name)
+                                };
+                                ui.add_enabled_ui(f.is_supported(), |ui| {
+                                    if forms::checkbox(ui, &mut on, &f.id, Some(&help)) {
+                                        form.flavors.retain(|x| *x != f.id);
+                                        if on {
+                                            form.flavors.push(f.id.clone());
+                                        }
+                                    }
+                                });
+                            }
                         });
                     });
                     grid(ui, w, 2, |ui, col, cw| match col {
@@ -524,8 +537,8 @@ impl StartPage {
                     });
 
                     let mut command = format!("wowlua new {folder_name} --kind {kind}");
-                    if form.camelot {
-                        command.push_str(" --flavors camelot");
+                    if !form.flavors.is_empty() {
+                        command.push_str(&format!(" --flavors {}", form.flavors.join(",")));
                     }
                     if form.check == 0 {
                         command.push_str(" --check strict");
@@ -554,7 +567,8 @@ impl StartPage {
                     if let Some(error) = &form.error {
                         error_callout(ui, p, error);
                     }
-                    let ready = !form.name.trim().is_empty() && form.camelot && !form.creating;
+                    let ready =
+                        !form.name.trim().is_empty() && !form.flavors.is_empty() && !form.creating;
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
                         let label = if form.creating {
                             "creating…"
@@ -572,7 +586,7 @@ impl StartPage {
                                 path: path.clone(),
                                 name: name_flag.clone(),
                                 kind: kind.to_owned(),
-                                flavors: vec!["camelot".to_owned()],
+                                flavors: form.flavors.clone(),
                                 check: CHECKS[form.check].to_owned(),
                                 git: form.git == 0,
                                 ci_github: form.ci,

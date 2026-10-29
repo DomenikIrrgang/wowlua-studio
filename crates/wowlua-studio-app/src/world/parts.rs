@@ -456,16 +456,14 @@ pub fn classes(flavor: &str) -> Vec<(&'static str, &'static str)> {
         ("WARLOCK", "LOC"),
         ("DRUID", "DRU"),
     ];
-    let later = |from: &[&str]| from.contains(&flavor) || flavor.is_empty();
-    if later(&["wrath", "cata", "mists", "standard"]) {
-        out.push(("DEATHKNIGHT", "DK"));
-    }
-    if later(&["mists", "standard"]) {
-        out.push(("MONK", "MNK"));
-    }
-    if later(&["standard"]) {
-        out.push(("DEMONHUNTER", "DH"));
-        out.push(("EVOKER", "EVO"));
+    // (of wowlua's flavors, only retail has the later classes)
+    if flavor == "standard" || flavor.is_empty() {
+        out.extend([
+            ("DEATHKNIGHT", "DK"),
+            ("MONK", "MNK"),
+            ("DEMONHUNTER", "DH"),
+            ("EVOKER", "EVO"),
+        ]);
     }
     out
 }
@@ -476,17 +474,14 @@ pub fn races(flavor: &str) -> Vec<&'static str> {
         "Human", "Dwarf", "NightElf", "Gnome", "Orc", "Scourge", "Tauren", "Troll",
     ];
     let later = |from: &[&str]| from.contains(&flavor) || flavor.is_empty();
-    if later(&["tbc", "wrath", "cata", "mists", "standard"]) {
+    if later(&["tbc", "standard"]) {
         out.extend(["BloodElf", "Draenei"]);
-    }
-    if later(&["cata", "mists", "standard"]) {
-        out.extend(["Worgen", "Goblin"]);
-    }
-    if later(&["mists", "standard"]) {
-        out.push("Pandaren");
     }
     if later(&["standard"]) {
         out.extend([
+            "Worgen",
+            "Goblin",
+            "Pandaren",
             "Nightborne",
             "HighmountainTauren",
             "VoidElf",
@@ -2496,7 +2491,7 @@ mod tests {
     #[test]
     fn a_flavor_s_classes_and_races() {
         assert_eq!(classes("camelot").len(), 9);
-        assert_eq!(classes("wrath").len(), 10);
+        assert_eq!(classes("tbc").len(), 9);
         assert_eq!(classes("standard").len(), 13);
         assert!(races("vanilla").len() == 8 && races("tbc").contains(&"Draenei"));
     }

@@ -2265,10 +2265,28 @@ pub fn dialogs(
                         .map(str::to_owned)
                         .collect();
                 }
-                let mut flavor = c.flavor.clone().unwrap_or_default();
-                forms::label(ui, "flavor (empty: the package's first)");
-                forms::text_input(ui, &mut flavor, 320.0, "camelot");
-                c.flavor = Some(flavor.trim().to_owned()).filter(|f| !f.is_empty());
+                // The package's flavors (S064); one coming soon is named, not
+                // picked: the emulated client doesn't run it yet.
+                forms::label(ui, "flavor");
+                let first = workspace.flavors.first().cloned().unwrap_or_default();
+                let mut labels = vec![format!("the package's first · {first}")];
+                labels.extend(workspace.flavors.iter().map(|f| crate::flavors::label(f)));
+                let mut opts: Vec<(&str, bool)> = vec![(labels[0].as_str(), true)];
+                opts.extend(
+                    workspace
+                        .flavors
+                        .iter()
+                        .zip(&labels[1..])
+                        .map(|(f, l)| (l.as_str(), crate::flavors::supported(f))),
+                );
+                let mut picked = c
+                    .flavor
+                    .as_ref()
+                    .and_then(|f| workspace.flavors.iter().position(|w| w == f))
+                    .map_or(0, |i| i + 1);
+                if forms::select(ui, "launch-flavor", &opts, &mut picked, 320.0) {
+                    c.flavor = (picked > 0).then(|| workspace.flavors[picked - 1].clone());
+                }
                 let mut profile = c.profile.clone().unwrap_or_default();
                 forms::label(ui, "world profile (empty: test.profile)");
                 forms::text_input(ui, &mut profile, 320.0, "raid-pull");
