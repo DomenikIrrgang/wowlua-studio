@@ -308,8 +308,11 @@ pub struct Annotation {
 /// Why GitHub couldn't answer, as far as Studio can tell.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GithubError {
-    /// Not signed in, or the token no longer works.
+    /// Not signed in: no token kept.
     SignedOut,
+    /// A token is kept, but GitHub doesn't take it (`401`: revoked or
+    /// expired).
+    NotAccepted,
     /// The repository or the thing asked for isn't visible to the user.
     NotFound,
     /// Refused: the user may not do this (`422`, `403`, `405`), and why.
@@ -321,6 +324,9 @@ impl std::fmt::Display for GithubError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             GithubError::SignedOut => f.write_str("not signed in to GitHub"),
+            GithubError::NotAccepted => {
+                f.write_str("GitHub didn't accept the saved sign-in: sign in again")
+            }
             GithubError::NotFound => f.write_str("GitHub has no such thing for this account"),
             GithubError::Refused(why) | GithubError::Other(why) => f.write_str(why),
         }

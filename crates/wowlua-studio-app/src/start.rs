@@ -630,10 +630,16 @@ impl StartPage {
                             dismiss = true;
                         }
                     }
-                    if matches!(form.repos, Some(Err(GithubError::SignedOut))) {
+                    if let Some(Err(e @ (GithubError::SignedOut | GithubError::NotAccepted))) =
+                        &form.repos
+                    {
                         forms::paragraph(
                             ui,
-                            "Studio clones and pushes with your GitHub sign-in. Sign in to list your repositories and open one.",
+                            if *e == GithubError::NotAccepted {
+                                "GitHub didn't accept your saved sign-in: it may have been revoked or expired. Sign in again to list your repositories and open one."
+                            } else {
+                                "Studio clones and pushes with your GitHub sign-in. Sign in to list your repositories and open one."
+                            },
                             13.0,
                             21.0,
                             p.ink,

@@ -309,8 +309,18 @@ pub fn main(
             });
             return None;
         }
-        Some(Err(GithubError::SignedOut)) => {
+        Some(Err(e @ (GithubError::SignedOut | GithubError::NotAccepted))) => {
+            let rejected = *e == GithubError::NotAccepted;
             forms::padded(ui, 24, 22, |ui| {
+                if rejected {
+                    forms::paragraph(
+                        ui,
+                        "GitHub didn't accept your saved sign-in: it may have been revoked or expired.",
+                        12.5,
+                        19.0,
+                        p.ink,
+                    );
+                }
                 ui.label(
                     egui::RichText::new("signed out of GitHub")
                         .font(Face::PlexSemiBold.at(15.0))

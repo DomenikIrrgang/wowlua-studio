@@ -507,7 +507,7 @@ Asked when their milestone starts; nothing here is decided yet.
 ## Design changes owed
 
 Where Studio was decided to differ from the canvas, or the canvas is
-missing a part; the canvas is updated to match. On 2026-10-30 the settings board got the git section (fetch every) and the editor's blame row, the git board the changes' stage all and the staged files' unstage all (S070). Owed (S075): the closing dialog's last button is "discard them and close" (a removing verb, drawn as danger) where the board says "close and lose them"; a clone's progress shows on the start page (the workspace opens once it is cloned), where the board's "cloning" state draws it in the workspace's explorer.
+missing a part; the canvas is updated to match. On 2026-10-30 the settings board got the git section (fetch every) and the editor's blame row, the git board the changes' stage all and the staged files' unstage all (S070). None are owed now: on 2026-10-30 the start board got a clone's progress ("from GitHub, cloning") and the from-GitHub board the closing dialog's "discard them and close" (S075).
 
 Brought up to date on 2026-10-27: the panels board's presets
 for every page (S017), the palette's prompt (S018), the menus (S019), the

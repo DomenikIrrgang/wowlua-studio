@@ -121,7 +121,7 @@ fn error_of(status: u16, body: &str) -> GithubError {
         }
     }
     match status {
-        401 => GithubError::SignedOut,
+        401 => GithubError::NotAccepted,
         404 => GithubError::NotFound,
         403 | 405 | 409 | 422 => GithubError::Refused(if why.is_empty() {
             format!("GitHub refused it (HTTP {status})")
@@ -765,7 +765,7 @@ mod tests {
 
     #[test]
     fn failures_say_what_github_means() {
-        assert_eq!(error_of(401, "{}"), GithubError::SignedOut);
+        assert_eq!(error_of(401, "{}"), GithubError::NotAccepted);
         assert_eq!(error_of(404, "{}"), GithubError::NotFound);
         assert_eq!(
             error_of(405, r#"{"message":"Pull Request is not mergeable"}"#),
