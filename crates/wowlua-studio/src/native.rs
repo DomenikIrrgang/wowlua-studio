@@ -369,6 +369,15 @@ impl System for NativeSystem {
         }
     }
 
+    fn open_window_from_github(&self) {
+        let Ok(exe) = std::env::current_exe() else {
+            return;
+        };
+        if let Err(e) = Command::new(exe).arg(crate::FROM_GITHUB).spawn() {
+            crate::log::line(&format!("cannot open a new window: {e}"));
+        }
+    }
+
     fn whats_new(&self) -> Vec<String> {
         wowlua_driver::release_notes(wowlua_driver::COMPILER_VERSION)
             .map(new_lines)
@@ -617,6 +626,76 @@ impl System for NativeSystem {
             let event = crate::git::answer(&root, request, &creds);
             Event::Git(root, event)
         });
+    }
+
+    fn github_account(&self, request: wowlua_studio_app::system::AccountRequest) {
+        self.spawn(move || {
+            Event::Account(crate::github::account(
+                request,
+                crate::settings::github_token(),
+            ))
+        });
+    }
+
+    fn clone_repo(&self, repo: &str, branch: &str) {
+        let (repo, branch) = (repo.to_owned(), branch.to_owned());
+        let send = self.send.clone();
+        let ctx = self.ctx.clone();
+        std::thread::spawn(move || {
+            let creds = crate::git::Credentials {
+                github_token: crate::settings::github_token(),
+            };
+            let tell = |progress: Option<f32>, said: String| {
+                let _ = send.send(Event::Cloning {
+                    repo: repo.clone(),
+                    progress,
+                    said,
+                });
+                ctx.request_repaint();
+            };
+            let result = match crate::clones::dir() {
+                Some(dir) => crate::clones::clone_into(
+                    &dir,
+                    &format!("https://github.com/{repo}.git"),
+                    &repo,
+                    &branch,
+                    &creds,
+                    &tell,
+                ),
+                None => Err("Studio has no folder for its data, so nothing to clone into".into()),
+            };
+            let _ = send.send(Event::Cloned {
+                repo,
+                branch,
+                result,
+            });
+            ctx.request_repaint();
+        });
+    }
+
+    fn clones_dir(&self) -> Option<PathBuf> {
+        crate::clones::dir()
+    }
+
+    fn hold_clone(&self, root: &Path) {
+        if let Some(dir) = crate::clones::dir() {
+            crate::clones::hold_clone(&dir, root);
+        }
+    }
+
+    fn clone_losses(&self, root: &Path) -> Result<wowlua_studio_app::system::Losses, String> {
+        crate::clones::losses(root)
+    }
+
+    fn delete_clone(&self, root: &Path) -> Result<(), String> {
+        let dir = crate::clones::dir().ok_or("Studio has no folder for its data")?;
+        crate::clones::delete(&dir, root)
+    }
+
+    fn left_clones(&self) -> Vec<wowlua_studio_app::system::LeftClone> {
+        crate::clones::dir()
+            .map(|d| crate::clones::left(&d))
+            .unwrap_or_default()
     }
 
     fn binding_actions(&self, flavor: &str) -> Vec<(String, String)> {

@@ -37,7 +37,7 @@ pub mod terminal;
 pub mod tests;
 pub mod world;
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 
 use egui::{Context, Pos2, Rect, Ui, UiBuilder, Vec2, ViewportCommand};
@@ -56,7 +56,7 @@ use panels::Panel;
 use recents::{RECENTS_FILE, Recents};
 use start::StartPage;
 use state::{LAYOUTS_FILE, Layouts, SETTINGS_FILE, Settings};
-use system::{Event, Opened, System, Workspace};
+use system::{Event, Losses, Opened, System, Workspace};
 
 /// The system Studio runs on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -165,6 +165,18 @@ pub struct Studio {
     notes: Notifications,
     /// Waits for an answer about unsaved edits.
     pending: Option<Pending>,
+    /// What deleting the clone would lose as it closes (M12), and what
+    /// waits for the answer.
+    losing: Option<(Result<Losses, String>, Pending)>,
+    /// The repository (`owner/name`) of each clone opened, for recents.
+    clone_repos: HashMap<PathBuf, String>,
+    /// The folder of Studio's clones, as it is and canonical.
+    clones_dir: Vec<PathBuf>,
+    /// A read-only clone's fork: what came of it.
+    forked: Option<Result<String, String>>,
+    forking: bool,
+    /// The screenshot harness closes the folder once it opened.
+    harness_close: bool,
     /// Closing the window was answered: it closes.
     quitting: bool,
     /// When Git's `HEAD` changed: files changing with it changed by a
@@ -247,6 +259,11 @@ impl Studio {
         let recents: Recents = state::parse(host.store.load(RECENTS_FILE));
         wowlua_studio_ui::install(ctx, settings.theme());
         host.system.find_installation();
+        let clones_dir = host
+            .system
+            .clones_dir()
+            .map(|d| vec![host.system.canonical(&d), d])
+            .unwrap_or_default();
         Studio {
             home: host.system.home(),
             host,
@@ -292,6 +309,12 @@ impl Studio {
             outline_asked: None,
             notes: Notifications::default(),
             pending: None,
+            losing: None,
+            clone_repos: HashMap::new(),
+            clones_dir,
+            forked: None,
+            forking: false,
+            harness_close: false,
             quitting: false,
             head_changed: None,
             queued: Vec::new(),
@@ -470,6 +493,47 @@ impl Studio {
         (link.found == Some(true)).then_some((link.line, link.start, link.end))
     }
 
+    /// Closes the window without asking and leaves a clone as it is (the
+    /// screenshot harness's end, as if Studio quit).
+    pub fn quit_as_is(&mut self) {
+        self.quitting = true;
+    }
+
+    /// The start page's from-GitHub panel (a window opened for it).
+    pub fn show_from_github(&mut self) {
+        self.start.panel = start::Panel::Github;
+    }
+
+    /// The from-GitHub panel with a repository typed and looked up (the
+    /// screenshot harness's `fromgithub:`).
+    pub fn harness_from_github(&mut self, typed: &str) {
+        self.start.panel = start::Panel::Github;
+        if !typed.is_empty() {
+            self.start.github.find_typed(typed);
+        }
+    }
+
+    /// Clones `owner/name` at `branch` and opens it (M12); one clone at a
+    /// time.
+    pub fn start_clone(&mut self, repo: &str, branch: &str) {
+        if self.start.cloning.is_some() {
+            return;
+        }
+        self.start.clone_failed = None;
+        self.start.cloning = Some(start::Cloning {
+            repo: repo.to_owned(),
+            progress: None,
+            said: "starting".into(),
+        });
+        self.host.system.clone_repo(repo, branch);
+    }
+
+    /// Closes the folder once a workspace opened (the screenshot harness's
+    /// `close`).
+    pub fn close_later(&mut self) {
+        self.harness_close = true;
+    }
+
     /// Opens the workspace around `path` in this window.
     pub fn open(&mut self, path: &Path) {
         self.start.opening = Some(path.to_path_buf());
@@ -509,12 +573,18 @@ impl Studio {
         self.debug.default_manual = self.settings.default_clock == "manual";
 
         // Closing the window with unsaved edits asks first.
-        if ctx.input(|i| i.viewport().close_requested())
-            && !self.quitting
-            && self.editors.any_dirty()
-        {
-            ctx.send_viewport_cmd(ViewportCommand::CancelClose);
-            self.pending = Some(Pending::Quit);
+        // A clone of Studio's says first what closing it loses (M12).
+        if ctx.input(|i| i.viewport().close_requested()) && !self.quitting {
+            if self.editors.any_dirty() {
+                ctx.send_viewport_cmd(ViewportCommand::CancelClose);
+                self.pending = Some(Pending::Quit);
+            } else if self.losing.is_some() {
+                // (the dialog asks already: closing again doesn't answer it)
+                ctx.send_viewport_cmd(ViewportCommand::CancelClose);
+            } else if self.clone_root().is_some() {
+                ctx.send_viewport_cmd(ViewportCommand::CancelClose);
+                self.leave(Pending::Quit, &ctx);
+            }
         }
 
         if let Some(w) = &self.workspace
@@ -753,6 +823,7 @@ impl Studio {
             inset: self.notes.tray_width(),
             lead: git::bar::width(ui, &self.git),
             folder: folder.as_ref().map(|(n, path)| (n.as_str(), path.clone())),
+            cloned: self.clone_root().is_some(),
         };
         let (lead_x, session_end) =
             chrome::status_bar(ui, status, &self.host.wowlua_version, &session);
@@ -792,8 +863,13 @@ impl Studio {
                 egui::pos2(full.left() + chrome::RAIL_W, status.top()),
             );
             chrome::rail(ui, rail, self.page, &mut commands);
-            let area = Rect::from_min_max(
+            let strip = Rect::from_min_max(
                 egui::pos2(rail.right(), area_top),
+                egui::pos2(full.right(), area_top + 36.0),
+            );
+            let top = area_top + self.clone_strip(ui, strip).unwrap_or(0.0);
+            let area = Rect::from_min_max(
+                egui::pos2(rail.right(), top),
                 egui::pos2(full.right(), status.top()),
             );
             self.shell(ui, area, &ctx);
@@ -820,6 +896,9 @@ impl Studio {
         if self.pending.is_some() {
             self.unsaved_dialog(&ctx);
         }
+        if self.losing.is_some() {
+            self.losing_dialog(&ctx);
+        }
         if self.host.platform != Platform::MacOs && self.host.platform != Platform::Web {
             chrome::resize_edges(ui, full);
         }
@@ -833,6 +912,9 @@ impl Studio {
 
     /// The workspace's pages: the docked panels.
     fn shell(&mut self, ui: &mut Ui, area: Rect, ctx: &Context) {
+        let clone_note = self.clone_root().is_some().then_some(
+            "a clone in Studio's data, deleted when this workspace closes: commit and push to keep your changes",
+        );
         let Some(workspace) = &self.workspace else {
             return;
         };
@@ -891,7 +973,7 @@ impl Studio {
         let mut actions = Vec::new();
         let mut content = |ui: &mut Ui, panel: Panel| match panel {
             Panel::Explorer => {
-                if let Some(path) = explorer.show(ui, workspace, system, git_state) {
+                if let Some(path) = explorer.show(ui, workspace, system, git_state, clone_note) {
                     opened = Some(path);
                 }
             }
@@ -2200,6 +2282,21 @@ impl Studio {
                     self.recents.forget(&path);
                     self.save_recents();
                 }
+                start::Action::Clone { repo, branch } => self.start_clone(&repo, &branch),
+                start::Action::OpenClone { path, repo } => {
+                    self.remember_clone(&path, &repo);
+                    self.host.system.hold_clone(&path);
+                    self.open(&path);
+                }
+                start::Action::DeleteClone(path) => {
+                    if let Err(e) = self.host.system.delete_clone(&path) {
+                        self.notify(
+                            Notification::new(Kind::Error, "The clone was not deleted", e),
+                            ctx,
+                        );
+                    }
+                    self.start.refresh(&*self.host.system, &self.recents);
+                }
             }
         }
     }
@@ -2210,6 +2307,19 @@ impl Studio {
             self.start.event(&event, &*self.host.system);
             match event {
                 Event::Opened(Opened::Workspace(workspace)) => self.opened(workspace),
+                Event::Opened(Opened::NoManifest(dir)) if self.is_clone(&dir) => {
+                    // A clone with no `wowlua.json` is no package: it goes
+                    // (adopting happens in a folder of the user's).
+                    self.start.opening = None;
+                    self.close_workspace();
+                    let repo = self.clone_repos.get(&dir).cloned().unwrap_or_default();
+                    let _ = self.host.system.delete_clone(&dir);
+                    self.start.panel = start::Panel::Github;
+                    self.start.clone_failed = Some((
+                        repo,
+                        "it has no wowlua.json, so it isn't a wowlua package. Clone it into a folder of yours to adopt it there".into(),
+                    ));
+                }
                 Event::Opened(Opened::NoManifest(dir)) => {
                     // A folder with no `wowlua.json` can be adopted (S032).
                     self.start.opening = None;
@@ -2331,7 +2441,30 @@ impl Studio {
                 Event::Spells(query, found) => self.world.spells_found(query, found),
                 Event::Git(root, event) => self.git.event(&root, event, &*self.host.system),
                 // (the pull requests page comes with M12's design)
+                Event::GithubApi(root, system::GithubEvent::Done { what, result })
+                    if what == "fork" =>
+                {
+                    self.forking = false;
+                    self.forked = Some(result.map_err(|e| e.to_string()));
+                    // (the branch's upstream is the fork now)
+                    self.github.opened(Some(&root));
+                }
                 Event::GithubApi(root, event) => self.github.event(&root, event),
+                // (the start page's)
+                Event::Account(..) | Event::Cloning { .. } => {}
+                Event::Cloned { repo, result, .. } => {
+                    self.start.cloning = None;
+                    match result {
+                        Ok(path) => {
+                            self.remember_clone(&path, &repo);
+                            self.open(&path);
+                        }
+                        Err(why) => {
+                            self.start.panel = start::Panel::Github;
+                            self.start.clone_failed = Some((repo, why));
+                        }
+                    }
+                }
                 Event::Found(what, flavor, query, rows) => {
                     self.world.found.insert((what, flavor, query), rows);
                 }
@@ -2455,9 +2588,21 @@ impl Studio {
         }
         self.branch = self.host.system.branch(&workspace.root);
         self.reload_recents();
-        self.recents.opened(&workspace, self.host.system.now());
+        let now = self.host.system.now();
+        if self.is_clone(&workspace.root) {
+            self.host.system.hold_clone(&workspace.root);
+            if let Some(repo) = self.clone_repos.get(&workspace.root).cloned() {
+                let branch = self.branch.clone().unwrap_or_default();
+                self.recents.opened_clone(&workspace, &repo, &branch, now);
+            }
+        } else {
+            self.recents.opened(&workspace, now);
+        }
         self.save_recents();
         self.workspace = Some(workspace);
+        if std::mem::take(&mut self.harness_close) {
+            self.queue(Command::CloseFolder);
+        }
     }
 
     /// A workspace's tests: its test files listed and read by the server,
@@ -3552,7 +3697,14 @@ impl Studio {
                 if self.editors.any_dirty() {
                     self.pending = Some(Pending::CloseFolder);
                 } else {
-                    self.close_workspace();
+                    self.leave(Pending::CloseFolder, ctx);
+                }
+            }
+            Command::OpenFromGithub => {
+                if self.workspace.is_none() {
+                    self.start.panel = start::Panel::Github;
+                } else {
+                    self.host.system.open_window_from_github();
                 }
             }
             Command::Save => {
@@ -3753,7 +3905,7 @@ impl Studio {
                 } else if self.editors.any_dirty() {
                     self.pending = Some(Pending::OpenHere(ask.path));
                 } else {
-                    self.open(&ask.path);
+                    self.leave(Pending::OpenHere(ask.path), ctx);
                 }
             }
             Some(false) => self.ask = None,
@@ -3850,7 +4002,34 @@ impl Studio {
                 }
             }
         }
-        match pending {
+        self.leave(pending, ctx);
+    }
+
+    /// Goes on with closing: a clone of Studio's with work not on GitHub
+    /// asks first (M12); one with nothing to lose is deleted as it closes.
+    fn leave(&mut self, then: Pending, ctx: &Context) {
+        if !matches!(then, Pending::CloseTab(_))
+            && let Some(root) = self.clone_root()
+        {
+            match self.host.system.clone_losses(&root) {
+                Ok(l) if l.is_empty() => {}
+                other => {
+                    self.losing = Some((other, then));
+                    return;
+                }
+            }
+        }
+        self.go(then, ctx);
+    }
+
+    /// Closes as `then` says; a clone's folder is deleted with it.
+    fn go(&mut self, then: Pending, ctx: &Context) {
+        let clone = if matches!(then, Pending::CloseTab(_)) {
+            None
+        } else {
+            self.clone_root()
+        };
+        match then {
             Pending::CloseTab(i) => self.editors.close(i),
             Pending::CloseFolder => self.close_workspace(),
             Pending::OpenHere(path) => {
@@ -3861,6 +4040,270 @@ impl Studio {
                 self.quitting = true;
                 ctx.send_viewport_cmd(ViewportCommand::Close);
             }
+        }
+        if let Some(root) = clone {
+            self.terminal.close(&*self.host.system);
+            self.forked = None;
+            if let Err(e) = self.host.system.delete_clone(&root) {
+                self.notify(
+                    Notification::new(Kind::Error, "The clone was not deleted", e),
+                    ctx,
+                );
+            }
+        }
+    }
+
+    /// Whether `root` is a clone of Studio's (M12).
+    fn is_clone(&self, root: &Path) -> bool {
+        self.clones_dir.iter().any(|d| root.starts_with(d))
+    }
+
+    /// The workspace's root, when it is a clone of Studio's.
+    fn clone_root(&self) -> Option<PathBuf> {
+        self.workspace
+            .as_ref()
+            .map(|w| w.root.clone())
+            .filter(|r| self.is_clone(r))
+    }
+
+    /// Keeps which repository a clone is of, for recents.
+    fn remember_clone(&mut self, path: &Path, repo: &str) {
+        self.clone_repos
+            .insert(self.host.system.canonical(path), repo.to_owned());
+        self.clone_repos.insert(path.to_path_buf(), repo.to_owned());
+    }
+
+    /// A read-only clone's note over the workspace (M12): fork it to push;
+    /// or what the fork did. Returns its height when shown.
+    fn clone_strip(&mut self, ui: &mut Ui, rect: Rect) -> Option<f32> {
+        let root = self.clone_root()?;
+        let repo = match &self.github.repo {
+            Some(Ok((r, _, _, _))) => r.full(),
+            _ => root
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+        };
+        let read_only = matches!(&self.github.repo, Some(Ok((_, _, _, false))));
+        let (strong, text) = match &self.forked {
+            Some(Ok(said)) => (
+                "forked",
+                format!(
+                    ": {said}. Your pushes go to the fork now; open a pull request from it on GitHub."
+                ),
+            ),
+            Some(Err(e)) => ("the fork failed", format!(": {e}")),
+            None if read_only => (
+                "read only",
+                format!(
+                    ": you can't push to {repo}, so commits made here are lost when it closes. Fork it to push them to your own copy and open a pull request from there."
+                ),
+            ),
+            None => return None,
+        };
+        let p = colors(ui.ctx());
+        let soft = if matches!(self.forked, Some(Err(_))) {
+            p.error_soft
+        } else {
+            p.note_soft
+        };
+        ui.painter()
+            .rect_filled(rect, egui::CornerRadius::ZERO, soft);
+        ui.painter().hline(
+            rect.x_range(),
+            rect.bottom() - 0.5,
+            egui::Stroke::new(1.0, p.line),
+        );
+        let mut child = ui.new_child(
+            UiBuilder::new()
+                .max_rect(rect.shrink2(Vec2::new(16.0, 4.0)))
+                .layout(egui::Layout::right_to_left(egui::Align::Center)),
+        );
+        child.spacing_mut().item_spacing.x = 10.0;
+        if self.forked.is_some() {
+            if widgets::button(&mut child, ButtonKind::Tertiary, "dismiss", true, None).clicked() {
+                self.forked = None;
+            }
+        } else {
+            let label = if self.forking {
+                "forking…"
+            } else {
+                "fork and push there"
+            };
+            if child
+                .add_enabled_ui(!self.forking, |ui| {
+                    widgets::button(
+                        ui,
+                        ButtonKind::Secondary,
+                        label,
+                        true,
+                        Some(wowlua_studio_ui::Icon::Git),
+                    )
+                })
+                .inner
+                .clicked()
+            {
+                self.forking = true;
+                self.host.system.github(&root, system::GithubRequest::Fork);
+            }
+        }
+        let width = child.available_width();
+        child.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            let font = Face::Plex.at(12.0);
+            let strong_w = ui.fonts_mut(|f| {
+                f.layout_no_wrap(strong.to_owned(), Face::PlexSemiBold.at(12.0), p.ink)
+                    .size()
+                    .x
+            });
+            ui.spacing_mut().item_spacing.x = 0.0;
+            ui.label(
+                egui::RichText::new(strong)
+                    .font(Face::PlexSemiBold.at(12.0))
+                    .color(if matches!(self.forked, Some(Err(_))) {
+                        p.error
+                    } else {
+                        p.note
+                    }),
+            );
+            let shown = git::page::fit(ui, &text, &font, width - strong_w - 8.0);
+            ui.label(egui::RichText::new(shown).font(font).color(p.ink))
+                .on_hover_text(format!("{strong}{text}"));
+        });
+        Some(rect.height())
+    }
+
+    /// Closing a clone with work not on GitHub (M12): what is lost, asked
+    /// first.
+    fn losing_dialog(&mut self, ctx: &Context) {
+        let Some((losses, then)) = self.losing.clone() else {
+            return;
+        };
+        let p = colors(ctx);
+        let name = self
+            .clone_root()
+            .and_then(|r| r.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .unwrap_or_default();
+        let repo = match &self.github.repo {
+            Some(Ok((r, _, _, _))) => r.full(),
+            _ => name.clone(),
+        };
+        let mut decided = None;
+        let modal = egui::Modal::new(egui::Id::unique("wowlua-studio-losing")).show(ctx, |ui| {
+            ui.set_width(520.0);
+            ui.spacing_mut().item_spacing.y = 12.0;
+            let (font, spacing) = widgets::label_font(12.0);
+            let title = widgets::galley(ui, &format!("close {name} from GitHub?"), font, p.ink, spacing);
+            let (r, _) = ui.allocate_exact_size(title.size(), egui::Sense::hover());
+            ui.painter().galley(r.min, title, p.ink);
+            forms::paragraph(
+                ui,
+                &format!(
+                    "This workspace is a clone of {repo} in Studio's data, and it is deleted when it closes. These aren't on GitHub, so they are lost if you close now:"
+                ),
+                13.0,
+                21.0,
+                p.ink,
+            );
+            let item = |ui: &mut Ui, title: &str, detail: &str| {
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    ui.label(
+                        egui::RichText::new(title)
+                            .font(Face::PlexSemiBold.at(12.5))
+                            .color(p.ink),
+                    );
+                    if !detail.is_empty() {
+                        forms::paragraph(ui, detail, 11.5, 16.0, p.ink_muted);
+                    }
+                });
+            };
+            match &losses {
+                Ok(l) => {
+                    if !l.changed.is_empty() {
+                        let mut files: Vec<String> = l.changed.iter().take(6).cloned().collect();
+                        if l.changed.len() > 6 {
+                            files.push(format!("and {} more", l.changed.len() - 6));
+                        }
+                        item(
+                            ui,
+                            &format!(
+                                "{}, not committed",
+                                start::losses_words(&Losses {
+                                    changed: l.changed.clone(),
+                                    ..Losses::default()
+                                })
+                            ),
+                            &files.join(", "),
+                        );
+                    }
+                    if !l.unpushed.is_empty() {
+                        let commits: Vec<String> = l
+                            .unpushed
+                            .iter()
+                            .take(3)
+                            .map(|(h, s)| format!("{h} {s}"))
+                            .collect();
+                        item(
+                            ui,
+                            &format!(
+                                "{}, not pushed",
+                                start::losses_words(&Losses {
+                                    unpushed: l.unpushed.clone(),
+                                    ..Losses::default()
+                                })
+                            ),
+                            &commits.join(" · "),
+                        );
+                    }
+                    if l.stashes > 0 {
+                        item(
+                            ui,
+                            &start::losses_words(&Losses {
+                                stashes: l.stashes,
+                                ..Losses::default()
+                            }),
+                            "kept by git stash, on no remote",
+                        );
+                    }
+                }
+                Err(e) => item(ui, "git could not say what isn't on GitHub", e),
+            }
+            forms::paragraph(
+                ui,
+                "Commit and push on the git page to keep them. With nothing left to lose, the workspace closes without asking.",
+                11.5,
+                16.0,
+                p.ink_muted,
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                if widgets::button(ui, ButtonKind::Tertiary, "discard them and close", true, None)
+                    .clicked()
+                {
+                    decided = Some(true);
+                }
+                if widgets::button(ui, ButtonKind::Secondary, "open the git page", true, None)
+                    .clicked()
+                {
+                    decided = Some(false);
+                }
+                if widgets::button(ui, ButtonKind::Secondary, "cancel", true, None).clicked() {
+                    self.losing = None;
+                }
+            });
+        });
+        if modal.should_close() {
+            self.losing = None;
+        }
+        match decided {
+            Some(true) => {
+                self.losing = None;
+                self.go(then, ctx);
+            }
+            Some(false) => {
+                self.losing = None;
+                self.queue(Command::ShowPage(Page::Git));
+            }
+            None => {}
         }
     }
 

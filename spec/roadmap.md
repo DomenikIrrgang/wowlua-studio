@@ -418,10 +418,8 @@ installed into the WoW folder, committed.
 Artboards: pull request, online workspace.
 
 - Signing in with GitHub; pull requests, reviews and Actions runs.
-- A repository opened online with no folder, edits kept as drafts on this
-  machine. Needs a host per workspace in wowlua (today `wowlua_host`
-  installs one for the whole process) and wowlua's commands run in Studio's
-  process for its terminal.
+- A repository from GitHub opened as a folder would: cloned into Studio's
+  data, deleted when it closes (S075).
 
 Built, the first half (S072, S073, S074): the pull requests page with the
 open pull requests and the workflow runs; a pull request's conversation,
@@ -430,7 +428,14 @@ merging, and new pull requests from a pushed branch (also from the git
 page after a push); a run's jobs, steps, logs and annotations, re-run and
 cancel; your runs in progress as status bar jobs, told when they end;
 GitHub read on open, with git's fetch and every 15 s while a run goes.
-Not yet: the online workspace; checked by hand on macOS only.
+
+Built, the second half (S075): "from GitHub" on the start page (a typed
+repository or link, your repositories, the branch), the palette's and file
+menu's "open from GitHub…", recents that clone again; the clone opened as
+a folder, marked in the status bar and the explorer; what closing would
+lose asked first, then the clone deleted; clones left by a window that quit
+cleaned up or offered; a read-only repository's fork. Not yet: checked by
+hand on macOS only.
 
 ## M13: The 3D world (planned)
 
@@ -486,7 +491,11 @@ and tests it on Windows and Linux (S058). On each, with SuuUI's workspace:
     review; reply to a thread and resolve it; merge one; push a new branch
     and create its pull request from the git page; open a failed run's
     step log and annotations, re-run its failed jobs and watch it in the
-    status bar until the notification.
+    status bar until the notification; open a repository from GitHub by
+    typing it and from your list, change a file and close: the dialog lists
+    it; commit and push, close: it goes without asking; quit with a change
+    and see the start page offer the clone; open a repository you can't
+    push to and fork it.
 
 ## Open questions
 
@@ -498,7 +507,7 @@ Asked when their milestone starts; nothing here is decided yet.
 ## Design changes owed
 
 Where Studio was decided to differ from the canvas, or the canvas is
-missing a part; the canvas is updated to match. None are owed now: on 2026-10-30 the settings board got the git section (fetch every) and the editor's blame row, the git board the changes' stage all and the staged files' unstage all (S070).
+missing a part; the canvas is updated to match. On 2026-10-30 the settings board got the git section (fetch every) and the editor's blame row, the git board the changes' stage all and the staged files' unstage all (S070). None are owed now: on 2026-10-30 the start board got a clone's progress ("from GitHub, cloning") and the from-GitHub board the closing dialog's "discard them and close" (S075).
 
 Brought up to date on 2026-10-27: the panels board's presets
 for every page (S017), the palette's prompt (S018), the menus (S019), the

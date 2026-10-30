@@ -38,7 +38,7 @@ pub struct Finished {
 pub struct GithubState {
     root: Option<PathBuf>,
     /// The repository, its default branch and the signed-in login.
-    pub repo: Option<Result<(Repo, String, String), GithubError>>,
+    pub repo: Option<Result<(Repo, String, String, bool), GithubError>>,
     pub pulls: Option<Result<Vec<PullSummary>, GithubError>>,
     pub details: HashMap<u64, PullDetail>,
     pub runs: Option<Result<Vec<Run>, GithubError>>,
@@ -113,7 +113,7 @@ impl GithubState {
     /// The signed-in login, once known.
     pub fn login(&self) -> Option<&str> {
         match &self.repo {
-            Some(Ok((_, _, login))) => Some(login),
+            Some(Ok((_, _, login, _))) => Some(login),
             _ => None,
         }
     }
@@ -315,7 +315,7 @@ impl GithubState {
     /// The base a new pull request of `branch` would have, when GitHub is
     /// read and the branch has none yet (not the default branch itself).
     pub fn pull_wanted(&self, branch: &str) -> Option<&str> {
-        let Some(Ok((_, default, _))) = &self.repo else {
+        let Some(Ok((_, default, _, _))) = &self.repo else {
             return None;
         };
         let read = matches!(self.pulls, Some(Ok(_)));
@@ -366,6 +366,7 @@ mod tests {
                 },
                 "main".into(),
                 "me".into(),
+                true,
             ))),
         );
         s.event(
@@ -398,6 +399,7 @@ mod tests {
             },
             "main".into(),
             "me".into(),
+            true,
         )));
         assert_eq!(
             s.pull_wanted("feat"),

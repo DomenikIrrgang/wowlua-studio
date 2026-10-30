@@ -653,6 +653,8 @@ pub struct Session<'a> {
     pub lead: f32,
     /// The workspace's folder: its name, its path for the tooltip (S071).
     pub folder: Option<(&'a str, String)>,
+    /// The folder is a clone of Studio's from GitHub (M12).
+    pub cloned: bool,
 }
 
 /// The status bar: wowlua's version and the session, and at its right
@@ -688,13 +690,22 @@ pub fn status_bar(
         icons::paint(
             &painter,
             Rect::from_min_size(Pos2::new(x, cy - 7.0), Vec2::splat(14.0)),
-            Icon::Folder,
+            if session.cloned {
+                Icon::Repo
+            } else {
+                Icon::Folder
+            },
             p.ink_muted,
         );
+        let shown = if session.cloned {
+            format!("{name} · from GitHub")
+        } else {
+            (*name).to_owned()
+        };
         let r = painter.text(
             Pos2::new(x + 20.0, cy),
             Align2::LEFT_CENTER,
-            *name,
+            shown,
             font.clone(),
             p.ink,
         );
@@ -707,7 +718,11 @@ pub fn status_bar(
             Id::unique("wowlua-studio-status-folder"),
             Sense::hover(),
         )
-        .on_hover_text(format!("the workspace's folder: {path}"));
+        .on_hover_text(if session.cloned {
+            format!("a clone in Studio's data, deleted when the workspace closes: {path}")
+        } else {
+            format!("the workspace's folder: {path}")
+        });
         x = r.right() + 14.0;
     }
     let lead = x - 6.0;

@@ -23,6 +23,9 @@ pub enum Command {
     /// Opens a folder from the system's picker (S025: in this window or a
     /// new one, when this one has a workspace).
     OpenFolder,
+    /// The start page's from-GitHub panel (M12); a new window's, when this
+    /// one has a workspace.
+    OpenFromGithub,
     /// An empty window, a process of its own (S031).
     NewWindow,
     /// Closes the workspace: the window shows the start page.
@@ -140,6 +143,14 @@ pub fn entries(
         "a package or workspace",
         Some(Menu::File),
         Some(KeyboardShortcut::new(Modifiers::COMMAND, Key::O)),
+    );
+    add(
+        Command::OpenFromGithub,
+        "file",
+        "open from GitHub…",
+        "clone a repository and open it",
+        Some(Menu::File),
+        None,
     );
     if !workspace {
         add(

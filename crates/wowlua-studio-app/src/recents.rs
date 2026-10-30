@@ -24,6 +24,10 @@ pub struct Recent {
     pub cannot_check: Option<String>,
     /// When it was last opened, in seconds since the Unix epoch.
     pub opened: u64,
+    /// The GitHub repository (`owner/name`) and branch of a clone of
+    /// Studio's (M12): opening it clones again.
+    #[serde(default)]
+    pub github: Option<(String, String)>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -45,9 +49,19 @@ impl Recents {
                 flavors: workspace.flavors.clone(),
                 cannot_check: workspace.cannot_check.clone(),
                 opened: now,
+                github: None,
             },
         );
         self.list.truncate(KEEP);
+    }
+
+    /// Puts a clone of `repo` at `branch` at the top, in place of the
+    /// repository's earlier clones.
+    pub fn opened_clone(&mut self, workspace: &Workspace, repo: &str, branch: &str, now: u64) {
+        self.list
+            .retain(|r| r.github.as_ref().is_none_or(|(g, _)| g != repo));
+        self.opened(workspace, now);
+        self.list[0].github = Some((repo.to_owned(), branch.to_owned()));
     }
 
     pub fn forget(&mut self, path: &Path) {
@@ -125,6 +139,17 @@ mod tests {
             flavors: vec!["camelot".into()],
             cannot_check: None,
         }
+    }
+
+    #[test]
+    fn a_clone_s_recent_takes_the_place_of_the_repository_s_earlier_one() {
+        let mut r = Recents::default();
+        r.opened(&workspace("/p/folder", &["a"]), 1);
+        r.opened_clone(&workspace("/data/clones/o-r-1/r", &["r"]), "o/r", "main", 2);
+        r.opened_clone(&workspace("/data/clones/o-r-2/r", &["r"]), "o/r", "feat", 3);
+        assert_eq!(r.list.len(), 2, "one entry for the repository");
+        assert_eq!(r.list[0].github, Some(("o/r".into(), "feat".into())));
+        assert_eq!(r.list[1].github, None);
     }
 
     #[test]
