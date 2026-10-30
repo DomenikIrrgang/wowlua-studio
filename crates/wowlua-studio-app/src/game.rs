@@ -28,6 +28,9 @@ pub enum Mode {
     /// Picks the frame drawn there for the inspector.
     #[default]
     Inspect,
+    /// Plays: the key bindings move the character, the mouse turns the
+    /// camera and targets (S079).
+    Play,
     Click,
     Hover,
     Drag,
@@ -35,8 +38,9 @@ pub enum Mode {
     Key,
 }
 
-const MODES: [(Mode, &str); 6] = [
+const MODES: [(Mode, &str); 7] = [
     (Mode::Inspect, "inspect"),
+    (Mode::Play, "play"),
     (Mode::Click, "click"),
     (Mode::Hover, "hover"),
     (Mode::Drag, "drag"),
@@ -360,15 +364,25 @@ pub struct GameState {
     pub full: Option<(u32, u32)>,
     /// Lines the screenshot harness types into the chat once it runs.
     pub chat_later: Vec<String>,
+    /// A key the screenshot harness holds in play mode once the game runs,
+    /// for so many seconds; and until when it is held.
+    pub hold_later: Option<(String, f64)>,
+    held_until: Option<(String, f64)>,
     /// The session's clock is manual (the debugger's): a chat line moves
     /// it a frame, for the server's answer to come.
     pub manual: bool,
     started_at: Option<f64>,
+    /// The keys held down in play mode, as WoW names each (its up goes
+    /// by the same name).
+    held: std::collections::HashMap<Key, String>,
     /// The 3D world behind the UI (M13, S078); the UI draws over black
     /// without it.
     pub world: bool,
     /// What the session was told of the world last (none: nothing yet).
     world_sent: Option<bool>,
+    /// Play mode runs the session's clock in real time over a manual one
+    /// (S079): whether it does now.
+    clock_run: bool,
     /// The session reads the installation's game data: the world can be
     /// shown (Settings › game screen › answer from the installation's data).
     pub world_ready: bool,
@@ -429,6 +443,7 @@ impl GameState {
             full: keep.7,
             shots: std::mem::take(&mut self.shots),
             chat_later: std::mem::take(&mut self.chat_later),
+            hold_later: self.hold_later.take(),
             world,
             world_ready,
             ..GameState::default()
@@ -616,6 +631,32 @@ impl GameState {
             self.ask(system, Asked::Settings, GameRequest::ShowWorld { on });
             self.world_sent = Some(on);
         }
+        // (play mode on a manual clock: time runs while playing, and the
+        // clock is manual again after, S079)
+        let run = self.mode == Mode::Play && self.manual;
+        if self.running() && run != self.clock_run {
+            self.ask(
+                system,
+                Asked::Settings,
+                GameRequest::SetClock { manual: !run },
+            );
+            self.clock_run = run;
+        }
+        if let Some((key, until)) = self.held_until.clone()
+            && now >= until
+        {
+            self.play(system, GameInput::KeyUp(key));
+            self.held_until = None;
+        }
+        if self.running()
+            && self.hold_later.is_some()
+            && now - *self.started_at.get_or_insert(now) >= 8.0
+            && let Some((key, seconds)) = self.hold_later.take()
+        {
+            self.mode = Mode::Play;
+            self.play(system, GameInput::KeyDown(key.clone()));
+            self.held_until = Some((key, now + seconds));
+        }
         if self.chat_later.is_empty() || !self.running() {
             return;
         }
@@ -665,6 +706,11 @@ impl GameState {
             self.size = size;
             self.apply_settings(system);
         }
+    }
+
+    /// Play mode's input: many a second, so not in the input panel's list.
+    fn play(&mut self, system: &dyn System, input: GameInput) {
+        self.ask(system, Asked::Settings, GameRequest::Input(input));
     }
 
     fn give(&mut self, system: &dyn System, kind: &'static str, text: String, input: GameInput) {
@@ -1052,6 +1098,37 @@ fn pointer(
                 state.ask(system, Asked::Pick, GameRequest::Pick { x, y });
             }
         }
+        Mode::Play => {
+            // (a drag turns the camera, the right button the player too;
+            // a click the frame or unit there; the wheel zooms)
+            let d = response.drag_delta() / scale;
+            if d != egui::Vec2::ZERO {
+                let turn = response.dragged_by(egui::PointerButton::Secondary);
+                state.play(
+                    system,
+                    GameInput::Look {
+                        dx: f64::from(d.x),
+                        dy: f64::from(d.y),
+                        turn,
+                    },
+                );
+            }
+            if response.clicked()
+                && let Some(pos) = response.interact_pointer_pos()
+            {
+                let (x, y) = at(pos);
+                state.play(system, GameInput::ClickWorld { x, y });
+                response.request_focus();
+            }
+            if response.hovered() {
+                let scroll = ui.input(|i| i.smooth_scroll_delta().y);
+                if scroll != 0.0 {
+                    // (a notch, about 50 points: a yard nearer)
+                    state.play(system, GameInput::Zoom(-f64::from(scroll) / 50.0));
+                }
+            }
+            keys(ui, state, system, response);
+        }
         Mode::Click => {
             for (clicked, right) in [
                 (response.clicked(), false),
@@ -1104,47 +1181,71 @@ fn pointer(
                 );
             }
         }
-        Mode::Type | Mode::Key => {
-            if response.clicked() {
-                response.request_focus();
-            }
-            if response.has_focus() {
-                let events = ui.input(|i| i.events.clone());
-                for e in events {
-                    match (state.mode, e) {
-                        (Mode::Type, egui::Event::Text(t)) => {
-                            state.give(system, "type", t.clone(), GameInput::Type(t));
-                        }
-                        (
-                            Mode::Key,
-                            egui::Event::Key {
-                                key,
-                                pressed: true,
-                                modifiers,
-                                ..
-                            },
-                        ) => {
-                            if let Some(name) = wow_key(key, modifiers) {
-                                state.give(system, "key", name.clone(), GameInput::Key(name));
-                            }
-                        }
-                        _ => {}
+        Mode::Type | Mode::Key => keys(ui, state, system, response),
+    }
+}
+
+/// The keyboard on the screen while it has the focus (a click gives it):
+/// text typed, keys pressed, or in play mode keys held.
+fn keys(ui: &mut Ui, state: &mut GameState, system: &dyn System, response: &egui::Response) {
+    if response.clicked() {
+        response.request_focus();
+    }
+    if response.has_focus() {
+        let events = ui.input(|i| i.events.clone());
+        for e in events {
+            match (state.mode, e) {
+                (Mode::Type, egui::Event::Text(t)) => {
+                    state.give(system, "type", t.clone(), GameInput::Type(t));
+                }
+                (
+                    Mode::Key,
+                    egui::Event::Key {
+                        key,
+                        pressed: true,
+                        modifiers,
+                        ..
+                    },
+                ) => {
+                    if let Some(name) = wow_key(key, modifiers) {
+                        state.give(system, "key", name.clone(), GameInput::Key(name));
                     }
                 }
-                // (keys stay the client's while the screen has the focus)
-                ui.memory_mut(|m| {
-                    m.set_focus_lock_filter(
-                        response.id,
-                        egui::EventFilter {
-                            tab: true,
-                            horizontal_arrows: true,
-                            vertical_arrows: true,
-                            escape: true,
-                        },
-                    );
-                });
+                // (play: held down until let go, by the same name)
+                (
+                    Mode::Play,
+                    egui::Event::Key {
+                        key,
+                        pressed,
+                        repeat: false,
+                        modifiers,
+                        ..
+                    },
+                ) => {
+                    if pressed {
+                        if let Some(name) = wow_key(key, modifiers) {
+                            state.held.insert(key, name.clone());
+                            state.play(system, GameInput::KeyDown(name));
+                        }
+                    } else if let Some(name) = state.held.remove(&key) {
+                        state.play(system, GameInput::KeyUp(name));
+                    }
+                }
+                _ => {}
             }
         }
+        // (keys stay the client's while the screen has the focus)
+        ui.memory_mut(|m| {
+            m.set_focus_lock_filter(
+                response.id,
+                egui::EventFilter {
+                    tab: true,
+                    horizontal_arrows: true,
+                    vertical_arrows: true,
+                    escape: true,
+                },
+            );
+        });
     }
 }
 

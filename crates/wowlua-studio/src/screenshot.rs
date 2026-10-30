@@ -168,6 +168,11 @@ impl Screenshot {
                 studio.world_on();
                 continue;
             }
+            if let Some(rest) = step.strip_prefix("hold:") {
+                let (key, secs) = rest.split_once(':').unwrap_or((rest, "1"));
+                studio.hold_later(key, secs.parse().unwrap_or(1.0));
+                continue;
+            }
             if let Some(rest) = step.strip_prefix("github:") {
                 studio.github_show(rest);
                 continue;

@@ -392,6 +392,24 @@ pub enum GameInput {
     Type(String),
     /// A key or binding by WoW's name (`ESCAPE`, `SHIFT-1`).
     Key(String),
+    /// A key held down, and let go (play mode, S079; wowlua T516).
+    KeyDown(String),
+    KeyUp(String),
+    /// The mouse dragged over the world (wowlua T528): the camera turns;
+    /// `turn` (the right button), the player with it.
+    Look {
+        dx: f64,
+        dy: f64,
+        turn: bool,
+    },
+    /// The mouse wheel over the world: the camera zooms out `steps` yards.
+    Zoom(f64),
+    /// A click on the world: the frame there clicked, else the unit
+    /// there targeted.
+    ClickWorld {
+        x: f64,
+        y: f64,
+    },
     /// A slash command (`/wl`).
     Slash(String),
     /// A chat message as the player sends it (`SAY`, `PARTY`, a

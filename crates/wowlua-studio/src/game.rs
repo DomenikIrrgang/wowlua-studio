@@ -165,6 +165,11 @@ fn to_debug(request: GameRequest) -> Request {
                 GameInput::Drag { x, y, dx, dy } => protocol::Input::DragAt { x, y, dx, dy },
                 GameInput::Type(text) => protocol::Input::Type { text },
                 GameInput::Key(key) => protocol::Input::Key { key },
+                GameInput::KeyDown(key) => protocol::Input::KeyDown { key },
+                GameInput::KeyUp(key) => protocol::Input::KeyUp { key },
+                GameInput::Look { dx, dy, turn } => protocol::Input::Look { dx, dy, turn },
+                GameInput::Zoom(steps) => protocol::Input::Zoom { steps },
+                GameInput::ClickWorld { x, y } => protocol::Input::ClickWorld { x, y },
                 GameInput::Slash(text) => protocol::Input::Slash { text },
                 GameInput::Chat {
                     text,
