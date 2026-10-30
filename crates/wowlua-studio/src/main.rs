@@ -11,6 +11,7 @@ mod frame_stats;
 mod game;
 mod gamedata;
 mod git;
+mod github;
 mod log;
 mod lsp;
 #[cfg(target_os = "macos")]

@@ -76,6 +76,9 @@ pub struct GitState {
     pub busy: Option<String>,
     /// A push to follow the pull under way (the changes panel's sync).
     pub then_push: bool,
+    /// The branch last pushed, until its pull request is opened or the
+    /// page's note about it dismissed (M12).
+    pub pushed: Option<String>,
     /// The status bar's branch list open, and what is typed to find one.
     pub bar_open: bool,
     pub bar_query: String,
@@ -121,6 +124,7 @@ impl Default for GitState {
             dialog: None,
             busy: None,
             then_push: false,
+            pushed: None,
             bar_open: false,
             bar_query: String::new(),
             harness: None,
@@ -464,6 +468,9 @@ impl GitState {
                 match result {
                     Ok(c) => {
                         self.message.clear();
+                        if matches!(c.pushed, Some(Ok(_))) {
+                            self.pushed = self.status.as_ref().and_then(|s| s.branch.clone());
+                        }
                         self.callout = Some(Callout::Committed(c));
                     }
                     Err(stop) => self.callout = Some(Callout::Stopped(stop)),
@@ -482,6 +489,9 @@ impl GitState {
                         system.git(root, GitRequest::Push);
                     }
                     return;
+                }
+                if what == "push" && result.is_ok() {
+                    self.pushed = self.status.as_ref().and_then(|s| s.branch.clone());
                 }
                 if !quiet {
                     self.busy = None;

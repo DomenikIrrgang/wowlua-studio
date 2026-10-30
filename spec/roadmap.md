@@ -423,6 +423,15 @@ Artboards: pull request, online workspace.
   installs one for the whole process) and wowlua's commands run in Studio's
   process for its terminal.
 
+Built, the first half (S072, S073, S074): the pull requests page with the
+open pull requests and the workflow runs; a pull request's conversation,
+its files with line comments and threads, reviews with pending comments,
+merging, and new pull requests from a pushed branch (also from the git
+page after a push); a run's jobs, steps, logs and annotations, re-run and
+cancel; your runs in progress as status bar jobs, told when they end;
+GitHub read on open, with git's fetch and every 15 s while a run goes.
+Not yet: the online workspace; checked by hand on macOS only.
+
 ## M13: The 3D world (planned)
 
 Needs new work in wowlua: unit positions in the engine and world profiles,
@@ -473,6 +482,11 @@ and tests it on Windows and Linux (S058). On each, with SuuUI's workspace:
     GitHub sign-in and with your git setup signed out; resolve a merge
     conflict in the editor with its lenses; the status bar's branch list;
     the gutter's marks and blame as you type.
+12. **M12**: open a pull request, comment on a line and send it with a
+    review; reply to a thread and resolve it; merge one; push a new branch
+    and create its pull request from the git page; open a failed run's
+    step log and annotations, re-run its failed jobs and watch it in the
+    status bar until the notification.
 
 ## Open questions
 
