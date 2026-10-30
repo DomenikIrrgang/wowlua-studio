@@ -184,6 +184,9 @@ pub struct GameState {
     pub mode: Mode,
     zoom: usize,
     slash: String,
+    /// The 3D world behind the UI (M13); the UI draws over black without
+    /// it.
+    pub world: bool,
     drag_from: Option<Pos2>,
     hovered_at: Option<(i32, i32)>,
     /// The game's settings as the toolbar shows them.
@@ -628,6 +631,15 @@ fn toolbar(ui: &mut Ui, state: &mut GameState, system: &dyn System, p: &Palette)
             if let Some(i) = widgets::seg(ui, "game-mode", &labels, at, false) {
                 state.mode = MODES[i].0;
             }
+            // The 3D world behind the UI: a toggle of the screen (M13,
+            // not built yet: the UI draws over black).
+            ui.add_enabled_ui(false, |ui| {
+                forms::checkbox(ui, &mut state.world, "3D world", None);
+            })
+            .response
+            .on_disabled_hover_text(
+                "the 3D world behind the UI comes with M13; until then the UI draws over black",
+            );
             ui.label(
                 egui::RichText::new("/")
                     .font(Face::Plex.at(12.0))

@@ -255,7 +255,13 @@ struct Ask {
 impl Studio {
     pub fn new(ctx: &Context, host: Host) -> Self {
         let settings: Settings = state::parse(host.store.load(SETTINGS_FILE));
-        let layouts: Layouts = state::parse(host.store.load(LAYOUTS_FILE));
+        let mut layouts: Layouts = state::parse(host.store.load(LAYOUTS_FILE));
+        // (the 3D world is the game screen's toggle now, no tab of its own)
+        for pages in layouts.workspaces.values_mut() {
+            for layout in pages.values_mut() {
+                layout.remove(Panel::World3d);
+            }
+        }
         let recents: Recents = state::parse(host.store.load(RECENTS_FILE));
         wowlua_studio_ui::install(ctx, settings.theme());
         host.system.find_installation();
