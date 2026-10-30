@@ -353,10 +353,20 @@ fn run(
     let Some(projects) = load_projects(&mut driver, &options) else {
         return Some(first_error(&driver).unwrap_or_else(|| "the workspace does not load".into()));
     };
-    // The addon: the workspace's root package's, else its first addon.
+    // The addon: the one picked (the title bar's package), else the
+    // workspace's root package's, else its first addon.
+    let wanted = launch
+        .package
+        .as_ref()
+        .and_then(|d| std::fs::canonicalize(d).ok());
     let Some(project) = projects
         .iter()
-        .find(|p| matches!(p.kind(), PackageKind::Addon))
+        .find(|p| wanted.is_some() && std::fs::canonicalize(p.root()).ok() == wanted)
+        .or_else(|| {
+            projects
+                .iter()
+                .find(|p| matches!(p.kind(), PackageKind::Addon))
+        })
         .or_else(|| projects.first())
     else {
         return Some("the workspace has no addon".into());

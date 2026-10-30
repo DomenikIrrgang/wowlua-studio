@@ -152,9 +152,28 @@ pub fn select(
     selected: &mut usize,
     width: f32,
 ) -> bool {
+    select_sized(ui, id, options, selected, width, CONTROL_H)
+}
+
+/// [`select`] at a height of its own: a small one (under 32 px, the title
+/// bar's) has smaller text and a tighter chevron.
+pub fn select_sized(
+    ui: &mut Ui,
+    id: &str,
+    options: &[(&str, bool)],
+    selected: &mut usize,
+    width: f32,
+    height: f32,
+) -> bool {
     let p = palette(ui.ctx());
     let enabled = ui.is_enabled();
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, CONTROL_H), Sense::click());
+    let small = height < 32.0;
+    let (pad, chevron, size) = if small {
+        (8.0, 12.0, 12.0)
+    } else {
+        (12.0, 18.0, 13.5)
+    };
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::click());
     let current = options.get(*selected).map_or("", |o| o.0);
     response.widget_info(|| WidgetInfo::labeled(Role::ComboBox, enabled, current));
     let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&response));
@@ -174,16 +193,19 @@ pub fn select(
         StrokeKind::Inside,
     );
     let ink = if enabled { p.ink } else { p.ink_faint };
-    let text_rect = Rect::from_min_max(rect.min, Pos2::new(rect.right() - 36.0, rect.bottom()));
+    let text_rect = Rect::from_min_max(
+        rect.min,
+        Pos2::new(rect.right() - chevron * 2.0, rect.bottom()),
+    );
     painter.with_clip_rect(text_rect).text(
-        Pos2::new(rect.left() + 12.0, rect.center().y),
+        Pos2::new(rect.left() + pad, rect.center().y),
         Align2::LEFT_CENTER,
         current,
-        Face::Plex.at(13.5),
+        Face::Plex.at(size),
         ink,
     );
     // The chevron: a 6 px corner turned down.
-    let c = Pos2::new(rect.right() - 18.0, rect.center().y - 1.5);
+    let c = Pos2::new(rect.right() - chevron, rect.center().y - 1.5);
     painter.line(
         vec![
             c + Vec2::new(-3.5, -1.75),

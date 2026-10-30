@@ -19,6 +19,19 @@ use wowlua_studio_app::system::{
     ShipEvent, Syntax, System, UiState, Workspace,
 };
 
+/// Git's own files the git page follows: `HEAD`, the index, the refs
+/// and a merge's state (M11).
+fn git_state_file(p: &Path) -> bool {
+    let s = p.to_string_lossy().replace('\\', "/");
+    let Some((_, inside)) = s.split_once("/.git/") else {
+        return false;
+    };
+    matches!(
+        inside,
+        "HEAD" | "index" | "MERGE_HEAD" | "ORIG_HEAD" | "FETCH_HEAD" | "packed-refs"
+    ) || inside.starts_with("refs/")
+}
+
 /// Folders the explorer and the watcher leave out: build output and the
 /// tools' own.
 const SKIPPED: &[&str] = &["dist", "target", "node_modules"];
@@ -233,9 +246,11 @@ impl System for NativeSystem {
             let paths: Vec<PathBuf> = event
                 .paths
                 .into_iter()
-                // Git's own files stay out, but `HEAD`: a checkout (S049).
+                // Git's own files stay out, but `HEAD` (a checkout, S049)
+                // and what the git page follows: the index, the refs, a
+                // merge (M11).
                 .filter(|p| {
-                    p.ends_with(".git/HEAD")
+                    git_state_file(p)
                         || !p
                             .components()
                             .any(|c| skipped(&c.as_os_str().to_string_lossy()))
@@ -585,6 +600,17 @@ impl System for NativeSystem {
         });
     }
 
+    fn git(&self, root: &Path, request: wowlua_studio_app::system::GitRequest) {
+        let root = root.to_path_buf();
+        self.spawn(move || {
+            let creds = crate::git::Credentials {
+                github_token: crate::settings::github_token(),
+            };
+            let event = crate::git::answer(&root, request, &creds);
+            Event::Git(root, event)
+        });
+    }
+
     fn binding_actions(&self, flavor: &str) -> Vec<(String, String)> {
         crate::bindings::actions(flavor)
     }
@@ -885,6 +911,7 @@ fn workspace_of(projects: &[wowlua_driver::project::Project]) -> Workspace {
                     .map(|r| r.to_string_lossy().replace('\\', "/"))
                     .unwrap_or_default(),
                 dir: p.manifest.root.clone(),
+                flavors: p.manifest.flavors.clone(),
             }
         })
         .collect();
@@ -934,6 +961,15 @@ fn raw_workspace(manifest: &Path, why: &str) -> Option<Workspace> {
             .map(|r| r.to_string_lossy().replace('\\', "/"))
             .unwrap_or_default(),
         dir: dir.to_path_buf(),
+        flavors: value
+            .get("flavors")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|f| f.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default(),
     };
     let mut members = vec![member_of(&root, &value)];
     let patterns = value

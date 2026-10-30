@@ -19,6 +19,8 @@ pub struct Member {
     pub dir: PathBuf,
     /// The folder relative to the workspace's root, empty for the root.
     pub rel: String,
+    /// The flavors it targets (`flavors` in its `wowlua.json`).
+    pub flavors: Vec<String>,
 }
 
 /// An opened workspace: a package, or a workspace root with its members.
@@ -173,6 +175,9 @@ pub enum Event {
     GameArt(Art, Option<Image>),
     /// The client's spells a search found: the query, the spells.
     Spells(String, Vec<SpellRow>),
+    /// The repository's answer (M11): the workspace's root asked about, and
+    /// what came back.
+    Git(PathBuf, GitEvent),
     /// What an ID picker's search found (→ [`System::find`]): what, the
     /// flavor, the query, the rows.
     Found(Find, String, String, Vec<SpellRow>),
@@ -320,6 +325,9 @@ pub struct Launch {
     /// A test file (its path from the package's root) and the tests whose
     /// names contain any of `filters`; none: the addon.
     pub test: Option<(String, Vec<String>)>,
+    /// The workspace's addon to run (its folder); none: the root's, else
+    /// the first addon.
+    pub package: Option<PathBuf>,
     pub flavor: Option<String>,
     /// The world profile over `test.profile`.
     pub profile: Option<String>,
@@ -601,6 +609,148 @@ pub struct ClassSpell {
     pub level: u32,
     pub line: String,
     pub icon: Option<u32>,
+}
+
+/// What Studio asks of the repository (M11, → [`Event::Git`]).
+#[derive(Clone, Debug, PartialEq)]
+pub enum GitRequest {
+    Status,
+    Branches,
+    /// The last commits of a branch or commit (HEAD when none).
+    Log {
+        rev: Option<String>,
+        count: usize,
+    },
+    Diff {
+        path: String,
+        of: crate::git::model::DiffOf,
+    },
+    CommitFiles(String),
+    Stage(Vec<String>),
+    Unstage(Vec<String>),
+    /// Changes thrown away (asked first: they can't be brought back).
+    Discard(Vec<String>),
+    Hunk {
+        path: String,
+        hunk: crate::git::model::Hunk,
+        how: crate::git::model::Apply,
+    },
+    /// A commit of what is staged: its `.wowlua` files formatted and
+    /// staged again, then checked, first when asked (S069); pushed after
+    /// when asked.
+    Commit {
+        message: String,
+        format_and_check: bool,
+        push: bool,
+    },
+    Push,
+    Pull,
+    /// A fetch: `quiet` when Studio fetches on its own (S070).
+    Fetch {
+        quiet: bool,
+    },
+    /// The changed files a switch to `target` would overwrite.
+    Blocking(String),
+    Switch {
+        target: String,
+        carry: crate::git::model::Carry,
+    },
+    SwitchCommit(String),
+    NewBranch {
+        name: String,
+        from: Option<String>,
+        switch: bool,
+    },
+    BranchName(String),
+    Revert(String),
+    TakeSide {
+        path: String,
+        side: crate::git::model::Side,
+    },
+    Abort,
+    /// Who last changed each line of a file as the editor has it.
+    Blame {
+        path: String,
+        contents: String,
+    },
+    HeadText(String),
+}
+
+/// What a commit stopped at (S069): the staged files' errors, or git's.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CommitStop {
+    /// wowlua check's errors in staged files: file, line (1-based), code
+    /// and message.
+    Errors {
+        formatted: Vec<String>,
+        errors: Vec<(String, u32, String, String)>,
+    },
+    Failed(String),
+}
+
+/// A commit made (S069).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Committed {
+    pub hash: String,
+    pub message: String,
+    /// The staged files wowlua fmt changed and staged again.
+    pub formatted: Vec<String>,
+    /// Files with unstaged changes too: checked, not formatted.
+    pub not_formatted: Vec<String>,
+    pub checked: bool,
+    pub warnings: usize,
+    /// What the repository's hooks printed.
+    pub hooks: String,
+    /// The push after it, when one was asked for.
+    pub pushed: Option<Result<String, crate::git::model::RemoteError>>,
+}
+
+/// What the repository answered (→ [`System::git`]).
+#[derive(Clone, Debug, PartialEq)]
+pub enum GitEvent {
+    Status(Result<crate::git::model::Status, String>),
+    Branches(Result<Vec<crate::git::model::Branch>, String>),
+    Log {
+        rev: Option<String>,
+        result: Result<Vec<crate::git::model::Commit>, String>,
+    },
+    Diff {
+        path: String,
+        of: crate::git::model::DiffOf,
+        result: Result<crate::git::model::Diff, String>,
+    },
+    CommitFiles {
+        hash: String,
+        result: Result<Vec<crate::git::model::CommitFile>, String>,
+    },
+    /// A change of the repository done (staging, switching, a branch, a
+    /// revert, a conflict taken): what it did, or why not.
+    Done {
+        what: String,
+        result: Result<String, String>,
+    },
+    Committed(Result<Committed, CommitStop>),
+    Remote {
+        what: String,
+        quiet: bool,
+        result: Result<String, crate::git::model::RemoteError>,
+    },
+    Blocking {
+        target: String,
+        files: Result<Vec<String>, String>,
+    },
+    BranchName {
+        name: String,
+        bad: Option<String>,
+    },
+    Blame {
+        path: String,
+        result: Result<Vec<crate::git::model::BlameLine>, String>,
+    },
+    HeadText {
+        path: String,
+        text: Option<String>,
+    },
 }
 
 /// What an ID picker finds in the flavor's client: a spell or an item.
@@ -1596,6 +1746,8 @@ pub trait System {
     fn binding_actions(&self, _flavor: &str) -> Vec<(String, String)> {
         Vec::new()
     }
+    /// A question for the Git repository `root` is in (M11, → [`Event::Git`]).
+    fn git(&self, _root: &Path, _request: GitRequest) {}
     /// The CVars the flavor's client has, with their defaults (wowlua's
     /// recorded ones); none where wowlua has none.
     fn cvars(&self, _flavor: &str) -> Vec<CVarInfo> {

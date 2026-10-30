@@ -14,6 +14,7 @@ pub mod editor;
 pub mod explorer;
 pub mod flavors;
 pub mod game;
+pub mod git;
 pub mod jobs;
 pub mod keys;
 pub mod lsp;
@@ -130,6 +131,7 @@ pub struct Studio {
     world: world::WorldState,
     /// The ship page (M9, S061).
     ship: ship::ShipState,
+    git: git::GitState,
     /// The settings page (M10, S062).
     settings_page: settings::SettingsState,
     /// The wowlua.json tabs' forms (S063).
@@ -148,6 +150,8 @@ pub struct Studio {
     gutter_seen: bool,
     /// The workspace's world profiles (`tests/profiles/*.json`), by name.
     profiles: Vec<String>,
+    /// The world profiles of the title bar's addon, by its folder.
+    run_profiles: Option<(PathBuf, Vec<String>)>,
     /// Background jobs (S044); the checks running, by package.
     jobs: jobs::Jobs,
     checks: std::collections::HashMap<PathBuf, u64>,
@@ -269,6 +273,7 @@ impl Studio {
             profiler: profiler::ProfilerState::default(),
             world: world::WorldState::default(),
             ship: ship::ShipState::default(),
+            git: git::GitState::default(),
             settings_page: settings::SettingsState::default(),
             manifests: manifest::Manifests::default(),
             queued_manifest: None,
@@ -277,6 +282,7 @@ impl Studio {
             debug_seen: (Vec::new(), false),
             gutter_seen: false,
             profiles: Vec::new(),
+            run_profiles: None,
             jobs: jobs::Jobs::default(),
             checks: std::collections::HashMap::new(),
             outline: None,
@@ -472,6 +478,11 @@ impl Studio {
     pub fn ui(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
         self.events(&ctx);
+        self.git.tick(
+            &*self.host.system,
+            self.settings.git_fetch_minutes,
+            ctx.input(|i| i.time),
+        );
         let focused = ctx.input(|i| i.focused);
         if focused && !self.focused {
             // Another window may have changed the recents, Git the branch.
@@ -479,6 +490,8 @@ impl Studio {
             if let Some(w) = &self.workspace {
                 self.branch = self.host.system.branch(&w.root);
             }
+            // (Git may have changed the repository outside Studio)
+            self.git.files_changed(&[]);
         }
         self.focused = focused;
         // The OS's theme can change under a `system` theme.
@@ -662,12 +675,31 @@ impl Studio {
             full.max,
         );
 
-        let chip = self.workspace.as_ref().map(|w| chrome::Chip {
-            name: &w.name,
-            branch: self.branch.as_deref(),
-            folder: recents::tilde(&w.root, self.home.as_deref()),
+        // The run controls (S071): the addon, flavor and world profile
+        // picked, the session's state.
+        let run = self.run_choices();
+        let mut picked = None;
+        let bar = run.as_ref().map(|r| chrome::RunBar {
+            packages: &r.packages,
+            package: r.package,
+            flavors: &r.flavors,
+            flavor: r.flavor,
+            profiles: &r.profiles,
+            profile: r.profile,
+            state: r.state.clone(),
         });
-        chrome::title_bar(ui, title, self.host.platform, &entries, chip, &mut commands);
+        chrome::title_bar(
+            ui,
+            title,
+            self.host.platform,
+            &entries,
+            bar,
+            &mut commands,
+            &mut picked,
+        );
+        if let (Some(pick), Some(r)) = (picked, &run) {
+            self.run_picked(pick, r);
+        }
         let mut right = self.status_items();
         if let Some(stats) = self.frame_stats(&ctx) {
             right.push(stats);
@@ -691,6 +723,14 @@ impl Studio {
                         (e, w)
                     }
                 });
+        // The workspace's folder in the status bar (S071).
+        let folder = self.workspace.as_ref().map(|w| {
+            let name = w
+                .root
+                .file_name()
+                .map_or_else(|| w.name.clone(), |n| n.to_string_lossy().into_owned());
+            (name, recents::tilde(&w.root, self.home.as_deref()))
+        });
         let session = chrome::Session {
             text: match (&self.workspace, &checks_off) {
                 (None, _) => "no folder open",
@@ -702,9 +742,13 @@ impl Studio {
             warning: checks_off.is_some(),
             right: &right,
             inset: self.notes.tray_width(),
+            lead: git::bar::width(ui, &self.git),
+            folder: folder.as_ref().map(|(n, path)| (n.as_str(), path.clone())),
         };
-        let session_end = chrome::status_bar(ui, status, &self.host.wowlua_version, &session);
+        let (lead_x, session_end) =
+            chrome::status_bar(ui, status, &self.host.wowlua_version, &session);
         let cy = status.center().y;
+        git::bar::button(ui, &mut self.git, &*self.host.system, lead_x, cy);
         let job_w = if self.workspace.is_some() {
             self.jobs.button(ui, session_end + 14.0, cy)
         } else {
@@ -722,6 +766,15 @@ impl Studio {
             layout.reveal(panel, dock::Dock::Bottom);
         }
         self.notes.tray_button(ui, status);
+        if let Some(git::bar::Action::ShowGit) = git::bar::list(
+            &ctx,
+            &mut self.git,
+            &*self.host.system,
+            lead_x,
+            status.top(),
+        ) {
+            self.queue(Command::ShowPage(Page::Git));
+        }
 
         let area_top = title.bottom();
         if self.workspace.is_some() {
@@ -794,6 +847,8 @@ impl Studio {
         let mut world_action = None;
         let ship_state = &mut self.ship;
         let mut ship_action = None;
+        let git_state = &mut self.git;
+        let mut git_action = None;
         let settings_page = &mut self.settings_page;
         let manifests = &mut self.manifests;
         let mut manifest_action = None;
@@ -818,7 +873,7 @@ impl Studio {
         let mut actions = Vec::new();
         let mut content = |ui: &mut Ui, panel: Panel| match panel {
             Panel::Explorer => {
-                if let Some(path) = explorer.show(ui, workspace, system) {
+                if let Some(path) = explorer.show(ui, workspace, system, git_state) {
                     opened = Some(path);
                 }
             }
@@ -831,10 +886,28 @@ impl Studio {
                     .map_or(&[][..], Vec::as_slice);
                 // The tests' lenses and the coverage of the active file.
                 let active = editors.active().map(|t| t.doc.path.clone());
-                let lenses = active
+                let mut lenses = active
                     .as_deref()
                     .map(|path| tests::lenses(tests_state, workspace, path))
                     .unwrap_or_default();
+                // Git (M11): the changes since the last commit, a merge's
+                // conflicts and their lenses, the cursor line's blame.
+                let (git_marks, blame) = match (active.as_deref(), editors.active()) {
+                    (Some(path), Some(tab)) => {
+                        let (marks, conflicts, blame) = git::editor::of(
+                            git_state,
+                            system,
+                            path,
+                            &tab.doc,
+                            studio_settings.blame,
+                            ui.ctx().input(|i| i.time),
+                        );
+                        lenses.extend(git::editor::conflict_lenses(path, &conflicts));
+                        let line = tab.doc.selection.head.line;
+                        (marks, blame.map(|b| (line, b)))
+                    }
+                    _ => (Vec::new(), None),
+                };
                 let tests_at: Vec<usize> = active
                     .as_deref()
                     .and_then(|path| tests_state.discovered.get(path))
@@ -881,6 +954,8 @@ impl Studio {
                     breakpoints: &breakpoints,
                     stopped,
                     inline: &inline,
+                    git_marks: &git_marks,
+                    blame: blame.as_ref().map(|(l, t)| (*l, t.as_str())),
                 };
                 // (below the debugger's bar, when it has one)
                 let rest = ui.available_rect_before_wrap();
@@ -1063,6 +1138,8 @@ impl Studio {
                         breakpoints: &[],
                         stopped: None,
                         inline: &[],
+                        git_marks: &[],
+                        blame: None,
                     };
                     let tab = &mut editors.tabs[i];
                     ui.scope_builder(UiBuilder::new().max_rect(rect), |ui| {
@@ -1079,6 +1156,21 @@ impl Studio {
                 let p = wowlua_studio_ui::palette(ui.ctx());
                 if let Some(a) = profiler::function(ui, profiler_state, p) {
                     profiler_action = Some(a);
+                }
+            }
+            Panel::Changes => {
+                if let Some(a) = git::page::changes(ui, git_state, system) {
+                    git_action = Some(a);
+                }
+            }
+            Panel::History => {
+                if let Some(a) = git::page::history(ui, git_state, system) {
+                    git_action = Some(a);
+                }
+            }
+            Panel::Diff => {
+                if let Some(a) = git::page::main(ui, git_state, system) {
+                    git_action = Some(a);
                 }
             }
             _ => dock::placeholder(ui, panel),
@@ -1116,6 +1208,15 @@ impl Studio {
         }
         if let Some(a) = ship_action {
             self.ship_action(a, ctx);
+        }
+        git::page::dialogs(ctx, &mut self.git, &*self.host.system);
+        if let Some(git::editor::PopupAction::ShowGit) =
+            git::editor::popup(ctx, &mut self.git, &*self.host.system)
+        {
+            self.queue(Command::ShowPage(Page::Git));
+        }
+        if let Some(a) = git_action {
+            self.git_action(a, ctx);
         }
         if let Some(a) = settings_action {
             self.settings_action(a, ctx);
@@ -1306,6 +1407,17 @@ impl Studio {
             A::Close(i) => self.close_tab(i),
             // (taken above)
             A::ToggleBreakpoint(_) | A::EditBreakpoint(_) | A::Manifest { .. } => {}
+            A::GitMark(line, at) => {
+                if let Some(rel) = self.git.relative(&doc.path) {
+                    self.git.mark_popup = Some((rel, line, at));
+                }
+            }
+            A::Blame(line) => {
+                if let Some(hash) = git::editor::blame_commit(&self.git, &doc.path, line) {
+                    self.git.selected = Some(git::Selected::Commit(hash));
+                    self.queue(Command::ShowPage(Page::Git));
+                }
+            }
             A::Hover(at) => self.lsp.hover(doc, at, system),
             A::Complete(at) => self.lsp.complete(doc, at, system),
             A::Resolve(label) => {
@@ -2005,6 +2117,18 @@ impl Studio {
                     self.start.adopt.error = Some(error);
                 }
                 Event::FilesChanged(paths) => {
+                    self.git.files_changed(&paths);
+                    // (Git's own files are the git page's alone, but HEAD)
+                    let paths: Vec<PathBuf> = paths
+                        .into_iter()
+                        .filter(|p| {
+                            p.ends_with(".git/HEAD")
+                                || !p.components().any(|c| c.as_os_str() == ".git")
+                        })
+                        .collect();
+                    if paths.is_empty() {
+                        continue;
+                    }
                     self.explorer.changed(&paths);
                     self.ship.files_changed();
                     self.manifests.files_changed();
@@ -2064,6 +2188,7 @@ impl Studio {
                 Event::WorldSnapshots(found) => self.world.snapshots_read(found),
                 Event::GameArt(art, image) => self.world.art.read(ctx, art, image),
                 Event::Spells(query, found) => self.world.spells_found(query, found),
+                Event::Git(root, event) => self.git.event(&root, event, &*self.host.system),
                 Event::Found(what, flavor, query, rows) => {
                     self.world.found.insert((what, flavor, query), rows);
                 }
@@ -2181,6 +2306,9 @@ impl Studio {
             self.ship.selected = selected;
         }
         self.read_line_width(&workspace.root);
+        if !again {
+            self.git.opened(Some(&workspace.root));
+        }
         self.branch = self.host.system.branch(&workspace.root);
         self.reload_recents();
         self.recents.opened(&workspace, self.host.system.now());
@@ -2328,6 +2456,136 @@ impl Studio {
     }
 
     /// The configuration chosen on the debugger page, else the addon's.
+    /// The title bar's run controls: the workspace's addons, the picked
+    /// one's flavors and world profiles, the picks, the session's state.
+    fn run_choices(&mut self) -> Option<RunChoices> {
+        let w = self.workspace.clone()?;
+        let addons: Vec<&system::Member> = w.members.iter().filter(|m| m.kind == "addon").collect();
+        let package = addons
+            .iter()
+            .position(|m| Some(&m.rel) == self.debug.kept.run_package.as_ref())
+            .unwrap_or(0);
+        let member = addons.get(package).copied();
+        let ids: Vec<String> = match member {
+            Some(m) if !m.flavors.is_empty() => m.flavors.clone(),
+            _ => w.flavors.clone(),
+        };
+        let flavors: Vec<(String, bool)> = ids
+            .iter()
+            .map(|id| {
+                if flavors::supported(id) {
+                    (id.clone(), true)
+                } else {
+                    (format!("{id} · coming soon"), false)
+                }
+            })
+            .collect();
+        let flavor = ids
+            .iter()
+            .position(|f| Some(f) == self.debug.kept.run_flavor.as_ref())
+            .or_else(|| flavors.iter().position(|f| f.1))
+            .unwrap_or(0);
+        // (the addon's world profiles, read when it changes)
+        let dir = member.map_or_else(|| w.root.clone(), |m| m.dir.clone());
+        if self.run_profiles.as_ref().is_none_or(|(d, _)| *d != dir) {
+            let list = self
+                .host
+                .system
+                .list(&dir.join("tests").join("profiles"))
+                .into_iter()
+                .filter(|e| !e.is_dir && e.name.ends_with(".json"))
+                .map(|e| e.name.trim_end_matches(".json").to_owned())
+                .collect();
+            self.run_profiles = Some((dir.clone(), list));
+        }
+        let names = self
+            .run_profiles
+            .as_ref()
+            .map(|(_, l)| l.clone())
+            .unwrap_or_default();
+        let mut profiles = vec!["world: none".to_owned()];
+        profiles.extend(names.iter().map(|n| format!("world: {n}")));
+        let profile = names
+            .iter()
+            .position(|n| Some(n) == self.debug.kept.run_profile.as_ref())
+            .map_or(0, |i| i + 1);
+        let state = if !self.debug.running() {
+            chrome::RunState::Idle
+        } else if self.debug.config.as_ref().is_some_and(|c| c.no_debug) {
+            chrome::RunState::Running
+        } else if self.debug.stopped.is_some() {
+            chrome::RunState::Paused(self.debug.paused_at())
+        } else {
+            chrome::RunState::Debugging
+        };
+        Some(RunChoices {
+            packages: addons.iter().map(|m| m.name.clone()).collect(),
+            package,
+            rels: addons.iter().map(|m| m.rel.clone()).collect(),
+            ids,
+            flavors,
+            flavor,
+            names,
+            profiles,
+            profile,
+            state,
+        })
+    }
+
+    /// A pick of the title bar's run controls, kept with the workspace.
+    fn run_picked(&mut self, pick: chrome::RunPick, r: &RunChoices) {
+        let kept = &mut self.debug.kept;
+        match pick {
+            chrome::RunPick::Package(i) => {
+                kept.run_package = r.rels.get(i).cloned();
+                kept.run_flavor = None;
+                kept.run_profile = None;
+            }
+            chrome::RunPick::Flavor(i) => kept.run_flavor = r.ids.get(i).cloned(),
+            chrome::RunPick::Profile(i) => {
+                kept.run_profile = i.checked_sub(1).and_then(|i| r.names.get(i).cloned());
+            }
+        }
+    }
+
+    /// What the title bar runs (S071): its addon, flavor and world
+    /// profile; without the debugger for run (ctrl f5).
+    fn run_config(&mut self, debugging: bool) -> debug::Config {
+        let Some(r) = self.run_choices() else {
+            return self.chosen_config();
+        };
+        let member = self.workspace.as_ref().and_then(|w| {
+            w.members
+                .iter()
+                .filter(|m| m.kind == "addon")
+                .nth(r.package)
+                .cloned()
+        });
+        let flavor = r.ids.get(r.flavor).cloned();
+        let profile = r
+            .profile
+            .checked_sub(1)
+            .and_then(|i| r.names.get(i).cloned());
+        let name = [
+            member.as_ref().map(|m| m.name.clone()),
+            flavor.clone(),
+            profile.clone(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" · ");
+        debug::Config {
+            name,
+            flavor,
+            profile,
+            manual: self.settings.default_clock == "manual",
+            package: member.map(|m| m.dir),
+            no_debug: !debugging,
+            ..debug::Config::default()
+        }
+    }
+
     fn chosen_config(&mut self) -> debug::Config {
         let name = self
             .workspace
@@ -2376,6 +2634,12 @@ impl Studio {
             self.world.part = part.to_owned();
         }
         self.world.json_view = json;
+    }
+
+    /// A part of Git's once the repository is read (the screenshot
+    /// harness's `git:`): the branch list, a commit, a dialog.
+    pub fn git_show(&mut self, what: &str) {
+        self.git.harness = Some(what.to_owned());
     }
 
     /// The ship page on a tab and a profile (the screenshot harness's
@@ -2646,6 +2910,21 @@ impl Studio {
         }
     }
 
+    /// What the git page asks (M11).
+    fn git_action(&mut self, action: git::page::Action, ctx: &Context) {
+        match action {
+            git::page::Action::Open(path, line) => {
+                self.run(ctx, Command::ShowPage(Page::Files));
+                self.open_file(&path, ctx);
+                if let (Some(line), Some(tab)) = (line, self.editors.active_mut()) {
+                    let at = editor::doc::Pos::new(line.saturating_sub(1) as usize, 0);
+                    tab.doc.selection = editor::doc::Selection::caret(at);
+                }
+            }
+            git::page::Action::SignIn => self.settings_show("github"),
+        }
+    }
+
     /// What the world profiles page asks (S060).
     fn world_action(&mut self, action: world::Action, ctx: &Context) {
         match action {
@@ -2886,6 +3165,11 @@ impl Studio {
             }
             C::Debug { file, test } => self.debug_test(&file, test.as_deref()),
             C::Profile { file, test } => self.profile_test(&file, test.as_deref(), ctx),
+            C::Conflict { file, line, take } => {
+                if let Some(i) = self.editors.find(&file) {
+                    git::editor::resolve(&mut self.editors.tabs[i].doc, line, take);
+                }
+            }
         }
     }
 
@@ -2944,6 +3228,7 @@ impl Studio {
             self.search = search::SearchState::default();
             self.outline = None;
             self.branch = None;
+            self.git.opened(None);
             self.menus_changed = true;
             self.reload_recents();
         }
@@ -3120,9 +3405,19 @@ impl Studio {
                 self.close_tab(i);
             }
             Command::RunAddon => {
-                let config = self.chosen_config();
-                self.start_session(config);
+                if !self.debug.running() {
+                    let config = self.run_config(false);
+                    self.start_session(config);
+                }
                 self.queue(Command::ShowPage(Page::Game));
+            }
+            Command::ReloadSession => {
+                if self.debug.running() {
+                    self.debug.send(
+                        &*self.host.system,
+                        system::GameRequest::World("C_UI.Reload()".into()),
+                    );
+                }
             }
             Command::StopSession => {
                 self.host.system.game_stop();
@@ -3132,7 +3427,7 @@ impl Studio {
                     self.debug
                         .send(&*self.host.system, system::GameRequest::Continue);
                 } else if !self.debug.running() {
-                    let config = self.chosen_config();
+                    let config = self.run_config(true);
                     self.start_session(config);
                     self.queue(Command::ShowPage(Page::Debug));
                 }
@@ -3546,4 +3841,21 @@ fn layout_for<'a>(layouts: &'a mut Layouts, workspace: &str, page: Page) -> &'a 
         .or_default()
         .entry(page)
         .or_insert_with(|| Layout::preset(page))
+}
+
+/// The title bar's run controls as read for a frame (S071).
+struct RunChoices {
+    packages: Vec<String>,
+    package: usize,
+    /// The addons' folders from the workspace's root.
+    rels: Vec<String>,
+    /// The addon's flavor ids, as shown.
+    ids: Vec<String>,
+    flavors: Vec<(String, bool)>,
+    flavor: usize,
+    /// The world profiles' names; `profiles` shows them.
+    names: Vec<String>,
+    profiles: Vec<String>,
+    profile: usize,
+    state: chrome::RunState,
 }

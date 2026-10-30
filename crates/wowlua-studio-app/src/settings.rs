@@ -24,6 +24,7 @@ pub enum Section {
     Debugger,
     GameScreen,
     Installation,
+    Git,
     Github,
     Claude,
     Keybindings,
@@ -32,7 +33,7 @@ pub enum Section {
 }
 
 impl Section {
-    pub const ALL: [Section; 12] = [
+    pub const ALL: [Section; 13] = [
         Section::Appearance,
         Section::Editor,
         Section::Completion,
@@ -40,6 +41,7 @@ impl Section {
         Section::Debugger,
         Section::GameScreen,
         Section::Installation,
+        Section::Git,
         Section::Github,
         Section::Claude,
         Section::Keybindings,
@@ -56,6 +58,7 @@ impl Section {
             Section::Debugger => "debugger",
             Section::GameScreen => "game screen",
             Section::Installation => "installation",
+            Section::Git => "git",
             Section::Github => "github",
             Section::Claude => "claude",
             Section::Keybindings => "keybindings",
@@ -246,6 +249,28 @@ fn rows() -> Vec<Row> {
                     step: 1.0,
                     unit: "px",
                     presets: &[("12", 12.0), ("13", 13.0), ("14", 14.0), ("16", 16.0)],
+                },
+            ),
+        ),
+        row(
+            Editor,
+            "blame",
+            "Who last changed the cursor's line, faintly after it; click it for the commit.",
+            Flag(|s| s.blame, |s, v| s.blame = v),
+        ),
+        row(
+            Git,
+            "fetch every",
+            "Studio fetches quietly when the workspace opens and then this often, so the status bar's ↑ and ↓ stay current; 0: only when you pull.",
+            Number(
+                |s| f64::from(s.git_fetch_minutes),
+                |s, v| s.git_fetch_minutes = v.clamp(0.0, 1440.0) as u32,
+                Num::Stepper {
+                    min: 0.0,
+                    max: 1440.0,
+                    step: 1.0,
+                    unit: "min",
+                    presets: &[("off", 0.0), ("5", 5.0), ("15", 15.0), ("60", 60.0)],
                 },
             ),
         ),

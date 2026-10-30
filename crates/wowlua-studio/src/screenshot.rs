@@ -10,7 +10,9 @@
 //! `profview:<view>[@frame][#rank]`, `world:<profile>[/<part>][@json]`, `spells:<query>`,
 //! `worldlive:<profile>|<path>=<json>|…`, `ship:<tab>[/<profile>]`,
 //! `shipdo:<build|install|dry|publish|tag|dev>`, `settings:<section>`,
-//! `manifest:<section>[@json]` (the workspace's wowlua.json in its tab).
+//! `manifest:<section>[@json]` (the workspace's wowlua.json in its tab),
+//! `git:<branches|commit|new|switch:<branch>|discard>` (the git page's
+//! parts, once the repository is read).
 
 use std::{
     path::PathBuf,
@@ -136,6 +138,10 @@ impl Screenshot {
                     .map(|(p, v)| (p.to_owned(), v.to_owned()))
                     .collect();
                 studio.world_live_later(profile, edits);
+                continue;
+            }
+            if let Some(rest) = step.strip_prefix("git:") {
+                studio.git_show(rest);
                 continue;
             }
             if let Some(rest) = step.strip_prefix("ship:") {

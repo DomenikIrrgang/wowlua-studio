@@ -5844,6 +5844,7 @@ dependencies = [
  "wowlua-driver",
  "wowlua-engine",
  "wowlua-flavors",
+ "wowlua-fmt",
  "wowlua-lsp",
  "wowlua-manifest",
  "wowlua-pkg",

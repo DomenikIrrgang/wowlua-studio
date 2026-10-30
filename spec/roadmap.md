@@ -394,6 +394,20 @@ Artboard: git.
 - Changes, staging, diff, commit (with the repository's hooks), branches,
   history, pull and push, merge conflicts.
 
+Built (S068, S069, S070): the git page with its changes (the branch, the
+message, commit and commit and push, format and check first, conflicts,
+staged and changed files with their letters, staged by file), the
+history (a commit's message, files and diffs; switch to it, a branch from
+it, revert it), a file's diff hunk by hunk side by side or inline in the
+editor's colours (stage, unstage, discard each hunk), switching with the
+changes carried or stashed, new branches, pull as git config says, push
+and fetch with the GitHub sign-in first, a merge's conflicts taken from a
+side or aborted. Outside it: the branch in the status bar with every
+branch a click away, the explorer's colours, the gutter's marks against
+the last commit with their hunk, the cursor line's blame, a conflict's
+lenses in the editor, Studio's own fetch every 5 minutes. Not yet:
+checked by hand on macOS only.
+
 **Exit (wowlua M15):** SuuUI opened from disk in Studio on Windows, macOS
 and Linux: edited and checked, its tests run, run against the default UI
 in a world profile and debugged, the world changed while it runs, profiled,
@@ -454,6 +468,12 @@ and tests it on Windows and Linux (S058). On each, with SuuUI's workspace:
     pressing its key, a spell and an item by name; pick a target's profile
     and see `wowlua.json` follow.
 
+11. **M11**: stage a hunk and commit with format and check; switch branch
+    with changes and stash them, then switch back; pull, push with the
+    GitHub sign-in and with your git setup signed out; resolve a merge
+    conflict in the editor with its lenses; the status bar's branch list;
+    the gutter's marks and blame as you type.
+
 ## Open questions
 
 Asked when their milestone starts; nothing here is decided yet.
@@ -464,7 +484,7 @@ Asked when their milestone starts; nothing here is decided yet.
 ## Design changes owed
 
 Where Studio was decided to differ from the canvas, or the canvas is
-missing a part; the canvas is updated to match. None are owed now.
+missing a part; the canvas is updated to match. None are owed now: on 2026-10-30 the settings board got the git section (fetch every) and the editor's blame row, the git board the changes' stage all and the staged files' unstage all (S070).
 
 Brought up to date on 2026-10-27: the panels board's presets
 for every page (S017), the palette's prompt (S018), the menus (S019), the

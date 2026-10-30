@@ -48,6 +48,11 @@ pub struct Config {
     pub debug_blizzard_ui: bool,
     /// Read from VS Code's `launch.json` (Studio writes its own).
     pub vscode: bool,
+    /// The workspace's addon to run (the title bar's package).
+    pub package: Option<PathBuf>,
+    /// Run without the debugger: no breakpoints, no stops (the title
+    /// bar's run, ctrl f5).
+    pub no_debug: bool,
 }
 
 impl Config {
@@ -78,6 +83,7 @@ impl Config {
                 .test
                 .as_ref()
                 .map(|t| (t.clone(), self.filters.clone())),
+            package: self.package.clone(),
             flavor: self.flavor.clone(),
             profile: self.profile.clone(),
             manual: self.manual,
@@ -137,6 +143,8 @@ impl Config {
             stop_on_entry: j["stopOnEntry"].as_bool().unwrap_or(false),
             debug_blizzard_ui: j["debugBlizzardUI"].as_bool().unwrap_or(false),
             vscode,
+            package: None,
+            no_debug: false,
         })
     }
 }
@@ -246,6 +254,14 @@ pub struct Kept {
     /// Recent sessions: the configuration, how it ended, when.
     pub recent: Vec<(String, String, u64)>,
     pub chosen: Option<String>,
+    /// What the title bar runs: the addon (its folder from the
+    /// workspace's root), the flavor, the world profile.
+    #[serde(default)]
+    pub run_package: Option<String>,
+    #[serde(default)]
+    pub run_flavor: Option<String>,
+    #[serde(default)]
+    pub run_profile: Option<String>,
     /// The call stack leaves out dispatch frames (events, scripts,
     /// OnUpdate, timers).
     #[serde(default)]
@@ -375,6 +391,22 @@ impl DebugState {
         self.session.is_some()
     }
 
+    /// Where a paused session stopped, shortly: `ThreatMeter:66`.
+    pub fn paused_at(&self) -> Option<String> {
+        self.stopped.as_ref()?;
+        let f = self.frames.first()?;
+        let name = f["source"]["name"]
+            .as_str()
+            .or(f["source"]["path"].as_str())?;
+        let stem = name
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or(name)
+            .trim_end_matches(".wowlua")
+            .trim_end_matches(".lua");
+        Some(format!("{stem}:{}", f["line"].as_u64().unwrap_or(1)))
+    }
+
     /// A new session's state; the requests to ask before it runs (its
     /// breakpoints, each with its id).
     pub fn begin(
@@ -399,6 +431,11 @@ impl DebugState {
         self.errors = 0;
         self.console.clear();
         self.asked.clear();
+        // A run without the debugger: nothing stops it.
+        if self.config.as_ref().is_some_and(|c| c.no_debug) {
+            let id = self.id(Asked::Plain);
+            return vec![(id, GameRequest::SetStopOn(Vec::new()))];
+        }
         let mut setup = Vec::new();
         let files: Vec<PathBuf> = self.kept.lines.keys().cloned().collect();
         for file in files {
