@@ -133,6 +133,7 @@ pub(crate) fn run(
         update_snapshots: request.update_snapshots,
         coverage: request.coverage,
         game_data: false,
+        world: false,
     };
     // Each test file profiled from its first line (S057).
     let start_profile: &(dyn Fn(&mut wowlua_vm::Vm) + Sync) = &|vm: &mut wowlua_vm::Vm| {

@@ -242,6 +242,10 @@ pub enum GameRequest {
     ChatLines {
         since: u64,
     },
+    /// The 3D world behind the UI on or off (wowlua T527).
+    ShowWorld {
+        on: bool,
+    },
     /// The game's settings: the window's size and the UI scale (none:
     /// "Use UI Scale" off).
     SetScreen {

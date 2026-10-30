@@ -74,6 +74,7 @@ fn to_debug(request: GameRequest) -> Request {
         GameRequest::ChatLines { since } => Request::ChatLines { since },
         GameRequest::Target(unit) => Request::Target { unit },
         GameRequest::Events => Request::Events,
+        GameRequest::ShowWorld { on } => Request::ShowWorld { on },
         GameRequest::SetScreen {
             width,
             height,
