@@ -370,7 +370,7 @@ pub struct GameState {
     /// What the session was told of the world last (none: nothing yet).
     world_sent: Option<bool>,
     /// The session reads the installation's game data: the world can be
-    /// shown (Settings › installation data).
+    /// shown (Settings › game screen › answer from the installation's data).
     pub world_ready: bool,
     drag_from: Option<Pos2>,
     hovered_at: Option<(i32, i32)>,
@@ -1872,7 +1872,7 @@ fn world_checkbox(ui: &mut Ui, state: &mut GameState) {
         .response;
     if !ready {
         r.on_disabled_hover_text(
-            "the 3D world reads your installation's game data: turn on Settings › installation data",
+            "the 3D world reads your installation's game data: turn on Settings › game screen › answer from the installation's data",
         );
     }
 }
