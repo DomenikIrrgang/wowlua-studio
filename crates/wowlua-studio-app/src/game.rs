@@ -364,6 +364,10 @@ pub struct GameState {
     pub full: Option<(u32, u32)>,
     /// Lines the screenshot harness types into the chat once it runs.
     pub chat_later: Vec<String>,
+    /// A key the screenshot harness holds in play mode once the game runs,
+    /// for so many seconds; and until when it is held.
+    pub hold_later: Option<(String, f64)>,
+    held_until: Option<(String, f64)>,
     /// The session's clock is manual (the debugger's): a chat line moves
     /// it a frame, for the server's answer to come.
     pub manual: bool,
@@ -376,6 +380,9 @@ pub struct GameState {
     pub world: bool,
     /// What the session was told of the world last (none: nothing yet).
     world_sent: Option<bool>,
+    /// Play mode runs the session's clock in real time over a manual one
+    /// (S079): whether it does now.
+    clock_run: bool,
     /// The session reads the installation's game data: the world can be
     /// shown (Settings › game screen › answer from the installation's data).
     pub world_ready: bool,
@@ -436,6 +443,7 @@ impl GameState {
             full: keep.7,
             shots: std::mem::take(&mut self.shots),
             chat_later: std::mem::take(&mut self.chat_later),
+            hold_later: self.hold_later.take(),
             world,
             world_ready,
             ..GameState::default()
@@ -622,6 +630,32 @@ impl GameState {
             let on = self.world;
             self.ask(system, Asked::Settings, GameRequest::ShowWorld { on });
             self.world_sent = Some(on);
+        }
+        // (play mode on a manual clock: time runs while playing, and the
+        // clock is manual again after, S079)
+        let run = self.mode == Mode::Play && self.manual;
+        if self.running() && run != self.clock_run {
+            self.ask(
+                system,
+                Asked::Settings,
+                GameRequest::SetClock { manual: !run },
+            );
+            self.clock_run = run;
+        }
+        if let Some((key, until)) = self.held_until.clone()
+            && now >= until
+        {
+            self.play(system, GameInput::KeyUp(key));
+            self.held_until = None;
+        }
+        if self.running()
+            && self.hold_later.is_some()
+            && now - *self.started_at.get_or_insert(now) >= 8.0
+            && let Some((key, seconds)) = self.hold_later.take()
+        {
+            self.mode = Mode::Play;
+            self.play(system, GameInput::KeyDown(key.clone()));
+            self.held_until = Some((key, now + seconds));
         }
         if self.chat_later.is_empty() || !self.running() {
             return;

@@ -539,6 +539,12 @@ impl Studio {
         self.game.chat_later.push(line.to_owned());
     }
 
+    /// A key held in play mode once the game runs (the screenshot
+    /// harness's `hold:KEY:SECONDS`).
+    pub fn hold_later(&mut self, key: &str, seconds: f64) {
+        self.game.hold_later = Some((key.to_owned(), seconds));
+    }
+
     /// The game screen's 3D world on, with the installation's game data
     /// (the screenshot harness's `world`).
     pub fn world_on(&mut self) {
