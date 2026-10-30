@@ -12,9 +12,9 @@ use serde_json::{Value as Json, json};
 use wowlua_driver::publish::http::Http;
 use wowlua_studio_app::github::model::{
     Annotation, Comment, Compare, GithubError, Job, OnLine, Pull, PullDetail, PullFile,
-    PullSummary, Repo, Review, Run, Step, Thread,
+    PullSummary, Repo, RepoInfo, Review, Run, Step, Thread,
 };
-use wowlua_studio_app::system::{GithubEvent, GithubRequest};
+use wowlua_studio_app::system::{AccountEvent, AccountRequest, GithubEvent, GithubRequest};
 
 const API: &str = "https://api.github.com";
 
@@ -375,6 +375,54 @@ fn array(j: Json) -> Vec<Json> {
     }
 }
 
+/// A repository as the start page lists it.
+fn repo_info(j: &Json) -> RepoInfo {
+    RepoInfo {
+        full: text(&j["full_name"]),
+        description: j["description"].as_str().unwrap_or("").to_owned(),
+        default_branch: text(&j["default_branch"]),
+        private: j["private"].as_bool().unwrap_or(false),
+        push: j["permissions"]["push"].as_bool().unwrap_or(false),
+        pushed: time(&j["pushed_at"]).unwrap_or(0),
+    }
+}
+
+/// The question about the user's repositories answered (on a worker
+/// thread); `token` none: signed out.
+pub fn account(request: AccountRequest, token: Option<String>) -> AccountEvent {
+    let Some(token) = token else {
+        let why = GithubError::SignedOut;
+        return match request {
+            AccountRequest::Repos => AccountEvent::Repos(Err(why)),
+            AccountRequest::Lookup(repo) => AccountEvent::Lookup {
+                repo,
+                result: Err(why),
+            },
+            AccountRequest::Branches(repo) => AccountEvent::Branches {
+                repo,
+                result: Err(why),
+            },
+        };
+    };
+    let c = Client::new(token);
+    match request {
+        AccountRequest::Repos => AccountEvent::Repos(
+            c.get("/user/repos?sort=pushed&per_page=100&affiliation=owner,collaborator,organization_member")
+                .map(|j| array(j).iter().map(repo_info).collect()),
+        ),
+        AccountRequest::Lookup(repo) => AccountEvent::Lookup {
+            result: c.get(&format!("/repos/{repo}")).map(|j| repo_info(&j)),
+            repo,
+        },
+        AccountRequest::Branches(repo) => AccountEvent::Branches {
+            result: c
+                .get(&format!("/repos/{repo}/branches?per_page=100"))
+                .map(|j| array(j).iter().map(|b| text(&b["name"])).collect()),
+            repo,
+        },
+    }
+}
+
 // ------------------------------------------------------------ requests --
 
 /// The answer to a question GitHub wasn't asked: why not.
@@ -430,7 +478,8 @@ pub fn answer(root: &Path, request: GithubRequest, token: Option<String>) -> Git
         GithubRequest::Repo => GithubEvent::Repo((|| {
             let info = c.get(&r)?;
             let me = c.get("/user")?;
-            Ok((repo.clone(), text(&info["default_branch"]), login(&me)))
+            let push = info["permissions"]["push"].as_bool().unwrap_or(false);
+            Ok((repo.clone(), text(&info["default_branch"]), login(&me), push))
         })()),
         GithubRequest::Pulls => GithubEvent::Pulls(
             c.get(&format!("{r}/pulls?state=open&per_page=50"))
@@ -612,6 +661,21 @@ pub fn answer(root: &Path, request: GithubRequest, token: Option<String>) -> Git
                 None,
             )
             .map(|_| String::new()),
+        ),
+        GithubRequest::Fork => done(
+            "fork",
+            (|| {
+                let fork = c.send("POST", &format!("{r}/forks"), Some(&json!({})))?;
+                let creds = crate::git::Credentials {
+                    github_token: Some(c.token.clone()),
+                };
+                let branch = crate::clones::push_to_fork(root, &text(&fork["clone_url"]), &creds)
+                    .map_err(GithubError::Other)?;
+                Ok(format!(
+                    "forked to {} and pushed {branch} there",
+                    text(&fork["full_name"])
+                ))
+            })(),
         ),
         GithubRequest::Cancel(run) => done(
             "cancel",

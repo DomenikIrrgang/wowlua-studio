@@ -181,6 +181,22 @@ pub enum Event {
     /// GitHub's answer (M12): the workspace's root asked about, and what
     /// came back.
     GithubApi(PathBuf, GithubEvent),
+    /// GitHub's answer about the signed-in user's repositories (M12, →
+    /// [`System::github_account`]).
+    Account(AccountEvent),
+    /// A clone under way (→ [`System::clone_repo`]): its share done, when
+    /// git says, and git's words.
+    Cloning {
+        repo: String,
+        progress: Option<f32>,
+        said: String,
+    },
+    /// A clone done: the folder it is in, or why not.
+    Cloned {
+        repo: String,
+        branch: String,
+        result: Result<PathBuf, String>,
+    },
     /// What an ID picker's search found (→ [`System::find`]): what, the
     /// flavor, the query, the rows.
     Found(Find, String, String, Vec<SpellRow>),
@@ -688,13 +704,76 @@ pub enum GithubRequest {
         failed_only: bool,
     },
     Cancel(u64),
+    /// A fork of the repository as the signed-in user, with the branch
+    /// checked out pushed to it (a read-only repository's commits kept).
+    Fork,
+}
+
+/// What Studio asks GitHub about the signed-in user's repositories (M12,
+/// → [`Event::Account`]).
+#[derive(Clone, Debug, PartialEq)]
+pub enum AccountRequest {
+    /// Yours and the ones you can push to, recently pushed first.
+    Repos,
+    /// A repository by its `owner/name`.
+    Lookup(String),
+    /// A repository's branches.
+    Branches(String),
+}
+
+/// What GitHub answered (→ [`System::github_account`]).
+#[derive(Clone, Debug, PartialEq)]
+pub enum AccountEvent {
+    Repos(Result<Vec<crate::github::model::RepoInfo>, crate::github::model::GithubError>),
+    Lookup {
+        repo: String,
+        result: Result<crate::github::model::RepoInfo, crate::github::model::GithubError>,
+    },
+    Branches {
+        repo: String,
+        result: Result<Vec<String>, crate::github::model::GithubError>,
+    },
+}
+
+/// What deleting a clone of Studio's would lose (M12): what isn't on
+/// GitHub.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Losses {
+    /// Files changed and not committed, untracked ones too.
+    pub changed: Vec<String>,
+    /// Commits on no remote: the short hash and the subject.
+    pub unpushed: Vec<(String, String)>,
+    pub stashes: usize,
+}
+
+impl Losses {
+    pub fn is_empty(&self) -> bool {
+        self.changed.is_empty() && self.unpushed.is_empty() && self.stashes == 0
+    }
+}
+
+/// A clone left in Studio's data by a window that quit while it was open,
+/// with something to lose.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LeftClone {
+    pub path: PathBuf,
+    /// `owner/name`.
+    pub repo: String,
+    pub branch: Option<String>,
+    pub losses: Losses,
 }
 
 /// What GitHub answered (→ [`System::github`]).
 #[derive(Clone, Debug, PartialEq)]
 pub enum GithubEvent {
-    /// The repository, its default branch, the signed-in login.
-    Repo(Result<(crate::github::model::Repo, String, String), crate::github::model::GithubError>),
+    /// The repository, its default branch, the signed-in login, whether
+    /// they can push to it.
+    Repo(
+        Result<
+            (crate::github::model::Repo, String, String, bool),
+            crate::github::model::GithubError,
+        >,
+    ),
     Pulls(Result<Vec<crate::github::model::PullSummary>, crate::github::model::GithubError>),
     Pull {
         number: u64,
@@ -1682,6 +1761,8 @@ pub trait System {
     fn adopt(&self, request: Adopt);
     /// Opens `path` in a new window (S031), or an empty one.
     fn open_window(&self, path: Option<&Path>);
+    /// A new window showing the start page's from-GitHub panel (M12).
+    fn open_window_from_github(&self) {}
     /// The `### New` lines of wowlua's changelog for the version built in.
     fn whats_new(&self) -> Vec<String>;
     /// The Git branch checked out in `dir`.
@@ -1867,6 +1948,33 @@ pub trait System {
     /// A question for the GitHub repository `root`'s remote names (M12, →
     /// [`Event::GithubApi`]).
     fn github(&self, _root: &Path, _request: GithubRequest) {}
+    /// A question about the signed-in user's repositories (M12, →
+    /// [`Event::Account`]).
+    fn github_account(&self, _request: AccountRequest) {}
+    /// Clones `owner/name` at `branch` into Studio's data (M12, →
+    /// [`Event::Cloning`], [`Event::Cloned`]).
+    fn clone_repo(&self, _repo: &str, _branch: &str) {}
+    /// The folder Studio's clones are in: a workspace under it is a
+    /// repository opened from GitHub, deleted when it closes.
+    fn clones_dir(&self) -> Option<PathBuf> {
+        None
+    }
+    /// Marks a clone as open in this window, so no other window takes it
+    /// for one left behind.
+    fn hold_clone(&self, _root: &Path) {}
+    /// What deleting the clone would lose.
+    fn clone_losses(&self, _root: &Path) -> Result<Losses, String> {
+        Ok(Losses::default())
+    }
+    /// Deletes a clone (only under [`System::clones_dir`]).
+    fn delete_clone(&self, _root: &Path) -> Result<(), String> {
+        Ok(())
+    }
+    /// The clones no window has open: those with nothing to lose are
+    /// deleted, the others listed.
+    fn left_clones(&self) -> Vec<LeftClone> {
+        Vec::new()
+    }
     /// The CVars the flavor's client has, with their defaults (wowlua's
     /// recorded ones); none where wowlua has none.
     fn cvars(&self, _flavor: &str) -> Vec<CVarInfo> {

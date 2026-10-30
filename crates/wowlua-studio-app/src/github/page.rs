@@ -165,7 +165,7 @@ pub fn list(ui: &mut Ui, state: &mut GithubState, system: &dyn System, now: f64)
     let p = palette(ui.ctx());
     let action = None;
     let repo = match &state.repo {
-        Some(Ok((r, _, _))) => Some(r.full()),
+        Some(Ok((r, _, _, _))) => Some(r.full()),
         _ => None,
     };
     forms::padded(ui, 12, 8, |ui| {
@@ -1693,7 +1693,7 @@ fn new_pull(
         state.want_branches(system);
     }
     let default = match &state.repo {
-        Some(Ok((_, d, _))) => d.clone(),
+        Some(Ok((_, d, _, _))) => d.clone(),
         _ => "main".into(),
     };
     let base = state.view.base.clone().unwrap_or(default);

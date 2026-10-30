@@ -6,6 +6,11 @@
 
 mod art;
 mod bindings;
+/// The argument that opens a window on the start page's from-GitHub panel
+/// (M12).
+pub const FROM_GITHUB: &str = "--from-github";
+
+mod clones;
 mod deps;
 mod frame_stats;
 mod game;
@@ -118,9 +123,13 @@ impl App {
             system: Box::new(system),
         };
         let mut studio = Studio::new(ctx, host);
-        if let Some(folder) = std::env::args_os().nth(1) {
-            let folder = std::path::PathBuf::from(folder);
-            studio.open(&std::path::absolute(&folder).unwrap_or(folder));
+        match std::env::args_os().nth(1) {
+            Some(arg) if arg == FROM_GITHUB => studio.show_from_github(),
+            Some(folder) => {
+                let folder = std::path::PathBuf::from(folder);
+                studio.open(&std::path::absolute(&folder).unwrap_or(folder));
+            }
+            None => {}
         }
         let screenshot = Screenshot::from_env(&mut studio);
         App {
@@ -157,7 +166,7 @@ impl eframe::App for App {
             stats.record(started.elapsed());
         }
         if let Some(shot) = &mut self.screenshot {
-            shot.step(ui.ctx());
+            shot.step(ui.ctx(), &mut self.studio);
         }
     }
 
