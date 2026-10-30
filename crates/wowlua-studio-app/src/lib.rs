@@ -177,6 +177,8 @@ pub struct Studio {
     forking: bool,
     /// The screenshot harness closes the folder once it opened.
     harness_close: bool,
+    /// The screenshot harness goes full screen once the game runs.
+    harness_full: bool,
     /// Closing the window was answered: it closes.
     quitting: bool,
     /// When Git's `HEAD` changed: files changing with it changed by a
@@ -321,6 +323,7 @@ impl Studio {
             forked: None,
             forking: false,
             harness_close: false,
+            harness_full: false,
             quitting: false,
             head_changed: None,
             queued: Vec::new(),
@@ -503,6 +506,43 @@ impl Studio {
     /// screenshot harness's end, as if Studio quit).
     pub fn quit_as_is(&mut self) {
         self.quitting = true;
+    }
+
+    /// The game screen over the whole display, or back (S077): the
+    /// window full screen and the game's window as large as the display;
+    /// back, both as they were.
+    fn game_full_screen(&mut self, ctx: &Context) {
+        if self.game.full.is_some() {
+            self.game.leave_full(&*self.host.system);
+            ctx.send_viewport_cmd(ViewportCommand::Fullscreen(false));
+            return;
+        }
+        if self.workspace.is_none() {
+            return;
+        }
+        let ppp = ctx.pixels_per_point();
+        let display = ctx
+            .input(|i| i.viewport().monitor_size)
+            .unwrap_or_else(|| ctx.content_rect().size());
+        let display = (
+            (display.x * ppp).round() as u32,
+            (display.y * ppp).round() as u32,
+        );
+        self.game.enter_full(&*self.host.system, display);
+        ctx.send_viewport_cmd(ViewportCommand::Fullscreen(true));
+        self.queue(Command::ShowPage(Page::Game));
+    }
+
+    /// Types a line into the game's chat once it runs (the screenshot
+    /// harness's `chatsend:`).
+    pub fn game_chat_later(&mut self, line: &str) {
+        self.game.chat_later.push(line.to_owned());
+    }
+
+    /// Full screen once the game runs (the screenshot harness's
+    /// `fullscreen`).
+    pub fn full_screen_later(&mut self) {
+        self.harness_full = true;
     }
 
     /// The start page's from-GitHub panel (a window opened for it).
@@ -751,6 +791,26 @@ impl Studio {
         let dropped = ctx.input(|i| i.raw.dropped_files.first().map(|f| f.path().to_path_buf()));
         if let Some(path) = dropped.filter(|_| self.host.platform != Platform::Web) {
             self.open_or_ask(path);
+        }
+
+        self.game.manual = self.debug.config.as_ref().is_some_and(|c| c.manual);
+        self.game
+            .send_later(&*self.host.system, ctx.input(|i| i.time));
+        if self.harness_full && self.game.running() && system_screen(self) {
+            self.harness_full = false;
+            commands.push(Command::GameFullScreen);
+        }
+        // The game screen alone over the whole display (S077): its bar,
+        // and alt enter or the bar's button back.
+        if self.game.full.is_some() && self.workspace.is_some() {
+            if game::full_screen(ui, &mut self.game, &*self.host.system) {
+                commands.push(Command::GameFullScreen);
+            }
+            for command in commands {
+                self.run(&ctx, command);
+            }
+            self.save_when_due(&ctx);
+            return;
         }
 
         let full = ui.max_rect();
@@ -1159,6 +1219,7 @@ impl Studio {
             }
             Panel::Events => game::events(ui, game_state, system),
             Panel::Input => game::input(ui, game_state),
+            Panel::GameChat => game::chat(ui, game_state, system),
             Panel::Screenshots => game::screenshots(ui, game_state, system),
             Panel::CallStack => {
                 if let Some(a) =
@@ -1406,6 +1467,7 @@ impl Studio {
             Some(game::Action::BreakOn(names)) => {
                 self.debug.add_functions(&*self.host.system, names);
             }
+            Some(game::Action::FullScreen) => self.queue(Command::GameFullScreen),
             None => {}
         }
         match tests_action {
@@ -3692,6 +3754,7 @@ impl Studio {
                 self.menus_changed = true;
                 self.touch(ctx);
             }
+            Command::GameFullScreen => self.game_full_screen(ctx),
             Command::FrameStats(on) => {
                 self.settings.frame_stats = on;
                 self.menus_changed = true;
@@ -4466,4 +4529,9 @@ struct RunChoices {
     profiles: Vec<String>,
     profile: usize,
     state: chrome::RunState,
+}
+
+/// Whether the game draws its screen yet (the screenshot harness waits).
+fn system_screen(studio: &Studio) -> bool {
+    studio.host.system.game_screen().is_some()
 }

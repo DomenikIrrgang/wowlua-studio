@@ -45,6 +45,9 @@ pub enum Panel {
     Console,
     Events,
     Input,
+    /// The game's chat: what its chat windows show, and a line to type
+    /// in (S077).
+    GameChat,
     Screenshots,
     // Right
     Variables,
@@ -93,6 +96,7 @@ impl Panel {
             Panel::Console => "console",
             Panel::Events => "events",
             Panel::Input => "input",
+            Panel::GameChat => "chat",
             Panel::Screenshots => "screenshots",
             Panel::Variables => "variables",
             Panel::Watch => "watch",
@@ -119,6 +123,7 @@ impl Panel {
             | Panel::Game
             | Panel::Events
             | Panel::Input
+            | Panel::GameChat
             | Panel::Screenshots
             | Panel::Inspector => "M5",
             Panel::CallStack

@@ -11,7 +11,7 @@ use egui::{Align2, CornerRadius, Key, Pos2, Rect, Sense, Stroke, StrokeKind, Ui,
 use serde_json::Value as Json;
 use wowlua_studio_ui::forms::{self, CalloutKind};
 use wowlua_studio_ui::widgets::{self, ButtonKind};
-use wowlua_studio_ui::{Face, Palette, palette};
+use wowlua_studio_ui::{Face, Icon, Palette, icons, palette};
 
 use crate::system::{GameEvent, GameInput, GameRequest, System, Workspace};
 
@@ -66,6 +66,171 @@ pub const SIZES: [(u32, u32); 9] = [
     (1024, 576),
 ];
 
+/// The chat lines kept (S077).
+const CHAT_KEPT: usize = 1000;
+
+/// The chat's channels: the chat type and its name.
+const CHANNELS: [(&str, &str); 6] = [
+    ("SAY", "say"),
+    ("PARTY", "party"),
+    ("RAID", "raid"),
+    ("GUILD", "guild"),
+    ("YELL", "yell"),
+    ("WHISPER", "whisper"),
+];
+
+/// What a chat line is, for the chat's filter: the game's yellow system
+/// lines, lines with no colour (an addon's `print`), the rest chat.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ChatKind {
+    Chat,
+    System,
+    Addon,
+}
+
+/// A line of the game's chat windows.
+#[derive(Clone, Debug, PartialEq)]
+struct ChatRow {
+    text: String,
+    color: Option<[f32; 3]>,
+    kind: ChatKind,
+}
+
+impl ChatRow {
+    fn of(line: &Json) -> ChatRow {
+        let color = line["color"].as_array().and_then(|c| {
+            let v: Vec<f32> = c
+                .iter()
+                .filter_map(|x| x.as_f64())
+                .map(|x| x as f32)
+                .collect();
+            (v.len() == 3).then(|| [v[0], v[1], v[2]])
+        });
+        let kind = match color {
+            None => ChatKind::Addon,
+            Some([r, g, b]) if r > 0.95 && g > 0.95 && b < 0.05 => ChatKind::System,
+            Some(_) => ChatKind::Chat,
+        };
+        ChatRow {
+            text: line["text"].as_str().unwrap_or("").to_owned(),
+            color,
+            kind,
+        }
+    }
+}
+
+/// A chat line's text as the game shows it (S077): `|cffRRGGBB…|r` its
+/// colours, a link (`|H…|htext|h`) its text, textures and atlases
+/// (`|T…|t`, `|A…|a`) left out, `|n` a new line, `||` a bar; each span
+/// with its colour (none: the line's).
+fn chat_spans(text: &str) -> Vec<(String, Option<[f32; 3]>)> {
+    let mut spans: Vec<(String, Option<[f32; 3]>)> = Vec::new();
+    let mut color: Option<[f32; 3]> = None;
+    let mut cur = String::new();
+    let flush = |spans: &mut Vec<(String, Option<[f32; 3]>)>, cur: &mut String, color| {
+        if !cur.is_empty() {
+            spans.push((std::mem::take(cur), color));
+        }
+    };
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0;
+    // (skips to just after `|` + `end`)
+    let skip_to = |i: usize, end: char| {
+        let mut j = i;
+        while j + 1 < chars.len() {
+            if chars[j] == '|' && chars[j + 1] == end {
+                return j + 2;
+            }
+            j += 1;
+        }
+        chars.len()
+    };
+    while i < chars.len() {
+        let c = chars[i];
+        if c != '|' || i + 1 >= chars.len() {
+            cur.push(c);
+            i += 1;
+            continue;
+        }
+        match chars[i + 1] {
+            '|' => {
+                cur.push('|');
+                i += 2;
+            }
+            'n' => {
+                cur.push('\n');
+                i += 2;
+            }
+            'c' => {
+                flush(&mut spans, &mut cur, color);
+                let hex: String = chars.iter().skip(i + 2).take(8).collect();
+                if hex.len() == 8 && hex.chars().all(|h| h.is_ascii_hexdigit()) {
+                    let byte = |k: usize| {
+                        u8::from_str_radix(&hex[k..k + 2], 16).unwrap_or(255) as f32 / 255.0
+                    };
+                    color = Some([byte(2), byte(4), byte(6)]);
+                    i += 10;
+                } else {
+                    // (a named colour, `|cnNAME:`: the line's)
+                    let mut j = i + 2;
+                    while j < chars.len() && chars[j] != ':' {
+                        j += 1;
+                    }
+                    color = None;
+                    i = (j + 1).min(chars.len());
+                }
+            }
+            'r' => {
+                flush(&mut spans, &mut cur, color);
+                color = None;
+                i += 2;
+            }
+            // (a link's data up to `|h`; its text follows, closed by `|h`)
+            'H' => i = skip_to(i + 2, 'h'),
+            'h' => i += 2,
+            'T' => i = skip_to(i + 2, 't'),
+            'A' => i = skip_to(i + 2, 'a'),
+            _ => {
+                cur.push(c);
+                i += 1;
+            }
+        }
+    }
+    flush(&mut spans, &mut cur, color);
+    spans
+}
+
+/// The chat box's own commands: `/p hi` is (PARTY, none, "hi"), `/w Name
+/// hi` (WHISPER, Name, "hi"); other lines none.
+pub fn chat_slash(line: &str) -> Option<(String, Option<String>, String)> {
+    let (cmd, rest) = line.split_once(' ').unwrap_or((line, ""));
+    let chat_type = match cmd.to_lowercase().as_str() {
+        "/s" | "/say" => "SAY",
+        "/y" | "/yell" | "/sh" | "/shout" => "YELL",
+        "/p" | "/party" => "PARTY",
+        "/ra" | "/raid" => "RAID",
+        "/g" | "/guild" => "GUILD",
+        "/o" | "/officer" => "OFFICER",
+        "/i" | "/instance" => "INSTANCE_CHAT",
+        "/e" | "/em" | "/me" | "/emote" => "EMOTE",
+        "/w" | "/whisper" | "/t" | "/tell" => "WHISPER",
+        _ => return None,
+    };
+    let rest = rest.trim();
+    if chat_type == "WHISPER" {
+        let (name, message) = rest.split_once(' ')?;
+        let message = message.trim();
+        return (!message.is_empty()).then(|| {
+            (
+                chat_type.to_owned(),
+                Some(name.to_owned()),
+                message.to_owned(),
+            )
+        });
+    }
+    (!rest.is_empty()).then(|| (chat_type.to_owned(), None, rest.to_owned()))
+}
+
 /// A request asked, by its id: what its answer is for.
 #[derive(Clone, Debug, PartialEq)]
 enum Asked {
@@ -75,6 +240,8 @@ enum Asked {
     Units,
     Target,
     Events,
+    Chat,
+    Advance,
     Settings,
     Input(usize),
     Shot(PathBuf),
@@ -183,7 +350,20 @@ pub struct GameState {
     // The screen.
     pub mode: Mode,
     zoom: usize,
-    slash: String,
+    // The chat (S077).
+    chat: VecDeque<ChatRow>,
+    chat_next: u64,
+    pub chat_filter: usize,
+    chat_text: String,
+    chat_chan: usize,
+    /// Full screen (S077): the game's window size before it.
+    pub full: Option<(u32, u32)>,
+    /// Lines the screenshot harness types into the chat once it runs.
+    pub chat_later: Vec<String>,
+    /// The session's clock is manual (the debugger's): a chat line moves
+    /// it a frame, for the server's answer to come.
+    pub manual: bool,
+    started_at: Option<f64>,
     /// The 3D world behind the UI (M13); the UI draws over black without
     /// it.
     pub world: bool,
@@ -210,6 +390,8 @@ pub enum Action {
     ShowInspector,
     /// Function breakpoints on a frame's scripts (`script:Frame:OnX`, S056).
     BreakOn(Vec<String>),
+    /// The game screen over the whole display (S077).
+    FullScreen,
 }
 
 impl GameState {
@@ -224,6 +406,7 @@ impl GameState {
             self.use_ui_scale,
             self.ui_scale,
             self.mine_only,
+            self.full,
         );
         let next = self.next_session;
         *self = GameState {
@@ -237,7 +420,9 @@ impl GameState {
             use_ui_scale: keep.4,
             ui_scale: keep.5,
             mine_only: keep.6,
+            full: keep.7,
             shots: std::mem::take(&mut self.shots),
+            chat_later: std::mem::take(&mut self.chat_later),
             ..GameState::default()
         };
         next
@@ -306,6 +491,17 @@ impl GameState {
                 }
             }
             (Asked::Units, Ok(Json::Array(list))) => self.units = list,
+            (Asked::Chat, Ok(data)) => {
+                for line in data["lines"].as_array().into_iter().flatten() {
+                    if self.chat.len() == CHAT_KEPT {
+                        self.chat.pop_front();
+                    }
+                    self.chat.push_back(ChatRow::of(line));
+                }
+                if let Some(next) = data["next"].as_u64() {
+                    self.chat_next = next;
+                }
+            }
             (Asked::Events, Ok(Json::Array(list))) => {
                 for e in &list {
                     if self.events.len() == EVENTS_KEPT {
@@ -356,6 +552,101 @@ impl GameState {
         }
         self.polled.insert(key, now);
         true
+    }
+
+    /// Sends the chat line typed (S077): the chat box's own commands
+    /// (`/p hi`, `/w Name hi`) and a line on the channel picked as chat,
+    /// another `/command` as a slash command.
+    fn send_chat(&mut self, system: &dyn System) {
+        let text = self.chat_text.trim().to_owned();
+        if text.is_empty() {
+            return;
+        }
+        self.chat_text.clear();
+        let given = self.given.len();
+        let chat = |chat_type: &str, target: Option<String>, message: String| GameInput::Chat {
+            text: message,
+            chat_type: chat_type.to_owned(),
+            target,
+        };
+        if let Some((chat_type, target, message)) = chat_slash(&text) {
+            self.give(system, "chat", text, chat(&chat_type, target, message));
+        } else if text.starts_with('/') {
+            self.give(system, "slash", text.clone(), GameInput::Slash(text));
+        } else {
+            let chat_type = CHANNELS[self.chat_chan.min(CHANNELS.len() - 1)].0;
+            if chat_type == "WHISPER" {
+                // ("Name message")
+                match text.split_once(' ') {
+                    Some((name, message)) => {
+                        let input =
+                            chat(chat_type, Some(name.to_owned()), message.trim().to_owned());
+                        self.give(system, "chat", text, input);
+                    }
+                    None => self.chat_text = text,
+                }
+            } else {
+                self.give(system, "chat", text.clone(), chat(chat_type, None, text));
+            }
+        }
+        // (a chat line given: its answer comes on the next frame)
+        if self.given.len() > given && self.given.last().is_some_and(|g| g.kind == "chat") {
+            self.answer_comes(system);
+        }
+    }
+
+    /// The screenshot harness's chat lines, once the game ran a while
+    /// (its login told).
+    pub fn send_later(&mut self, system: &dyn System, now: f64) {
+        if self.chat_later.is_empty() || !self.running() {
+            return;
+        }
+        let since = *self.started_at.get_or_insert(now);
+        if now - since < 8.0 {
+            return;
+        }
+        for line in std::mem::take(&mut self.chat_later) {
+            self.chat_text = line;
+            self.send_chat(system);
+        }
+    }
+
+    /// A chat line's answer comes on the next frame (the server's): on a
+    /// manual clock the game moves that frame.
+    fn answer_comes(&mut self, system: &dyn System) {
+        if self.manual {
+            self.ask(
+                system,
+                Asked::Advance,
+                GameRequest::Advance {
+                    frames: Some(2),
+                    seconds: None,
+                },
+            );
+        }
+    }
+
+    /// Full screen (S077): the game's window as large as the display, as
+    /// the game is.
+    pub fn enter_full(&mut self, system: &dyn System, display: (u32, u32)) {
+        if self.full.is_some() {
+            return;
+        }
+        if self.size == (0, 0) {
+            self.size = (1920, 1080);
+            self.ui_scale = 1.0;
+        }
+        self.full = Some(self.size);
+        self.size = display;
+        self.apply_settings(system);
+    }
+
+    /// Back from full screen: the window's size as it was.
+    pub fn leave_full(&mut self, system: &dyn System) {
+        if let Some(size) = self.full.take() {
+            self.size = size;
+            self.apply_settings(system);
+        }
     }
 
     fn give(&mut self, system: &dyn System, kind: &'static str, text: String, input: GameInput) {
@@ -508,7 +799,9 @@ pub fn screen(
     let p = palette(ui.ctx());
     let now = ui.input(|i| i.time);
     let mut action = None;
-    toolbar(ui, state, system, p);
+    if toolbar(ui, state, system, p) {
+        action = Some(Action::FullScreen);
+    }
     rule(ui, p);
     if let Some((text, at)) = &state.toast {
         if now - at > 4.0 {
@@ -617,7 +910,9 @@ pub fn screen(
     action
 }
 
-fn toolbar(ui: &mut Ui, state: &mut GameState, system: &dyn System, p: &Palette) {
+/// The screen's toolbar; returns whether full screen was asked for.
+fn toolbar(ui: &mut Ui, state: &mut GameState, system: &dyn System, p: &Palette) -> bool {
+    let mut full = false;
     // A narrow panel puts the game's settings on a row of their own.
     let wide = ui.available_width() >= 1180.0;
     forms::padded(ui, 12, 6, |ui| {
@@ -640,28 +935,6 @@ fn toolbar(ui: &mut Ui, state: &mut GameState, system: &dyn System, p: &Palette)
             .on_disabled_hover_text(
                 "the 3D world behind the UI comes with M13; until then the UI draws over black",
             );
-            ui.label(
-                egui::RichText::new("/")
-                    .font(Face::Plex.at(12.0))
-                    .color(p.ink_faint),
-            );
-            // (the zoom and screenshot at the right take about 280, the
-            // settings about 280 more)
-            let right = if wide { 580.0 } else { 290.0 };
-            let width = (ui.available_width() - right).clamp(90.0, 240.0);
-            let r = forms::text_input(ui, &mut state.slash, width, "a slash command");
-            if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
-                let text = state.slash.trim().to_owned();
-                if !text.is_empty() {
-                    let cmd = if text.starts_with('/') {
-                        text
-                    } else {
-                        format!("/{text}")
-                    };
-                    state.give(system, "slash", cmd.clone(), GameInput::Slash(cmd));
-                    state.slash.clear();
-                }
-            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add_enabled_ui(state.running(), |ui| {
                     if widgets::button(ui, ButtonKind::Tertiary, "screenshot", true, None).clicked()
@@ -669,6 +942,16 @@ fn toolbar(ui: &mut Ui, state: &mut GameState, system: &dyn System, p: &Palette)
                         shoot(state, system, None);
                     }
                 });
+                if widgets::icon_button(
+                    ui,
+                    Icon::FullScreen,
+                    "full screen: the game alone, as in the game · alt enter leaves it",
+                    false,
+                )
+                .clicked()
+                {
+                    full = true;
+                }
                 let labels: Vec<&str> = ZOOMS.iter().map(|(l, _)| *l).collect();
                 if let Some(i) = widgets::seg(ui, "game-zoom", &labels, state.zoom, false) {
                     state.zoom = i;
@@ -693,6 +976,7 @@ fn toolbar(ui: &mut Ui, state: &mut GameState, system: &dyn System, p: &Palette)
             });
         }
     });
+    full
 }
 
 /// The settings left to right (a row of their own).
@@ -1520,7 +1804,7 @@ pub fn input(ui: &mut Ui, state: &mut GameState) {
         empty(
             ui,
             "Input goes to the client as a user's: pick click, hover, drag, type or key on the \
-             screen's toolbar, or run a slash command.",
+             screen's toolbar, or type in the chat tab.",
             p,
         );
         return;
@@ -1563,6 +1847,220 @@ pub fn input(ui: &mut Ui, state: &mut GameState) {
                 );
             }
         });
+}
+
+/// The game's chat (the chat panel, S077): its chat windows' lines in
+/// their colours, a filter, a line to type a message or a /command in.
+pub fn chat(ui: &mut Ui, state: &mut GameState, system: &dyn System) {
+    let p = palette(ui.ctx());
+    let now = ui.input(|i| i.time);
+    if !state.running() {
+        empty(ui, "No session: the chat is the running client's.", p);
+        return;
+    }
+    if state.poll(now, "chat", 0.25) && !state.waiting(&Asked::Chat) {
+        let since = state.chat_next;
+        state.ask(system, Asked::Chat, GameRequest::ChatLines { since });
+    }
+    ui.ctx()
+        .request_repaint_after(std::time::Duration::from_millis(250));
+    forms::padded(ui, 10, 4, |ui| {
+        ui.horizontal(|ui| {
+            let labels = ["all", "chat", "system", "addons"];
+            if let Some(i) = widgets::seg(ui, "game-chat-filter", &labels, state.chat_filter, false)
+            {
+                state.chat_filter = i;
+            }
+        });
+    });
+    // (the game's colours; on a light ground, darker)
+    let light = p.bg_000.r() > 128;
+    let ink = |row: &ChatRow| match row.color {
+        None => p.ink,
+        Some([r, g, b]) => {
+            let k = if light { 0.55 } else { 1.0 };
+            egui::Color32::from_rgb(
+                (r * k * 255.0) as u8,
+                (g * k * 255.0) as u8,
+                (b * k * 255.0) as u8,
+            )
+        }
+    };
+    let filter = state.chat_filter;
+    let shown: Vec<&ChatRow> = state
+        .chat
+        .iter()
+        .filter(|r| match filter {
+            1 => r.kind == ChatKind::Chat,
+            2 => r.kind == ChatKind::System,
+            3 => r.kind == ChatKind::Addon,
+            _ => true,
+        })
+        .collect();
+    let list_h = (ui.available_height() - 38.0).max(40.0);
+    ui.allocate_ui(Vec2::new(ui.available_width(), list_h), |ui| {
+        egui::ScrollArea::vertical()
+            .id_salt("game-chat")
+            .auto_shrink(false)
+            .stick_to_bottom(true)
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 2.0;
+                forms::padded(ui, 10, 2, |ui| {
+                    if shown.is_empty() {
+                        ui.label(
+                            egui::RichText::new("Nothing in the chat yet.")
+                                .font(Face::Plex.at(12.0))
+                                .color(p.ink_faint),
+                        );
+                    }
+                    let width = ui.available_width();
+                    for row in &shown {
+                        let mut job = egui::text::LayoutJob::default();
+                        job.wrap.max_width = width;
+                        for (text, color) in chat_spans(&row.text) {
+                            let color = color.map_or_else(
+                                || ink(row),
+                                |[r, g, b]| {
+                                    ink(&ChatRow {
+                                        text: String::new(),
+                                        color: Some([r, g, b]),
+                                        kind: row.kind,
+                                    })
+                                },
+                            );
+                            job.append(
+                                &text,
+                                0.0,
+                                egui::TextFormat {
+                                    font_id: Face::Plex.at(12.0),
+                                    color,
+                                    ..Default::default()
+                                },
+                            );
+                        }
+                        ui.label(job);
+                    }
+                });
+            });
+    });
+    let mut send = false;
+    forms::padded(ui, 10, 4, |ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            let options: Vec<(&str, bool)> = CHANNELS.iter().map(|(_, l)| (*l, true)).collect();
+            forms::select_sized(
+                ui,
+                "game-chat-channel",
+                &options,
+                &mut state.chat_chan,
+                100.0,
+                26.0,
+            );
+            let send_w = widgets::button_width(ui, "send", true);
+            let r = forms::text_input(
+                ui,
+                &mut state.chat_text,
+                (ui.available_width() - send_w - 8.0).max(80.0),
+                "a message, or a /command: /suu, /reload, /w Healer hi",
+            );
+            if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                send = true;
+            }
+            if widgets::button(ui, ButtonKind::Secondary, "send", true, None).clicked() {
+                send = true;
+            }
+        });
+    });
+    if send {
+        state.send_chat(system);
+    }
+}
+
+/// The game screen alone over the whole display (S077): the screen at the
+/// display's size, and a bar floating over it that the user moves.
+/// Returns whether to leave full screen.
+pub fn full_screen(ui: &mut Ui, state: &mut GameState, system: &dyn System) -> bool {
+    let p = palette(ui.ctx());
+    let area = ui.max_rect();
+    ui.painter()
+        .rect_filled(area, CornerRadius::ZERO, egui::Color32::BLACK);
+    let mut leave = false;
+    if let Some(screen) = system.game_screen().filter(|_| state.running()) {
+        let size = Vec2::new(screen.size[0] as f32, screen.size[1] as f32);
+        let scale = (area.width() / size.x)
+            .min(area.height() / size.y)
+            .max(0.05);
+        let rect = Rect::from_center_size(area.center(), size * scale);
+        let response = ui.interact(
+            rect,
+            ui.make_persistent_id("game-full-screen"),
+            Sense::click_and_drag(),
+        );
+        ui.painter().image(
+            screen.texture,
+            rect,
+            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+            egui::Color32::WHITE,
+        );
+        pointer(ui, state, system, &response, rect, scale);
+    }
+    // The bar: dragged by its ground, it stays where it is left.
+    egui::Area::new(egui::Id::unique("game-full-screen-bar"))
+        .movable(true)
+        .order(egui::Order::Foreground)
+        .default_pos(area.right_bottom() - Vec2::new(560.0, 60.0))
+        .show(ui.ctx(), |ui| {
+            egui::Frame::new()
+                .fill(p.bg_200.gamma_multiply(0.92))
+                .stroke(egui::Stroke::new(1.0, p.line_strong))
+                .inner_margin(egui::Margin::symmetric(8, 6))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 8.0;
+                        icons::paint(
+                            ui.painter(),
+                            Rect::from_min_size(
+                                ui.cursor().min + Vec2::new(0.0, 6.0),
+                                Vec2::splat(14.0),
+                            ),
+                            Icon::Grip,
+                            p.ink_faint,
+                        );
+                        ui.add_space(16.0);
+                        let labels: Vec<&str> = MODES.iter().map(|(_, l)| *l).collect();
+                        let at = MODES
+                            .iter()
+                            .position(|(m, _)| *m == state.mode)
+                            .unwrap_or(0);
+                        if let Some(i) = widgets::seg(ui, "game-full-mode", &labels, at, false) {
+                            state.mode = MODES[i].0;
+                        }
+                        ui.add_enabled_ui(false, |ui| {
+                            forms::checkbox(ui, &mut state.world, "3D world", None);
+                        });
+                        ui.add_enabled_ui(state.running(), |ui| {
+                            if widgets::icon_button(ui, Icon::Snapshot, "screenshot", false)
+                                .clicked()
+                            {
+                                shoot(state, system, None);
+                            }
+                        });
+                        if widgets::button(
+                            ui,
+                            ButtonKind::Secondary,
+                            "exit full screen",
+                            true,
+                            Some(Icon::ExitFullScreen),
+                        )
+                        .on_hover_text("alt enter too")
+                        .clicked()
+                        {
+                            leave = true;
+                        }
+                    });
+                });
+        });
+    leave
 }
 
 /// The screenshots taken (the screenshots panel).
@@ -1778,5 +2276,56 @@ mod unit {
         assert_eq!(sent, 0.8);
         state.apply_settings(&NoSystem);
         assert!(state.waiting(&Asked::Settings));
+    }
+}
+
+#[cfg(test)]
+mod chat_tests {
+    use super::*;
+
+    #[test]
+    fn the_chat_box_s_own_commands_are_chat() {
+        assert_eq!(
+            chat_slash("/p pulling"),
+            Some(("PARTY".into(), None, "pulling".into()))
+        );
+        assert_eq!(
+            chat_slash("/w Healer behind it"),
+            Some(("WHISPER".into(), Some("Healer".into()), "behind it".into()))
+        );
+        assert_eq!(
+            chat_slash("/SAY hi"),
+            Some(("SAY".into(), None, "hi".into()))
+        );
+        assert_eq!(chat_slash("/w Healer"), None, "a whisper needs a message");
+        assert_eq!(chat_slash("/p"), None);
+        assert_eq!(chat_slash("/suu modules"), None, "a slash command");
+    }
+
+    #[test]
+    fn a_chat_line_s_markup_is_its_colours_and_its_links_text() {
+        let spans = chat_spans(
+            "Code of |HurlIndex:64|h|cnVISIBLE_URL_DEFAULT_CHAT_LINK_COLOR:https://x.example|r|h for more",
+        );
+        let text: String = spans.iter().map(|(t, _)| t.as_str()).collect();
+        assert_eq!(text, "Code of https://x.example for more");
+        let spans = chat_spans("|cffff0000red|r and |T134400:0|ticon || bar");
+        assert_eq!(spans[0], ("red".to_owned(), Some([1.0, 0.0, 0.0])));
+        let text: String = spans.iter().map(|(t, _)| t.as_str()).collect();
+        assert_eq!(text, "red and icon | bar");
+    }
+
+    #[test]
+    fn a_chat_line_is_chat_system_or_an_addon_s_by_its_colour() {
+        let row = |color: Json| ChatRow::of(&serde_json::json!({ "text": "x", "color": color }));
+        assert_eq!(row(Json::Null).kind, ChatKind::Addon);
+        assert_eq!(
+            row(serde_json::json!([1.0, 1.0, 0.0])).kind,
+            ChatKind::System
+        );
+        assert_eq!(
+            row(serde_json::json!([0.67, 0.67, 1.0])).kind,
+            ChatKind::Chat
+        );
     }
 }

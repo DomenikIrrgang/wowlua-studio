@@ -238,6 +238,10 @@ pub enum GameRequest {
     Target(Option<usize>),
     /// The events told since the last read.
     Events,
+    /// The chat windows' lines from line `since` on (wowlua T514).
+    ChatLines {
+        since: u64,
+    },
     /// The game's settings: the window's size and the UI scale (none:
     /// "Use UI Scale" off).
     SetScreen {
@@ -386,6 +390,13 @@ pub enum GameInput {
     Key(String),
     /// A slash command (`/wl`).
     Slash(String),
+    /// A chat message as the player sends it (`SAY`, `PARTY`, a
+    /// `WHISPER` to `target`; wowlua T514).
+    Chat {
+        text: String,
+        chat_type: String,
+        target: Option<String>,
+    },
 }
 
 /// What a game session tells.
