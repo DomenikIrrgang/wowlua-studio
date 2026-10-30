@@ -15,6 +15,7 @@ pub mod explorer;
 pub mod flavors;
 pub mod game;
 pub mod git;
+pub mod github;
 pub mod jobs;
 pub mod keys;
 pub mod lsp;
@@ -2189,6 +2190,8 @@ impl Studio {
                 Event::GameArt(art, image) => self.world.art.read(ctx, art, image),
                 Event::Spells(query, found) => self.world.spells_found(query, found),
                 Event::Git(root, event) => self.git.event(&root, event, &*self.host.system),
+                // (the pull requests page comes with M12's design)
+                Event::GithubApi(..) => {}
                 Event::Found(what, flavor, query, rows) => {
                     self.world.found.insert((what, flavor, query), rows);
                 }

@@ -178,6 +178,9 @@ pub enum Event {
     /// The repository's answer (M11): the workspace's root asked about, and
     /// what came back.
     Git(PathBuf, GitEvent),
+    /// GitHub's answer (M12): the workspace's root asked about, and what
+    /// came back.
+    GithubApi(PathBuf, GithubEvent),
     /// What an ID picker's search found (→ [`System::find`]): what, the
     /// flavor, the query, the rows.
     Found(Find, String, String, Vec<SpellRow>),
@@ -609,6 +612,97 @@ pub struct ClassSpell {
     pub level: u32,
     pub line: String,
     pub icon: Option<u32>,
+}
+
+/// What Studio asks of the workspace's repository on GitHub (M12, →
+/// [`Event::GithubApi`]).
+#[derive(Clone, Debug, PartialEq)]
+pub enum GithubRequest {
+    /// The repository the workspace's remote names, its default branch,
+    /// and who is signed in.
+    Repo,
+    /// The open pull requests.
+    Pulls,
+    /// A pull request with its comments, reviews and files.
+    Pull(u64),
+    /// The recent Actions runs.
+    Runs,
+    /// A run's jobs and their steps.
+    Jobs(u64),
+    /// A job's log and annotations.
+    Log(u64),
+    Comment {
+        number: u64,
+        body: String,
+    },
+    /// A reply in a review thread (to its first comment).
+    Reply {
+        number: u64,
+        to: u64,
+        body: String,
+    },
+    /// A review comment on a line of a file of the pull request's head.
+    LineComment {
+        number: u64,
+        commit: String,
+        path: String,
+        line: u64,
+        side: String,
+        body: String,
+    },
+    Review {
+        number: u64,
+        event: crate::github::model::ReviewEvent,
+        body: String,
+    },
+    Merge {
+        number: u64,
+        method: crate::github::model::MergeMethod,
+    },
+    Create {
+        title: String,
+        body: String,
+        head: String,
+        base: String,
+        draft: bool,
+    },
+    /// A run again: all of it, or its failed jobs.
+    Rerun {
+        run: u64,
+        failed_only: bool,
+    },
+    Cancel(u64),
+}
+
+/// What GitHub answered (→ [`System::github`]).
+#[derive(Clone, Debug, PartialEq)]
+pub enum GithubEvent {
+    /// The repository, its default branch, the signed-in login.
+    Repo(Result<(crate::github::model::Repo, String, String), crate::github::model::GithubError>),
+    Pulls(Result<Vec<crate::github::model::PullSummary>, crate::github::model::GithubError>),
+    Pull {
+        number: u64,
+        result: Result<Box<crate::github::model::PullDetail>, crate::github::model::GithubError>,
+    },
+    Runs(Result<Vec<crate::github::model::Run>, crate::github::model::GithubError>),
+    Jobs {
+        run: u64,
+        result: Result<Vec<crate::github::model::Job>, crate::github::model::GithubError>,
+    },
+    Log {
+        job: u64,
+        result: Result<
+            (String, Vec<crate::github::model::Annotation>),
+            crate::github::model::GithubError,
+        >,
+    },
+    /// A change made (a comment, review, merge, pull request, re-run,
+    /// cancel): what it was, and what came of it (a pull request's number,
+    /// a link) or why not.
+    Done {
+        what: String,
+        result: Result<String, crate::github::model::GithubError>,
+    },
 }
 
 /// What Studio asks of the repository (M11, → [`Event::Git`]).
@@ -1748,6 +1842,9 @@ pub trait System {
     }
     /// A question for the Git repository `root` is in (M11, → [`Event::Git`]).
     fn git(&self, _root: &Path, _request: GitRequest) {}
+    /// A question for the GitHub repository `root`'s remote names (M12, →
+    /// [`Event::GithubApi`]).
+    fn github(&self, _root: &Path, _request: GithubRequest) {}
     /// The CVars the flavor's client has, with their defaults (wowlua's
     /// recorded ones); none where wowlua has none.
     fn cvars(&self, _flavor: &str) -> Vec<CVarInfo> {

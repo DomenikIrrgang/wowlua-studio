@@ -600,6 +600,14 @@ impl System for NativeSystem {
         });
     }
 
+    fn github(&self, root: &Path, request: wowlua_studio_app::system::GithubRequest) {
+        let root = root.to_path_buf();
+        self.spawn(move || {
+            let event = crate::github::answer(&root, request, crate::settings::github_token());
+            Event::GithubApi(root, event)
+        });
+    }
+
     fn git(&self, root: &Path, request: wowlua_studio_app::system::GitRequest) {
         let root = root.to_path_buf();
         self.spawn(move || {
