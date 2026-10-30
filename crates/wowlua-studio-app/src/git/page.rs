@@ -56,10 +56,61 @@ fn caption(ui: &mut Ui, text: &str) {
     );
 }
 
-/// A section's head: its name and count.
-fn section(ui: &mut Ui, name: &str, count: usize, color: Color32) {
+/// `text` cut with an ellipsis to fit `width` in `font`.
+fn fit(ui: &Ui, text: &str, font: &egui::FontId, width: f32) -> String {
+    let w = |s: &str| {
+        ui.fonts_mut(|f| {
+            f.layout_no_wrap(s.to_owned(), font.clone(), Color32::WHITE)
+                .size()
+                .x
+        })
+    };
+    if w(text) <= width {
+        return text.to_owned();
+    }
+    let mut chars: Vec<char> = text.chars().collect();
+    while !chars.is_empty() {
+        chars.pop();
+        let s: String = chars.iter().collect::<String>() + "…";
+        if w(&s) <= width {
+            return s;
+        }
+    }
+    String::new()
+}
+
+/// A small icon button at `rect`, shown when `show` or under the pointer;
+/// whether it was clicked.
+fn row_button(ui: &mut Ui, rect: Rect, id: egui::Id, icon: Icon, label: &str, show: bool) -> bool {
     let p = palette(ui.ctx());
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), Sense::hover());
+    let r = ui.interact(rect, id, Sense::click());
+    if show || r.hovered() {
+        if r.hovered() {
+            ui.painter().rect_filled(rect, CornerRadius::ZERO, p.bg_400);
+        }
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink(3.0)));
+        widgets::icon(
+            &mut child,
+            icon,
+            14.0,
+            if r.hovered() { p.ink } else { p.ink_muted },
+        );
+    }
+    r.on_hover_text(label).clicked()
+}
+
+/// A section's head: its name and count, and a button for all its files
+/// (stage all, unstage all); whether that was clicked.
+fn section(
+    ui: &mut Ui,
+    name: &str,
+    count: usize,
+    color: Color32,
+    button: Option<(Icon, &str)>,
+) -> bool {
+    let p = palette(ui.ctx());
+    let (rect, response) =
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), Sense::hover());
     ui.painter().text(
         egui::pos2(rect.left() + 12.0, rect.bottom() - 6.0),
         Align2::LEFT_BOTTOM,
@@ -67,17 +118,34 @@ fn section(ui: &mut Ui, name: &str, count: usize, color: Color32) {
         Face::Plex.at(11.5),
         color,
     );
+    // (the count over the rows' letters, the button over their buttons)
     ui.painter().text(
-        egui::pos2(rect.right() - 12.0, rect.bottom() - 6.0),
-        Align2::RIGHT_BOTTOM,
+        egui::pos2(rect.right() - 16.0, rect.bottom() - 6.0),
+        Align2::CENTER_BOTTOM,
         count.to_string(),
         Face::Plex.at(11.5),
         p.ink_muted,
     );
+    let Some((icon, label)) = button.filter(|_| count > 0) else {
+        return false;
+    };
+    let b = Rect::from_center_size(
+        egui::pos2(rect.right() - 38.0, rect.bottom() - 12.0),
+        Vec2::splat(20.0),
+    );
+    row_button(
+        ui,
+        b,
+        egui::Id::unique(("wowlua-studio-git-section", name)),
+        icon,
+        label,
+        true,
+    ) && response.rect.contains(b.center())
 }
 
 /// A file's row: its name and folder, a note, the stage or unstage button,
-/// its letter. (clicked, button clicked)
+/// its letter; the name and folder stop before the right's parts. (clicked,
+/// button clicked)
 fn file_row(
     ui: &mut Ui,
     path: &str,
@@ -95,14 +163,50 @@ fn file_row(
     } else if hovered {
         ui.painter().rect_filled(rect, CornerRadius::ZERO, p.bg_300);
     }
+    let cy = rect.center().y;
+    // The right's parts first: the letter, the button, the note.
+    ui.painter().text(
+        egui::pos2(rect.right() - 16.0, cy),
+        Align2::CENTER_CENTER,
+        change.letter(),
+        Face::PlexSemiBold.at(11.0),
+        change_color(change, p),
+    );
+    let mut right = rect.right() - 28.0;
+    let mut clicked_button = false;
+    if let Some((icon, label)) = button {
+        let b = Rect::from_center_size(egui::pos2(right - 10.0, cy), Vec2::splat(20.0));
+        clicked_button = row_button(
+            ui,
+            b,
+            egui::Id::unique(("wowlua-studio-git-row", path, label)),
+            icon,
+            label,
+            hovered,
+        );
+        right -= 24.0;
+    }
+    if !note.is_empty() {
+        let r = ui.painter().text(
+            egui::pos2(right - 4.0, cy),
+            Align2::RIGHT_CENTER,
+            note,
+            Face::Plex.at(11.0),
+            p.ink_muted,
+        );
+        right = r.left() - 4.0;
+    }
+    // The name, then its folder, in what is left.
     let (dir, name) = path.rsplit_once('/').unwrap_or(("", path));
+    let room = (right - 8.0 - (rect.left() + 12.0)).max(0.0);
     let font = Face::Plex.at(12.5);
+    let shown = fit(ui, name, &font, room);
     let name_w = ui
         .painter()
         .text(
-            egui::pos2(rect.left() + 12.0, rect.center().y),
+            egui::pos2(rect.left() + 12.0, cy),
             Align2::LEFT_CENTER,
-            name,
+            &shown,
             font,
             if change == Change::Deleted {
                 p.ink_muted
@@ -111,53 +215,15 @@ fn file_row(
             },
         )
         .width();
-    ui.painter().text(
-        egui::pos2(rect.left() + 20.0 + name_w, rect.center().y),
-        Align2::LEFT_CENTER,
-        dir,
-        Face::Plex.at(11.5),
-        p.ink_muted,
-    );
-    // The letter, the button left of it, the note left of that.
-    let letter = egui::pos2(rect.right() - 16.0, rect.center().y);
-    ui.painter().text(
-        letter,
-        Align2::CENTER_CENTER,
-        change.letter(),
-        Face::PlexSemiBold.at(11.0),
-        change_color(change, p),
-    );
-    let mut clicked_button = false;
-    let mut right = rect.right() - 28.0;
-    if let Some((icon, label)) = button {
-        let b =
-            Rect::from_center_size(egui::pos2(right - 10.0, rect.center().y), Vec2::splat(20.0));
-        let r = ui.interact(
-            b,
-            egui::Id::unique(("wowlua-studio-git-row", path, label)),
-            Sense::click(),
-        );
-        if hovered || r.hovered() {
-            if r.hovered() {
-                ui.painter().rect_filled(b, CornerRadius::ZERO, p.bg_400);
-            }
-            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(b.shrink(3.0)));
-            widgets::icon(
-                &mut child,
-                icon,
-                14.0,
-                if r.hovered() { p.ink } else { p.ink_muted },
-            );
-        }
-        clicked_button = r.on_hover_text(label).clicked();
-        right -= 24.0;
-    }
-    if !note.is_empty() {
+    let dir_room = room - name_w - 8.0;
+    if !dir.is_empty() && dir_room > 24.0 {
+        let small = Face::Plex.at(11.5);
+        let dir = fit(ui, dir, &small, dir_room);
         ui.painter().text(
-            egui::pos2(right - 4.0, rect.center().y),
-            Align2::RIGHT_CENTER,
-            note,
-            Face::Plex.at(11.0),
+            egui::pos2(rect.left() + 20.0 + name_w, cy),
+            Align2::LEFT_CENTER,
+            dir,
+            small,
             p.ink_muted,
         );
     }
@@ -325,7 +391,7 @@ pub fn changes(ui: &mut Ui, state: &mut GitState, system: &dyn System) -> Option
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
             if !conflicts.is_empty() {
-                section(ui, "conflicts", conflicts.len(), p.error);
+                section(ui, "conflicts", conflicts.len(), p.error, None);
                 for f in &conflicts {
                     let sel =
                         state.selected == Some(Selected::File(f.path.clone(), DiffOf::Unstaged));
@@ -342,7 +408,16 @@ pub fn changes(ui: &mut Ui, state: &mut GitState, system: &dyn System) -> Option
                     }
                 }
             }
-            section(ui, "staged", staged.len(), p.ink_muted);
+            if section(
+                ui,
+                "staged",
+                staged.len(),
+                p.ink_muted,
+                Some((Icon::Minimize, "unstage all")),
+            ) {
+                let all = staged.iter().map(|f| f.path.clone()).collect();
+                request = Some(("unstaging…", GitRequest::Unstage(all)));
+            }
             for f in &staged {
                 let sel = state.selected == Some(Selected::File(f.path.clone(), DiffOf::Staged));
                 let note = if f.unstaged.is_some() { "part" } else { "" };
@@ -361,7 +436,16 @@ pub fn changes(ui: &mut Ui, state: &mut GitState, system: &dyn System) -> Option
                     request = Some(("unstaging…", GitRequest::Unstage(vec![f.path.clone()])));
                 }
             }
-            section(ui, "changes", unstaged.len(), p.ink_muted);
+            if section(
+                ui,
+                "changes",
+                unstaged.len(),
+                p.ink_muted,
+                Some((Icon::Add, "stage all")),
+            ) {
+                let all = unstaged.iter().map(|f| f.path.clone()).collect();
+                request = Some(("staging…", GitRequest::Stage(all)));
+            }
             for f in &unstaged {
                 let sel = state.selected == Some(Selected::File(f.path.clone(), DiffOf::Unstaged));
                 let note = if f.staged.is_some() { "part" } else { "" };
@@ -1180,6 +1264,7 @@ fn commit_view(ui: &mut Ui, state: &mut GitState, system: &dyn System, hash: &st
                 &format!("{} files · +{added} −{removed}", files.len()),
                 files.len(),
                 p.ink_muted,
+                None,
             );
             for (i, f) in files.iter().enumerate() {
                 let note = format!("+{} −{}", f.added, f.removed);
