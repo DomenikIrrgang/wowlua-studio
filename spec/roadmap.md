@@ -439,8 +439,22 @@ hand on macOS only.
 
 ## M13: The 3D world (planned)
 
-Needs new work in wowlua: unit positions in the engine and world profiles,
-a world renderer with models from the installation.
+Artboards: game, world profiles (S076).
+
+- The zone behind the game screen's UI, a toggle of the screen (S076):
+  terrain, buildings and doodads from the installation, the units as
+  their models; cameras, click to target, playing through the world
+  profile's bindings, units that move and act; nameplates, distances,
+  ranges, facing and line of sight from the positions; the camera API;
+  overlays for ranges, sight and unit info.
+- The world profile page places units, draws their paths and gives them
+  movement and actions; the debugger shows the world as it paused.
+- camelot first.
+
+Needs new work in wowlua: unit positions, movement and actions in the
+engine, world profiles and the test API; a world renderer with the
+zone's terrain, buildings, doodads and models from the installation.
+Built so far: the game screen's toggle (disabled until the world is).
 
 ## M14: Claude (planned, last)
 

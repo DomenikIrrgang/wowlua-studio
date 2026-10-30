@@ -28,6 +28,8 @@ pub enum Panel {
     Diff,
     PullRequest,
     Game,
+    /// A tab of layouts saved before the 3D world became the game
+    /// screen's toggle (M13): read, then taken out of them.
     World3d,
     Profiler,
     TestResults,
