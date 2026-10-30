@@ -2297,7 +2297,6 @@ impl Studio {
                     }
                     self.start.refresh(&*self.host.system, &self.recents);
                 }
-                start::Action::SignIn => self.settings_show("github"),
             }
         }
     }

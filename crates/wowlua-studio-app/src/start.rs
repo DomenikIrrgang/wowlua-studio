@@ -19,8 +19,8 @@ use wowlua_studio_ui::{Face, Icon, Palette, icons, palette, wordmark};
 use crate::github::model::{GithubError, RepoInfo, typed_repo};
 use crate::recents::{self, Recents};
 use crate::system::{
-    AccountEvent, AccountRequest, Adopt, AdoptPreview, Event, Installation, LeftClone, Losses,
-    NewAddon, System, UiState,
+    AccountEvent, AccountRequest, Adopt, AdoptPreview, Event, GithubSignIn, Installation,
+    LeftClone, Losses, NewAddon, System, UiState,
 };
 
 /// The form under the ways to start.
@@ -55,8 +55,6 @@ pub enum Action {
     },
     /// Deletes a clone a window left behind.
     DeleteClone(PathBuf),
-    /// The settings' GitHub sign-in.
-    SignIn,
 }
 
 /// A clone under way.
@@ -86,6 +84,9 @@ pub struct GithubForm {
     branches_asked: HashSet<String>,
     /// Look the typed repository up at the next frame.
     find_now: bool,
+    /// GitHub's device sign-in, started here (the settings page is a
+    /// workspace's).
+    sign_in: Option<GithubSignIn>,
 }
 
 impl GithubForm {
@@ -283,6 +284,14 @@ impl StartPage {
                 self.ui_code.insert(flavor.clone(), state.clone());
             }
             Event::Account(e) => self.github.event(e),
+            Event::Github(e) => {
+                // (signed in: the repositories are read again)
+                if matches!(e, GithubSignIn::SignedIn(_)) {
+                    self.github.repos = None;
+                    self.github.asked = false;
+                }
+                self.github.sign_in = Some(e.clone());
+            }
             Event::Cloning {
                 repo,
                 progress,
@@ -629,16 +638,51 @@ impl StartPage {
                             21.0,
                             p.ink,
                         );
-                        if widgets::button(
-                            ui,
-                            ButtonKind::Primary,
-                            "sign in with GitHub",
-                            true,
-                            None,
-                        )
-                        .clicked()
-                        {
-                            actions.push(Action::SignIn);
+                        match &form.sign_in {
+                            Some(GithubSignIn::Code { code, url }) => {
+                                forms::callout(ui, CalloutKind::Note, |ui| {
+                                    forms::paragraph(
+                                        ui,
+                                        &format!(
+                                            "Enter {code} at {url} (it is on your clipboard, the page open in your browser) · waiting for GitHub…"
+                                        ),
+                                        12.0,
+                                        18.0,
+                                        p.ink,
+                                    );
+                                });
+                                if widgets::button(ui, ButtonKind::Tertiary, "cancel", true, None)
+                                    .clicked()
+                                {
+                                    cx.system.github_sign_in(false);
+                                    form.sign_in = None;
+                                }
+                            }
+                            Some(GithubSignIn::SignedIn(_)) => {
+                                forms::paragraph(
+                                    ui,
+                                    "Signed in: reading your repositories…",
+                                    12.0,
+                                    18.0,
+                                    p.ink_muted,
+                                );
+                            }
+                            other => {
+                                if let Some(GithubSignIn::Failed(why)) = other {
+                                    error_callout(ui, p, &format!("the sign-in failed: {why}"));
+                                }
+                                if widgets::button(
+                                    ui,
+                                    ButtonKind::Primary,
+                                    "sign in with GitHub",
+                                    true,
+                                    None,
+                                )
+                                .clicked()
+                                {
+                                    cx.system.github_sign_in(true);
+                                }
+                            }
                         }
                         return;
                     }
