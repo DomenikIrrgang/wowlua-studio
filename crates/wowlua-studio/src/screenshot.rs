@@ -12,7 +12,8 @@
 //! `shipdo:<build|install|dry|publish|tag|dev>`, `settings:<section>`,
 //! `manifest:<section>[@json]` (the workspace's wowlua.json in its tab),
 //! `git:<branches|commit|new|switch:<branch>|discard>` (the git page's
-//! parts, once the repository is read).
+//! parts, once the repository is read), `github:<run|failed|pull|new>`
+//! (the pull requests page's, once GitHub answered).
 
 use std::{
     path::PathBuf,
@@ -138,6 +139,10 @@ impl Screenshot {
                     .map(|(p, v)| (p.to_owned(), v.to_owned()))
                     .collect();
                 studio.world_live_later(profile, edits);
+                continue;
+            }
+            if let Some(rest) = step.strip_prefix("github:") {
+                studio.github_show(rest);
                 continue;
             }
             if let Some(rest) = step.strip_prefix("git:") {

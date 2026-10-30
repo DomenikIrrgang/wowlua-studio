@@ -133,6 +133,7 @@ pub struct Studio {
     /// The ship page (M9, S061).
     ship: ship::ShipState,
     git: git::GitState,
+    github: github::GithubState,
     /// The settings page (M10, S062).
     settings_page: settings::SettingsState,
     /// The wowlua.json tabs' forms (S063).
@@ -275,6 +276,7 @@ impl Studio {
             world: world::WorldState::default(),
             ship: ship::ShipState::default(),
             git: git::GitState::default(),
+            github: github::GithubState::default(),
             settings_page: settings::SettingsState::default(),
             manifests: manifest::Manifests::default(),
             queued_manifest: None,
@@ -484,6 +486,12 @@ impl Studio {
             self.settings.git_fetch_minutes,
             ctx.input(|i| i.time),
         );
+        self.github.tick(
+            &*self.host.system,
+            self.settings.git_fetch_minutes,
+            ctx.input(|i| i.time),
+        );
+        self.github_runs(&ctx);
         let focused = ctx.input(|i| i.focused);
         if focused && !self.focused {
             // Another window may have changed the recents, Git the branch.
@@ -848,8 +856,17 @@ impl Studio {
         let mut world_action = None;
         let ship_state = &mut self.ship;
         let mut ship_action = None;
+        let git_pushed = self.git.pushed.clone();
+        let git_base = git_pushed
+            .as_deref()
+            .and_then(|b| self.github.pull_wanted(b))
+            .map(str::to_owned);
         let git_state = &mut self.git;
         let mut git_action = None;
+        let github_state = &mut self.github;
+        let mut github_action = None;
+        let github_now = ctx.input(|i| i.time);
+        let github_branch = self.branch.clone();
         let settings_page = &mut self.settings_page;
         let manifests = &mut self.manifests;
         let mut manifest_action = None;
@@ -1159,6 +1176,18 @@ impl Studio {
                     profiler_action = Some(a);
                 }
             }
+            Panel::PullRequests => {
+                if let Some(a) = github::page::list(ui, github_state, system, github_now) {
+                    github_action = Some(a);
+                }
+            }
+            Panel::PullRequest => {
+                if let Some(a) =
+                    github::page::main(ui, github_state, system, github_branch.as_deref())
+                {
+                    github_action = Some(a);
+                }
+            }
             Panel::Changes => {
                 if let Some(a) = git::page::changes(ui, git_state, system) {
                     git_action = Some(a);
@@ -1170,7 +1199,8 @@ impl Studio {
                 }
             }
             Panel::Diff => {
-                if let Some(a) = git::page::main(ui, git_state, system) {
+                let hint = git_pushed.as_deref().zip(git_base.as_deref());
+                if let Some(a) = git::page::main(ui, git_state, system, hint) {
                     git_action = Some(a);
                 }
             }
@@ -1218,6 +1248,9 @@ impl Studio {
         }
         if let Some(a) = git_action {
             self.git_action(a, ctx);
+        }
+        if let Some(a) = github_action {
+            self.github_action(a, ctx);
         }
         if let Some(a) = settings_action {
             self.settings_action(a, ctx);
@@ -2023,6 +2056,113 @@ impl Studio {
                 ),
             },
             Act::Open(path) => self.open_file(&path, ctx),
+            Act::OpenRun(id) => {
+                self.github.selected = Some(github::Selected::Run(id));
+                self.run(ctx, Command::ShowPage(Page::Prs));
+            }
+        }
+    }
+
+    /// What the pull requests page asks (M12).
+    fn github_action(&mut self, action: github::page::Action, ctx: &Context) {
+        match action {
+            github::page::Action::Open(path, line) => {
+                let Some(root) = self.github.root().map(Path::to_path_buf) else {
+                    return;
+                };
+                self.git_action(
+                    git::page::Action::Open(root.join(path), Some(line as u32)),
+                    ctx,
+                );
+            }
+            github::page::Action::SignIn => self.settings_show("github"),
+            github::page::Action::ShowGit => self.run(ctx, Command::ShowPage(Page::Git)),
+        }
+    }
+
+    /// Runs of the user's on GitHub (M12): a background job while one
+    /// runs, its steps done as the meter; a notification when it ends.
+    fn github_runs(&mut self, ctx: &Context) {
+        let now = ctx.input(|i| i.time);
+        let system = &*self.host.system;
+        let me = self.github.login().map(str::to_owned);
+        let runs: Vec<github::model::Run> = match &self.github.runs {
+            Some(Ok(r)) => r
+                .iter()
+                .filter(|r| r.running() && me.as_deref() == Some(r.actor.as_str()))
+                .cloned()
+                .collect(),
+            _ => Vec::new(),
+        };
+        for r in &runs {
+            self.github.want_jobs(system, r.id);
+            let (done, all, step) =
+                self.github
+                    .jobs
+                    .get(&r.id)
+                    .map_or((0, 0, String::new()), |jobs| {
+                        let all: usize = jobs.iter().map(|j| j.steps.len()).sum();
+                        let done: usize = jobs
+                            .iter()
+                            .flat_map(|j| &j.steps)
+                            .filter(|s| s.status == "completed")
+                            .count();
+                        let step = jobs
+                            .iter()
+                            .find(|j| j.status == "in_progress")
+                            .map(|j| {
+                                format!(
+                                    "{} · step {} of {}",
+                                    j.name,
+                                    j.steps.iter().filter(|s| s.status == "completed").count() + 1,
+                                    j.steps.len()
+                                )
+                            })
+                            .unwrap_or_else(|| "queued".into());
+                        (done, all, step)
+                    });
+            let job = match self.github.run_jobs.get(&r.id) {
+                Some(&j) => j,
+                None => {
+                    let j = self.jobs.begin(
+                        &r.workflow,
+                        &format!("{} · on GitHub", r.branch),
+                        "queued",
+                        0.0,
+                        Some(Panel::PullRequest),
+                        now,
+                    );
+                    self.github.run_jobs.insert(r.id, j);
+                    j
+                }
+            };
+            let progress = (all > 0).then(|| done as f32 / all as f32);
+            self.jobs.update(job, progress, &step);
+        }
+        for f in std::mem::take(&mut self.github.finished) {
+            let r = f.run;
+            let ok = r.conclusion.as_deref() == Some("success");
+            let word = match r.conclusion.as_deref() {
+                Some("success") => "passed",
+                Some("cancelled") => "was cancelled",
+                _ => "failed",
+            };
+            if let Some(job) = self.github.run_jobs.remove(&r.id) {
+                let state = if ok {
+                    jobs::State::Done
+                } else {
+                    jobs::State::Failed(format!("{} {word}", r.workflow))
+                };
+                self.jobs
+                    .end(job, state, Some(format!("{} {word}", r.workflow)), now);
+            }
+            let note = Notification::new(
+                if ok { Kind::Ok } else { Kind::Error },
+                format!("{} {word} on {}", r.workflow, r.branch),
+                r.title.clone(),
+            )
+            .act("open the run", Act::OpenRun(r.id));
+            self.notify(note, ctx);
         }
     }
 
@@ -2191,7 +2331,7 @@ impl Studio {
                 Event::Spells(query, found) => self.world.spells_found(query, found),
                 Event::Git(root, event) => self.git.event(&root, event, &*self.host.system),
                 // (the pull requests page comes with M12's design)
-                Event::GithubApi(..) => {}
+                Event::GithubApi(root, event) => self.github.event(&root, event),
                 Event::Found(what, flavor, query, rows) => {
                     self.world.found.insert((what, flavor, query), rows);
                 }
@@ -2311,6 +2451,7 @@ impl Studio {
         self.read_line_width(&workspace.root);
         if !again {
             self.git.opened(Some(&workspace.root));
+            self.github.opened(Some(&workspace.root));
         }
         self.branch = self.host.system.branch(&workspace.root);
         self.reload_recents();
@@ -2639,6 +2780,13 @@ impl Studio {
         self.world.json_view = json;
     }
 
+    /// A part of GitHub's once it answered (the screenshot harness's
+    /// `github:`): a run, a failed one, a pull request, the new one's form.
+    pub fn github_show(&mut self, what: &str) {
+        self.github.harness = Some(what.to_owned());
+        self.queue(Command::ShowPage(Page::Prs));
+    }
+
     /// A part of Git's once the repository is read (the screenshot
     /// harness's `git:`): the branch list, a commit, a dialog.
     pub fn git_show(&mut self, what: &str) {
@@ -2925,6 +3073,13 @@ impl Studio {
                 }
             }
             git::page::Action::SignIn => self.settings_show("github"),
+            git::page::Action::CreatePull(branch) => {
+                self.git.pushed = None;
+                self.github.view.base = None;
+                self.github.view.head = Some(branch);
+                self.github.selected = Some(github::Selected::NewPull);
+                self.run(ctx, Command::ShowPage(Page::Prs));
+            }
         }
     }
 
@@ -3232,6 +3387,7 @@ impl Studio {
             self.outline = None;
             self.branch = None;
             self.git.opened(None);
+            self.github.opened(None);
             self.menus_changed = true;
             self.reload_recents();
         }

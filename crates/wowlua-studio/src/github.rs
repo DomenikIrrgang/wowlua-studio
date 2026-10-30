@@ -11,8 +11,8 @@ use std::process::{Command, Stdio};
 use serde_json::{Value as Json, json};
 use wowlua_driver::publish::http::Http;
 use wowlua_studio_app::github::model::{
-    Annotation, Comment, GithubError, Job, OnLine, Pull, PullDetail, PullFile, PullSummary, Repo,
-    Review, Run, Step,
+    Annotation, Comment, Compare, GithubError, Job, OnLine, Pull, PullDetail, PullFile,
+    PullSummary, Repo, Review, Run, Step, Thread,
 };
 use wowlua_studio_app::system::{GithubEvent, GithubRequest};
 
@@ -223,12 +223,69 @@ pub(crate) fn review(j: &Json) -> Review {
 }
 
 pub(crate) fn file(j: &Json) -> PullFile {
+    let patch = j["patch"].as_str();
     PullFile {
         path: text(&j["filename"]),
         status: text(&j["status"]),
         additions: j["additions"].as_u64().unwrap_or(0),
         deletions: j["deletions"].as_u64().unwrap_or(0),
-        patch: j["patch"].as_str().map(str::to_owned),
+        hunks: patch
+            .map(|p| crate::git::parse_diff(p).hunks)
+            .unwrap_or_default(),
+        binary: patch.is_none(),
+    }
+}
+
+/// A pull request's review threads (GitHub's GraphQL: REST has none).
+fn threads(c: &Client, repo: &Repo, number: u64) -> Result<Vec<Thread>, GithubError> {
+    let query = "query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100){nodes{id isResolved comments(first:1){nodes{databaseId}}}}}}}";
+    let j = c.send(
+        "POST",
+        "/graphql",
+        Some(&json!({ "query": query, "variables": { "o": repo.owner, "r": repo.name, "n": number } })),
+    )?;
+    Ok(
+        j["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|t| {
+                        Some(Thread {
+                            first: t["comments"]["nodes"][0]["databaseId"].as_u64()?,
+                            id: text(&t["id"]),
+                            resolved: t["isResolved"].as_bool().unwrap_or(false),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+    )
+}
+
+pub(crate) fn compare(j: &Json) -> Compare {
+    Compare {
+        commits: j["commits"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .map(|c| {
+                        (
+                            text(&c["sha"]).chars().take(7).collect(),
+                            text(&c["commit"]["message"])
+                                .lines()
+                                .next()
+                                .unwrap_or("")
+                                .to_owned(),
+                            time(&c["commit"]["author"]["date"]).unwrap_or(0),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        files: j["files"]
+            .as_array()
+            .map(|a| a.iter().map(file).collect())
+            .unwrap_or_default(),
     }
 }
 
@@ -330,6 +387,12 @@ fn failed(request: GithubRequest, why: GithubError) -> GithubEvent {
             result: Err(why),
         },
         GithubRequest::Runs => GithubEvent::Runs(Err(why)),
+        GithubRequest::Branches => GithubEvent::Branches(Err(why)),
+        GithubRequest::Compare { base, head } => GithubEvent::Compare {
+            base,
+            head,
+            result: Err(why),
+        },
         GithubRequest::Jobs(run) => GithubEvent::Jobs {
             run,
             result: Err(why),
@@ -396,11 +459,14 @@ pub fn answer(root: &Path, request: GithubRequest, token: Option<String>) -> Git
                     .iter()
                     .map(file)
                     .collect();
+                // (resolving needs GraphQL; without it the threads stay open)
+                let threads = threads(&c, &repo, number).unwrap_or_default();
                 Ok(Box::new(PullDetail {
                     pull: p,
                     comments,
                     reviews,
                     files,
+                    threads,
                 }))
             })(),
         },
@@ -459,15 +525,58 @@ pub fn answer(root: &Path, request: GithubRequest, token: Option<String>) -> Git
             )
             .map(|j| text(&j["html_url"])),
         ),
-        GithubRequest::Review { number, event, body } => done(
-            "review",
-            c.send(
-                "POST",
-                &format!("{r}/pulls/{number}/reviews"),
-                Some(&json!({ "body": body, "event": event.api() })),
+        GithubRequest::Review {
+            number,
+            event,
+            body,
+            comments,
+        } => {
+            let mut review = json!({ "body": body, "event": event.api() });
+            if !comments.is_empty() {
+                review["comments"] = Json::Array(
+                    comments
+                        .iter()
+                        .map(|p| json!({ "path": p.path, "line": p.line, "side": p.side, "body": p.body }))
+                        .collect(),
+                );
+            }
+            done(
+                "review",
+                c.send("POST", &format!("{r}/pulls/{number}/reviews"), Some(&review))
+                    .map(|j| text(&j["html_url"])),
             )
-            .map(|j| text(&j["html_url"])),
+        }
+        GithubRequest::Resolve { thread, resolve } => {
+            let name = if resolve {
+                "resolveReviewThread"
+            } else {
+                "unresolveReviewThread"
+            };
+            let query = format!("mutation($id:ID!){{{name}(input:{{threadId:$id}}){{thread{{id}}}}}}");
+            done(
+                if resolve { "resolve" } else { "open again" },
+                c.send(
+                    "POST",
+                    "/graphql",
+                    Some(&json!({ "query": query, "variables": { "id": thread } })),
+                )
+                .and_then(|j| match j["errors"][0]["message"].as_str() {
+                    Some(why) => Err(GithubError::Refused(why.to_owned())),
+                    None => Ok(String::new()),
+                }),
+            )
+        }
+        GithubRequest::Branches => GithubEvent::Branches(
+            c.get(&format!("{r}/branches?per_page=100"))
+                .map(|j| array(j).iter().map(|b| text(&b["name"])).collect()),
         ),
+        GithubRequest::Compare { base, head } => GithubEvent::Compare {
+            result: c
+                .get(&format!("{r}/compare/{base}...{head}"))
+                .map(|j| compare(&j)),
+            base,
+            head,
+        },
         GithubRequest::Merge { number, method } => done(
             "merge",
             c.send(

@@ -117,7 +117,35 @@ pub struct PullFile {
     pub additions: u64,
     pub deletions: u64,
     /// The unified diff's hunks (none for a binary or too large file).
-    pub patch: Option<String>,
+    pub hunks: Vec<crate::git::model::Hunk>,
+    pub binary: bool,
+}
+
+/// A review thread: its first comment, GitHub's id for it, resolved or
+/// not.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Thread {
+    pub first: u64,
+    pub id: String,
+    pub resolved: bool,
+}
+
+/// A line comment kept for the review the user is writing (S072):
+/// sent with it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Pending {
+    pub path: String,
+    pub line: u64,
+    pub side: String,
+    pub body: String,
+}
+
+/// What a new pull request would bring: its commits (short hash, first
+/// line, when) and files, against the base.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Compare {
+    pub commits: Vec<(String, String, i64)>,
+    pub files: Vec<PullFile>,
 }
 
 /// A pull request with everything its page shows.
@@ -128,6 +156,7 @@ pub struct PullDetail {
     pub comments: Vec<Comment>,
     pub reviews: Vec<Review>,
     pub files: Vec<PullFile>,
+    pub threads: Vec<Thread>,
 }
 
 /// How a review ends: a comment, an approval, changes asked for.

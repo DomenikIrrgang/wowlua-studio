@@ -650,10 +650,26 @@ pub enum GithubRequest {
         side: String,
         body: String,
     },
+    /// A review, with the line comments kept for it.
     Review {
         number: u64,
         event: crate::github::model::ReviewEvent,
         body: String,
+        comments: Vec<crate::github::model::Pending>,
+    },
+    /// A review thread resolved, or opened again.
+    Resolve {
+        thread: String,
+        resolve: bool,
+    },
+    /// The repository's branches on GitHub (a new pull request's base and
+    /// head).
+    Branches,
+    /// What `head` brings over `base` (a new pull request's commits and
+    /// files).
+    Compare {
+        base: String,
+        head: String,
     },
     Merge {
         number: u64,
@@ -685,6 +701,12 @@ pub enum GithubEvent {
         result: Result<Box<crate::github::model::PullDetail>, crate::github::model::GithubError>,
     },
     Runs(Result<Vec<crate::github::model::Run>, crate::github::model::GithubError>),
+    Branches(Result<Vec<String>, crate::github::model::GithubError>),
+    Compare {
+        base: String,
+        head: String,
+        result: Result<crate::github::model::Compare, crate::github::model::GithubError>,
+    },
     Jobs {
         run: u64,
         result: Result<Vec<crate::github::model::Job>, crate::github::model::GithubError>,
