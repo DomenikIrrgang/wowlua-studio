@@ -71,6 +71,7 @@ fn to_debug(request: GameRequest) -> Request {
         GameRequest::Inspect(frame) => Request::Inspect { frame },
         GameRequest::Pick { x, y } => Request::Pick { x, y },
         GameRequest::Units => Request::Units,
+        GameRequest::ChatLines { since } => Request::ChatLines { since },
         GameRequest::Target(unit) => Request::Target { unit },
         GameRequest::Events => Request::Events,
         GameRequest::SetScreen {
@@ -164,6 +165,15 @@ fn to_debug(request: GameRequest) -> Request {
                 GameInput::Type(text) => protocol::Input::Type { text },
                 GameInput::Key(key) => protocol::Input::Key { key },
                 GameInput::Slash(text) => protocol::Input::Slash { text },
+                GameInput::Chat {
+                    text,
+                    chat_type,
+                    target,
+                } => protocol::Input::Chat {
+                    text,
+                    chat_type,
+                    target,
+                },
             },
         },
     }

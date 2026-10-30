@@ -90,6 +90,9 @@ icons! {
     ProfileDoc = "profile-doc", "M3.75 1.75h5.5l3 3v9.5h-8.5z M9.25 1.75v3h3 M5.75 11.5v-2l1-1h2.5l1 1v2 M7 6.25h2v1.5H7z";
     Pin = "pin", "M5.75 1.75h4.5 M6.75 1.75v4.5l-2 2.5h6.5l-2-2.5v-4.5 M8 8.75v5.5";
     Notification = "notification", "M3.75 11.25V6.75l1.5-3.5h5.5l1.5 3.5v4.5 M2.25 11.25h11.5 M6.5 13.75h3";
+    // The game screen over the whole display, and back.
+    FullScreen = "full-screen", "M1.75 5.5V1.75H5.5 M10.5 1.75h3.75V5.5 M14.25 10.5v3.75H10.5 M5.5 14.25H1.75V10.5";
+    ExitFullScreen = "exit-full-screen", "M5.5 1.75V5.5H1.75 M14.25 5.5H10.5V1.75 M10.5 14.25V10.5h3.75 M1.75 10.5H5.5v3.75";
     // File types (the explorer); the manifest is `config`, the lockfile
     // `token`, a world profile `profile-doc`.
     WowluaFile = "wowlua", "M3.75 1.75h5.5l3 3v9.5h-8.5z M9.25 1.75v3h3 M9.75 7l-1.5 1.5v2l1.5 1.5h-3l-1.5-1.5v-2l1.5-1.5z";
