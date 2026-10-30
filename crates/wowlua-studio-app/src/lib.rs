@@ -539,6 +539,14 @@ impl Studio {
         self.game.chat_later.push(line.to_owned());
     }
 
+    /// The game screen's 3D world on, with the installation's game data
+    /// (the screenshot harness's `world`).
+    pub fn world_on(&mut self) {
+        self.settings.installation_data = true;
+        self.game.world_ready = true;
+        self.game.world = true;
+    }
+
     /// Full screen once the game runs (the screenshot harness's
     /// `fullscreen`).
     pub fn full_screen_later(&mut self) {
@@ -794,6 +802,7 @@ impl Studio {
         }
 
         self.game.manual = self.debug.config.as_ref().is_some_and(|c| c.manual);
+        self.game.world_ready = self.settings.installation_data;
         self.game
             .send_later(&*self.host.system, ctx.input(|i| i.time));
         if self.harness_full && self.game.running() && system_screen(self) {

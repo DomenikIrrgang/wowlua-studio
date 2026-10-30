@@ -164,6 +164,10 @@ impl Screenshot {
                 studio.full_screen_later();
                 continue;
             }
+            if step == "world" {
+                studio.world_on();
+                continue;
+            }
             if let Some(rest) = step.strip_prefix("github:") {
                 studio.github_show(rest);
                 continue;

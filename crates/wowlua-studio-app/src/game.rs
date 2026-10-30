@@ -364,9 +364,14 @@ pub struct GameState {
     /// it a frame, for the server's answer to come.
     pub manual: bool,
     started_at: Option<f64>,
-    /// The 3D world behind the UI (M13); the UI draws over black without
-    /// it.
+    /// The 3D world behind the UI (M13, S078); the UI draws over black
+    /// without it.
     pub world: bool,
+    /// What the session was told of the world last (none: nothing yet).
+    world_sent: Option<bool>,
+    /// The session reads the installation's game data: the world can be
+    /// shown (Settings › installation data).
+    pub world_ready: bool,
     drag_from: Option<Pos2>,
     hovered_at: Option<(i32, i32)>,
     /// The game's settings as the toolbar shows them.
@@ -409,6 +414,7 @@ impl GameState {
             self.full,
         );
         let next = self.next_session;
+        let (world, world_ready) = (self.world, self.world_ready);
         *self = GameState {
             next_session: next,
             session: Some(next),
@@ -423,6 +429,8 @@ impl GameState {
             full: keep.7,
             shots: std::mem::take(&mut self.shots),
             chat_later: std::mem::take(&mut self.chat_later),
+            world,
+            world_ready,
             ..GameState::default()
         };
         next
@@ -598,6 +606,16 @@ impl GameState {
     /// The screenshot harness's chat lines, once the game ran a while
     /// (its login told).
     pub fn send_later(&mut self, system: &dyn System, now: f64) {
+        // (the world as the checkbox has it, each session told once a
+        // change; S078)
+        if !self.world_ready {
+            self.world = false;
+        }
+        if self.running() && self.world_sent != Some(self.world) {
+            let on = self.world;
+            self.ask(system, Asked::Settings, GameRequest::ShowWorld { on });
+            self.world_sent = Some(on);
+        }
         if self.chat_later.is_empty() || !self.running() {
             return;
         }
@@ -926,15 +944,9 @@ fn toolbar(ui: &mut Ui, state: &mut GameState, system: &dyn System, p: &Palette)
             if let Some(i) = widgets::seg(ui, "game-mode", &labels, at, false) {
                 state.mode = MODES[i].0;
             }
-            // The 3D world behind the UI: a toggle of the screen (M13,
-            // not built yet: the UI draws over black).
-            ui.add_enabled_ui(false, |ui| {
-                forms::checkbox(ui, &mut state.world, "3D world", None);
-            })
-            .response
-            .on_disabled_hover_text(
-                "the 3D world behind the UI comes with M13; until then the UI draws over black",
-            );
+            // The 3D world behind the UI: a toggle of the screen (S076,
+            // S078), with the installation's game data.
+            world_checkbox(ui, state);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add_enabled_ui(state.running(), |ui| {
                     if widgets::button(ui, ButtonKind::Tertiary, "screenshot", true, None).clicked()
@@ -1849,6 +1861,22 @@ pub fn input(ui: &mut Ui, state: &mut GameState) {
         });
 }
 
+/// The game screen's "3D world" checkbox (S078): the zone behind the UI,
+/// with the installation's game data; without, why not.
+fn world_checkbox(ui: &mut Ui, state: &mut GameState) {
+    let ready = state.world_ready;
+    let r = ui
+        .add_enabled_ui(ready, |ui| {
+            forms::checkbox(ui, &mut state.world, "3D world", None);
+        })
+        .response;
+    if !ready {
+        r.on_disabled_hover_text(
+            "the 3D world reads your installation's game data: turn on Settings › installation data",
+        );
+    }
+}
+
 /// The game's chat (the chat panel, S077): its chat windows' lines in
 /// their colours, a filter, a line to type a message or a /command in.
 pub fn chat(ui: &mut Ui, state: &mut GameState, system: &dyn System) {
@@ -2035,9 +2063,7 @@ pub fn full_screen(ui: &mut Ui, state: &mut GameState, system: &dyn System) -> b
                         if let Some(i) = widgets::seg(ui, "game-full-mode", &labels, at, false) {
                             state.mode = MODES[i].0;
                         }
-                        ui.add_enabled_ui(false, |ui| {
-                            forms::checkbox(ui, &mut state.world, "3D world", None);
-                        });
+                        world_checkbox(ui, state);
                         ui.add_enabled_ui(state.running(), |ui| {
                             if widgets::icon_button(ui, Icon::Snapshot, "screenshot", false)
                                 .clicked()

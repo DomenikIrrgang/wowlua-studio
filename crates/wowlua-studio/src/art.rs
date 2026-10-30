@@ -119,6 +119,32 @@ impl Assets for CachedAssets {
     fn model(&mut self, source: &ModelSource) -> Option<Display> {
         self.inner.model(source)
     }
+
+    fn terrain(
+        &mut self,
+        map: u32,
+        x: i32,
+        y: i32,
+    ) -> Option<std::sync::Arc<wowlua_casc::adt::Tile>> {
+        self.inner.terrain(map, x, y)
+    }
+
+    fn objects(
+        &mut self,
+        map: u32,
+        x: i32,
+        y: i32,
+    ) -> Option<std::sync::Arc<wowlua_casc::obj::Objects>> {
+        self.inner.objects(map, x, y)
+    }
+
+    fn building(&mut self, file: u32) -> Option<std::sync::Arc<wowlua_casc::display::Building>> {
+        self.inner.building(file)
+    }
+
+    fn minimap_tile(&mut self, map: u32, x: i32, y: i32) -> Option<u32> {
+        self.inner.minimap_tile(map, x, y)
+    }
 }
 
 #[cfg(test)]

@@ -454,7 +454,7 @@ Artboards: game, world profiles (S076).
 Needs new work in wowlua: unit positions, movement and actions in the
 engine, world profiles and the test API; a world renderer with the
 zone's terrain, buildings, doodads and models from the installation.
-Built so far: the game screen's toggle (disabled until the world is).
+Built so far: the game screen's toggle shows the world behind the UI (S076, S078): the zone's terrain, buildings, trees and props and the units as their models, solid, from the installation (wowlua T515 to T527).
 
 ## M14: Claude (planned, last)
 
