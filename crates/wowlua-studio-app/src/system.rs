@@ -19,6 +19,8 @@ pub struct Member {
     pub dir: PathBuf,
     /// The folder relative to the workspace's root, empty for the root.
     pub rel: String,
+    /// The flavors it targets (`flavors` in its `wowlua.json`).
+    pub flavors: Vec<String>,
 }
 
 /// An opened workspace: a package, or a workspace root with its members.
@@ -323,6 +325,9 @@ pub struct Launch {
     /// A test file (its path from the package's root) and the tests whose
     /// names contain any of `filters`; none: the addon.
     pub test: Option<(String, Vec<String>)>,
+    /// The workspace's addon to run (its folder); none: the root's, else
+    /// the first addon.
+    pub package: Option<PathBuf>,
     pub flavor: Option<String>,
     /// The world profile over `test.profile`.
     pub profile: Option<String>,

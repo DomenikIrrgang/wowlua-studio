@@ -5,7 +5,7 @@ use egui::{
     Align2, Color32, CornerRadius, CursorIcon, Id, Pos2, Rect, ResizeDirection, Sense, Stroke,
     StrokeKind, Ui, Vec2, ViewportCommand,
 };
-use wowlua_studio_ui::{Face, Icon, icons, mark, palette, widgets};
+use wowlua_studio_ui::{Face, Icon, forms, icons, mark, palette, widgets};
 
 use crate::{
     Platform,
@@ -21,25 +21,302 @@ const TRAFFIC_LIGHTS_W: f32 = 76.0;
 /// Below this width the menus and the search button hide (`st-hide-md`).
 const NARROW: f32 = 960.0;
 
-/// The title bar's chip: the open workspace.
-pub struct Chip<'a> {
-    pub name: &'a str,
-    /// The Git branch checked out.
-    pub branch: Option<&'a str>,
-    /// Its folder, for the tooltip.
-    pub folder: String,
+/// The title bar's run controls (S071, option A of the canvas's run
+/// controls board): what runs before a session, the session's state
+/// during one, and the icons that follow it.
+pub struct RunBar<'a> {
+    /// The workspace's addons, the one picked.
+    pub packages: &'a [String],
+    pub package: usize,
+    /// The addon's flavors (those that can't run yet: disabled).
+    pub flavors: &'a [(String, bool)],
+    pub flavor: usize,
+    /// `world: none`, then the addon's world profiles.
+    pub profiles: &'a [String],
+    pub profile: usize,
+    pub state: RunState,
+}
+
+/// Where a session is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RunState {
+    Idle,
+    /// Running without the debugger.
+    Running,
+    Debugging,
+    /// Paused, and where (`ThreatMeter:66`).
+    Paused(Option<String>),
+}
+
+/// A picker changed: the new pick's place in its list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RunPick {
+    Package(usize),
+    Flavor(usize),
+    Profile(usize),
+}
+
+/// A picker of the run controls: its id, its options, the one picked.
+type Picker<'a> = (&'a str, Vec<(&'a str, bool)>, usize);
+
+/// An icon of the run controls: its command, its tooltip, whether it is
+/// green (run, continue), red (stop) or greyed.
+struct Tool {
+    icon: Icon,
+    label: &'static str,
+    command: Command,
+    tone: Tone,
+    enabled: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Tone {
+    Plain,
+    Go,
+    Stop,
+}
+
+fn tools(state: &RunState) -> Vec<Tool> {
+    let t = |icon, label, command, tone, enabled| Tool {
+        icon,
+        label,
+        command,
+        tone,
+        enabled,
+    };
+    let session = |paused: bool| {
+        vec![
+            t(
+                Icon::StepOver,
+                "step over, f10",
+                Command::StepOver,
+                Tone::Plain,
+                paused,
+            ),
+            t(
+                Icon::StepInto,
+                "step into, f11",
+                Command::StepInto,
+                Tone::Plain,
+                paused,
+            ),
+            t(
+                Icon::StepOut,
+                "step out, shift f11",
+                Command::StepOut,
+                Tone::Plain,
+                paused,
+            ),
+        ]
+    };
+    let tail = || {
+        vec![
+            t(
+                Icon::Reload,
+                "/reload, ctrl r",
+                Command::ReloadSession,
+                Tone::Plain,
+                true,
+            ),
+            t(
+                Icon::Restart,
+                "restart",
+                Command::RestartSession,
+                Tone::Plain,
+                true,
+            ),
+            t(
+                Icon::Stop,
+                "stop, shift f5",
+                Command::StopSession,
+                Tone::Stop,
+                true,
+            ),
+        ]
+    };
+    match state {
+        RunState::Idle => vec![
+            t(Icon::Run, "run, ctrl f5", Command::RunAddon, Tone::Go, true),
+            t(
+                Icon::Debug,
+                "debug, f5",
+                Command::StartDebugging,
+                Tone::Plain,
+                true,
+            ),
+        ],
+        RunState::Running => tail(),
+        RunState::Debugging => {
+            let mut v = vec![t(
+                Icon::Pause,
+                "pause, f6",
+                Command::Pause,
+                Tone::Plain,
+                true,
+            )];
+            v.extend(session(false));
+            v.extend(tail());
+            v
+        }
+        RunState::Paused(_) => {
+            let mut v = vec![t(
+                Icon::Run,
+                "continue, f5",
+                Command::StartDebugging,
+                Tone::Go,
+                true,
+            )];
+            v.extend(session(true));
+            v.extend(tail());
+            v
+        }
+    }
+}
+
+/// The run controls from `right` leftwards: the icons, the divider, then
+/// the pickers (before a run) or the session's state; where they start.
+/// The pickers are left out first when room is short (`keep` for search).
+fn run_controls(
+    ui: &mut Ui,
+    rect: Rect,
+    left_limit: f32,
+    right: f32,
+    run: &RunBar<'_>,
+    commands: &mut Vec<Command>,
+    picked: &mut Option<RunPick>,
+) -> f32 {
+    let p = palette(ui.ctx());
+    let cy = rect.center().y;
+    let list = tools(&run.state);
+    let mut x = right;
+    for (i, tool) in list.iter().enumerate().rev() {
+        let r = Rect::from_min_size(Pos2::new(x - 28.0, cy - 14.0), Vec2::splat(28.0));
+        let resp = ui.interact(
+            r,
+            Id::unique(("wowlua-studio-run-tool", i, tool.label)),
+            if tool.enabled {
+                Sense::click()
+            } else {
+                Sense::hover()
+            },
+        );
+        resp.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::Role::Button, tool.enabled, tool.label)
+        });
+        if tool.enabled && resp.hovered() {
+            ui.painter().rect_filled(r, CornerRadius::ZERO, p.bg_300);
+        }
+        let color = match (tool.enabled, tool.tone) {
+            (false, _) => p.ink_faint,
+            (true, Tone::Go) => p.success,
+            (true, Tone::Stop) => p.error,
+            (true, Tone::Plain) if resp.hovered() => p.ink,
+            (true, Tone::Plain) => p.ink_muted,
+        };
+        icons::paint(
+            ui.painter(),
+            Rect::from_center_size(r.center(), Vec2::splat(16.0)),
+            tool.icon,
+            color,
+        );
+        if resp.on_hover_text(tool.label).clicked() && tool.enabled {
+            commands.push(tool.command);
+        }
+        x = r.left() - 2.0;
+    }
+    // The divider before the icons.
+    x -= 4.0;
+    ui.painter()
+        .vline(x, (cy - 10.0)..=(cy + 10.0), Stroke::new(1.0, p.line));
+    x -= 8.0;
+    match &run.state {
+        RunState::Idle => {
+            // The pickers, when the search keeps room beside them.
+            let widths = [100.0, 100.0, 150.0];
+            let total: f32 = widths.iter().sum::<f32>() + 12.0;
+            if x - total < left_limit {
+                return x;
+            }
+            let lists: [Picker<'_>; 3] = [
+                (
+                    "wowlua-studio-run-package",
+                    run.packages.iter().map(|s| (s.as_str(), true)).collect(),
+                    run.package,
+                ),
+                (
+                    "wowlua-studio-run-flavor",
+                    run.flavors
+                        .iter()
+                        .map(|(s, ok)| (s.as_str(), *ok))
+                        .collect(),
+                    run.flavor,
+                ),
+                (
+                    "wowlua-studio-run-profile",
+                    run.profiles.iter().map(|s| (s.as_str(), true)).collect(),
+                    run.profile,
+                ),
+            ];
+            let mut left = x - total;
+            for (k, ((id, opts, at), w)) in lists.into_iter().zip(widths).enumerate() {
+                let r = Rect::from_min_size(Pos2::new(left, cy - 14.0), Vec2::new(w, 28.0));
+                let mut child = ui.new_child(egui::UiBuilder::new().max_rect(r));
+                let mut index = at;
+                if forms::select_sized(&mut child, id, &opts, &mut index, w, 28.0) {
+                    *picked = Some(match k {
+                        0 => RunPick::Package(index),
+                        1 => RunPick::Flavor(index),
+                        _ => RunPick::Profile(index),
+                    });
+                }
+                left = r.right() + 6.0;
+            }
+            x - total
+        }
+        state => {
+            // The session's state, where the pickers were.
+            let (word, dot) = match state {
+                RunState::Running => ("running".to_owned(), p.success),
+                RunState::Debugging => ("debugging".to_owned(), p.amber),
+                RunState::Paused(Some(at)) => (format!("paused · {at}"), p.amber),
+                _ => ("paused".to_owned(), p.amber),
+            };
+            let label = widgets::galley(ui, &word, Face::Plex.at(11.5), p.ink, 0.0);
+            let w = label.size().x + 30.0;
+            if x - w < left_limit {
+                return x;
+            }
+            let r = Rect::from_min_size(Pos2::new(x - w, cy - 12.0), Vec2::new(w, 24.0));
+            ui.painter().rect_stroke(
+                r,
+                CornerRadius::ZERO,
+                Stroke::new(1.0, p.line),
+                StrokeKind::Inside,
+            );
+            ui.painter()
+                .circle_filled(Pos2::new(r.left() + 12.0, cy), 3.5, dot);
+            ui.painter().galley(
+                Pos2::new(r.left() + 22.0, cy - label.size().y / 2.0),
+                label,
+                p.ink,
+            );
+            r.left()
+        }
+    }
 }
 
 /// The title bar: the app, the menus (not on macOS: its menu bar has
-/// them), the workspace, search, and the window's buttons. The start page
-/// (no workspace) has neither the chip nor search.
+/// them), search, the run controls and the window's buttons. The start
+/// page (no workspace) has neither search nor run controls; the folder and
+/// its branch are in the status bar (S071).
 pub fn title_bar(
     ui: &mut Ui,
     rect: Rect,
     platform: Platform,
     entries: &[Entry],
-    chip: Option<Chip<'_>>,
+    run: Option<RunBar<'_>>,
     commands: &mut Vec<Command>,
+    picked: &mut Option<RunPick>,
 ) {
     let ctx = ui.ctx().clone();
     let p = palette(&ctx);
@@ -122,51 +399,7 @@ pub fn title_bar(
         x += 6.0;
     }
 
-    // The workspace and its branch.
-    let has_chip = chip.is_some();
-    if let Some(chip) = chip.filter(|_| !narrow) {
-        let name = widgets::galley(ui, chip.name, Face::Plex.at(12.0), p.ink, 0.0);
-        let branch = chip.branch.map(|b| {
-            widgets::galley(
-                ui,
-                &format!(" · {b}"),
-                Face::Plex.at(12.0),
-                p.ink_muted,
-                0.0,
-            )
-        });
-        let text_w = name.size().x + branch.as_ref().map_or(0.0, |b| b.size().x);
-        let r = Rect::from_min_size(
-            Pos2::new(x, cy - 13.0),
-            Vec2::new(text_w + 16.0 + 20.0, 26.0),
-        );
-        painter.rect_filled(r, CornerRadius::ZERO, p.bg_100);
-        painter.rect_stroke(
-            r,
-            CornerRadius::ZERO,
-            Stroke::new(1.0, p.line),
-            StrokeKind::Inside,
-        );
-        icons::paint(
-            &painter,
-            Rect::from_min_size(Pos2::new(r.left() + 8.0, cy - 7.0), Vec2::splat(14.0)),
-            Icon::Folder,
-            p.ink_muted,
-        );
-        let name_x = r.left() + 28.0;
-        let name_w = name.size().x;
-        painter.galley(Pos2::new(name_x, cy - name.size().y / 2.0), name, p.ink);
-        if let Some(b) = branch {
-            painter.galley(
-                Pos2::new(name_x + name_w, cy - b.size().y / 2.0),
-                b,
-                p.ink_muted,
-            );
-        }
-        ui.interact(r, Id::unique("wowlua-studio-chip"), Sense::hover())
-            .on_hover_text(format!("a folder: {}", chip.folder));
-        x = r.right() + 8.0;
-    }
+    let has_workspace = run.is_some();
 
     // The window's buttons (macOS draws its own).
     let buttons_w = if mac { 0.0 } else { 3.0 * 44.0 };
@@ -181,8 +414,13 @@ pub fn title_bar(
         );
     }
 
+    // The run controls at the right; search in what is left.
+    let mut right = right;
+    if let Some(run) = &run {
+        right = run_controls(ui, rect, x + 220.0, right - 8.0, run, commands, picked);
+    }
     // Search: up to 420 px, centred in the window where it fits.
-    if !narrow && has_chip {
+    if !narrow && has_workspace {
         let room = (right - 12.0) - x;
         let w = room.min(420.0);
         if w >= 200.0 {
@@ -413,6 +651,8 @@ pub struct Session<'a> {
     pub inset: f32,
     /// Room kept after wowlua's version (the branch, M11).
     pub lead: f32,
+    /// The workspace's folder: its name, its path for the tooltip (S071).
+    pub folder: Option<(&'a str, String)>,
 }
 
 /// The status bar: wowlua's version and the session, and at its right
@@ -443,6 +683,33 @@ pub fn status_bar(
         p.success,
     );
     x = r.right() + 14.0;
+    // The workspace's folder.
+    if let Some((name, path)) = &session.folder {
+        icons::paint(
+            &painter,
+            Rect::from_min_size(Pos2::new(x, cy - 7.0), Vec2::splat(14.0)),
+            Icon::Folder,
+            p.ink_muted,
+        );
+        let r = painter.text(
+            Pos2::new(x + 20.0, cy),
+            Align2::LEFT_CENTER,
+            *name,
+            font.clone(),
+            p.ink,
+        );
+        let hover = Rect::from_min_max(
+            Pos2::new(x, rect.top()),
+            Pos2::new(r.right(), rect.bottom()),
+        );
+        ui.interact(
+            hover,
+            Id::unique("wowlua-studio-status-folder"),
+            Sense::hover(),
+        )
+        .on_hover_text(format!("the workspace's folder: {path}"));
+        x = r.right() + 14.0;
+    }
     let lead = x - 6.0;
     if session.lead > 0.0 {
         x += session.lead + 8.0;

@@ -119,6 +119,7 @@ mod tests {
                     version: "0.1.0".into(),
                     dir: PathBuf::from(root),
                     rel: String::new(),
+                    flavors: vec!["camelot".into()],
                 })
                 .collect(),
             flavors: vec!["camelot".into()],

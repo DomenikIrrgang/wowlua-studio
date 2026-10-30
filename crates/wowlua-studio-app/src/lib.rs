@@ -150,6 +150,8 @@ pub struct Studio {
     gutter_seen: bool,
     /// The workspace's world profiles (`tests/profiles/*.json`), by name.
     profiles: Vec<String>,
+    /// The world profiles of the title bar's addon, by its folder.
+    run_profiles: Option<(PathBuf, Vec<String>)>,
     /// Background jobs (S044); the checks running, by package.
     jobs: jobs::Jobs,
     checks: std::collections::HashMap<PathBuf, u64>,
@@ -280,6 +282,7 @@ impl Studio {
             debug_seen: (Vec::new(), false),
             gutter_seen: false,
             profiles: Vec::new(),
+            run_profiles: None,
             jobs: jobs::Jobs::default(),
             checks: std::collections::HashMap::new(),
             outline: None,
@@ -672,12 +675,31 @@ impl Studio {
             full.max,
         );
 
-        let chip = self.workspace.as_ref().map(|w| chrome::Chip {
-            name: &w.name,
-            branch: self.branch.as_deref(),
-            folder: recents::tilde(&w.root, self.home.as_deref()),
+        // The run controls (S071): the addon, flavor and world profile
+        // picked, the session's state.
+        let run = self.run_choices();
+        let mut picked = None;
+        let bar = run.as_ref().map(|r| chrome::RunBar {
+            packages: &r.packages,
+            package: r.package,
+            flavors: &r.flavors,
+            flavor: r.flavor,
+            profiles: &r.profiles,
+            profile: r.profile,
+            state: r.state.clone(),
         });
-        chrome::title_bar(ui, title, self.host.platform, &entries, chip, &mut commands);
+        chrome::title_bar(
+            ui,
+            title,
+            self.host.platform,
+            &entries,
+            bar,
+            &mut commands,
+            &mut picked,
+        );
+        if let (Some(pick), Some(r)) = (picked, &run) {
+            self.run_picked(pick, r);
+        }
         let mut right = self.status_items();
         if let Some(stats) = self.frame_stats(&ctx) {
             right.push(stats);
@@ -701,6 +723,14 @@ impl Studio {
                         (e, w)
                     }
                 });
+        // The workspace's folder in the status bar (S071).
+        let folder = self.workspace.as_ref().map(|w| {
+            let name = w
+                .root
+                .file_name()
+                .map_or_else(|| w.name.clone(), |n| n.to_string_lossy().into_owned());
+            (name, recents::tilde(&w.root, self.home.as_deref()))
+        });
         let session = chrome::Session {
             text: match (&self.workspace, &checks_off) {
                 (None, _) => "no folder open",
@@ -713,6 +743,7 @@ impl Studio {
             right: &right,
             inset: self.notes.tray_width(),
             lead: git::bar::width(ui, &self.git),
+            folder: folder.as_ref().map(|(n, path)| (n.as_str(), path.clone())),
         };
         let (lead_x, session_end) =
             chrome::status_bar(ui, status, &self.host.wowlua_version, &session);
@@ -2425,6 +2456,136 @@ impl Studio {
     }
 
     /// The configuration chosen on the debugger page, else the addon's.
+    /// The title bar's run controls: the workspace's addons, the picked
+    /// one's flavors and world profiles, the picks, the session's state.
+    fn run_choices(&mut self) -> Option<RunChoices> {
+        let w = self.workspace.clone()?;
+        let addons: Vec<&system::Member> = w.members.iter().filter(|m| m.kind == "addon").collect();
+        let package = addons
+            .iter()
+            .position(|m| Some(&m.rel) == self.debug.kept.run_package.as_ref())
+            .unwrap_or(0);
+        let member = addons.get(package).copied();
+        let ids: Vec<String> = match member {
+            Some(m) if !m.flavors.is_empty() => m.flavors.clone(),
+            _ => w.flavors.clone(),
+        };
+        let flavors: Vec<(String, bool)> = ids
+            .iter()
+            .map(|id| {
+                if flavors::supported(id) {
+                    (id.clone(), true)
+                } else {
+                    (format!("{id} · coming soon"), false)
+                }
+            })
+            .collect();
+        let flavor = ids
+            .iter()
+            .position(|f| Some(f) == self.debug.kept.run_flavor.as_ref())
+            .or_else(|| flavors.iter().position(|f| f.1))
+            .unwrap_or(0);
+        // (the addon's world profiles, read when it changes)
+        let dir = member.map_or_else(|| w.root.clone(), |m| m.dir.clone());
+        if self.run_profiles.as_ref().is_none_or(|(d, _)| *d != dir) {
+            let list = self
+                .host
+                .system
+                .list(&dir.join("tests").join("profiles"))
+                .into_iter()
+                .filter(|e| !e.is_dir && e.name.ends_with(".json"))
+                .map(|e| e.name.trim_end_matches(".json").to_owned())
+                .collect();
+            self.run_profiles = Some((dir.clone(), list));
+        }
+        let names = self
+            .run_profiles
+            .as_ref()
+            .map(|(_, l)| l.clone())
+            .unwrap_or_default();
+        let mut profiles = vec!["world: none".to_owned()];
+        profiles.extend(names.iter().map(|n| format!("world: {n}")));
+        let profile = names
+            .iter()
+            .position(|n| Some(n) == self.debug.kept.run_profile.as_ref())
+            .map_or(0, |i| i + 1);
+        let state = if !self.debug.running() {
+            chrome::RunState::Idle
+        } else if self.debug.config.as_ref().is_some_and(|c| c.no_debug) {
+            chrome::RunState::Running
+        } else if self.debug.stopped.is_some() {
+            chrome::RunState::Paused(self.debug.paused_at())
+        } else {
+            chrome::RunState::Debugging
+        };
+        Some(RunChoices {
+            packages: addons.iter().map(|m| m.name.clone()).collect(),
+            package,
+            rels: addons.iter().map(|m| m.rel.clone()).collect(),
+            ids,
+            flavors,
+            flavor,
+            names,
+            profiles,
+            profile,
+            state,
+        })
+    }
+
+    /// A pick of the title bar's run controls, kept with the workspace.
+    fn run_picked(&mut self, pick: chrome::RunPick, r: &RunChoices) {
+        let kept = &mut self.debug.kept;
+        match pick {
+            chrome::RunPick::Package(i) => {
+                kept.run_package = r.rels.get(i).cloned();
+                kept.run_flavor = None;
+                kept.run_profile = None;
+            }
+            chrome::RunPick::Flavor(i) => kept.run_flavor = r.ids.get(i).cloned(),
+            chrome::RunPick::Profile(i) => {
+                kept.run_profile = i.checked_sub(1).and_then(|i| r.names.get(i).cloned());
+            }
+        }
+    }
+
+    /// What the title bar runs (S071): its addon, flavor and world
+    /// profile; without the debugger for run (ctrl f5).
+    fn run_config(&mut self, debugging: bool) -> debug::Config {
+        let Some(r) = self.run_choices() else {
+            return self.chosen_config();
+        };
+        let member = self.workspace.as_ref().and_then(|w| {
+            w.members
+                .iter()
+                .filter(|m| m.kind == "addon")
+                .nth(r.package)
+                .cloned()
+        });
+        let flavor = r.ids.get(r.flavor).cloned();
+        let profile = r
+            .profile
+            .checked_sub(1)
+            .and_then(|i| r.names.get(i).cloned());
+        let name = [
+            member.as_ref().map(|m| m.name.clone()),
+            flavor.clone(),
+            profile.clone(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" · ");
+        debug::Config {
+            name,
+            flavor,
+            profile,
+            manual: self.settings.default_clock == "manual",
+            package: member.map(|m| m.dir),
+            no_debug: !debugging,
+            ..debug::Config::default()
+        }
+    }
+
     fn chosen_config(&mut self) -> debug::Config {
         let name = self
             .workspace
@@ -3244,9 +3405,19 @@ impl Studio {
                 self.close_tab(i);
             }
             Command::RunAddon => {
-                let config = self.chosen_config();
-                self.start_session(config);
+                if !self.debug.running() {
+                    let config = self.run_config(false);
+                    self.start_session(config);
+                }
                 self.queue(Command::ShowPage(Page::Game));
+            }
+            Command::ReloadSession => {
+                if self.debug.running() {
+                    self.debug.send(
+                        &*self.host.system,
+                        system::GameRequest::World("C_UI.Reload()".into()),
+                    );
+                }
             }
             Command::StopSession => {
                 self.host.system.game_stop();
@@ -3256,7 +3427,7 @@ impl Studio {
                     self.debug
                         .send(&*self.host.system, system::GameRequest::Continue);
                 } else if !self.debug.running() {
-                    let config = self.chosen_config();
+                    let config = self.run_config(true);
                     self.start_session(config);
                     self.queue(Command::ShowPage(Page::Debug));
                 }
@@ -3670,4 +3841,21 @@ fn layout_for<'a>(layouts: &'a mut Layouts, workspace: &str, page: Page) -> &'a 
         .or_default()
         .entry(page)
         .or_insert_with(|| Layout::preset(page))
+}
+
+/// The title bar's run controls as read for a frame (S071).
+struct RunChoices {
+    packages: Vec<String>,
+    package: usize,
+    /// The addons' folders from the workspace's root.
+    rels: Vec<String>,
+    /// The addon's flavor ids, as shown.
+    ids: Vec<String>,
+    flavors: Vec<(String, bool)>,
+    flavor: usize,
+    /// The world profiles' names; `profiles` shows them.
+    names: Vec<String>,
+    profiles: Vec<String>,
+    profile: usize,
+    state: chrome::RunState,
 }

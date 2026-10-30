@@ -911,6 +911,7 @@ fn workspace_of(projects: &[wowlua_driver::project::Project]) -> Workspace {
                     .map(|r| r.to_string_lossy().replace('\\', "/"))
                     .unwrap_or_default(),
                 dir: p.manifest.root.clone(),
+                flavors: p.manifest.flavors.clone(),
             }
         })
         .collect();
@@ -960,6 +961,15 @@ fn raw_workspace(manifest: &Path, why: &str) -> Option<Workspace> {
             .map(|r| r.to_string_lossy().replace('\\', "/"))
             .unwrap_or_default(),
         dir: dir.to_path_buf(),
+        flavors: value
+            .get("flavors")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|f| f.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default(),
     };
     let mut members = vec![member_of(&root, &value)];
     let patterns = value

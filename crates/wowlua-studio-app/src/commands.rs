@@ -40,8 +40,11 @@ pub enum Command {
     /// Runs every test, or those that failed last (S052).
     RunAllTests,
     RunFailedTests,
-    /// Runs the workspace's addon on the game page, or stops it (S055).
+    /// Runs the title bar's addon on the game page, without the debugger
+    /// (S055, S071).
     RunAddon,
+    /// `/reload` in the running session.
+    ReloadSession,
     StopSession,
     /// The debugger (S056): start the chosen configuration, or continue a
     /// stopped session; pause; the steps; restart.
@@ -214,9 +217,17 @@ pub fn entries(
             Command::RunAddon,
             "run",
             "run the addon",
-            "the addon logged in, on the game page",
+            "the title bar's addon, flavor and world profile, without breakpoints",
             Some(Menu::Run),
-            None,
+            Some(KeyboardShortcut::new(Modifiers::CTRL, Key::F5)),
+        );
+        add(
+            Command::ReloadSession,
+            "run",
+            "reload the session",
+            "/reload in the running session",
+            Some(Menu::Run),
+            Some(KeyboardShortcut::new(Modifiers::COMMAND, Key::R)),
         );
         add(
             Command::StopSession,
@@ -230,7 +241,7 @@ pub fn entries(
             Command::StartDebugging,
             "run",
             "start debugging, or continue",
-            "the chosen configuration; a stopped session goes on",
+            "the title bar's addon, flavor and world profile; a stopped session goes on",
             Some(Menu::Run),
             Some(KeyboardShortcut::new(Modifiers::NONE, Key::F5)),
         );

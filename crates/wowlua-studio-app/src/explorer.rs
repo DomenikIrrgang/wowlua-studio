@@ -412,6 +412,7 @@ mod tests {
             version: "1.0.0".into(),
             dir: Path::new("/w").join(rel),
             rel: rel.into(),
+            flavors: Vec::new(),
         };
         let workspace = Workspace {
             root: PathBuf::from("/w"),
