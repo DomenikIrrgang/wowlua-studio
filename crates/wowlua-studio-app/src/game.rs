@@ -333,6 +333,8 @@ pub struct GameState {
     asked: HashMap<u64, Asked>,
     /// When each kind of polling last asked (seconds).
     polled: HashMap<&'static str, f64>,
+    /// Input changed the game since the frame tree was read (S086).
+    tree_stale: bool,
     // The frames.
     tree: Option<Json>,
     tree_generation: u64,
@@ -389,6 +391,8 @@ pub struct GameState {
     pub world: bool,
     /// What the session was told of the world last (none: nothing yet).
     world_sent: Option<bool>,
+    /// Whether the session was told the game is in the foreground (S085).
+    foreground_sent: Option<bool>,
     /// Play mode runs the session's clock in real time over a manual one
     /// (S079): whether it does now.
     clock_run: bool,
@@ -562,7 +566,7 @@ impl GameState {
                 if let Some(g) = self.given.get_mut(i) {
                     g.result = Some(r.map(|_| ()));
                 }
-                self.polled.remove("tree");
+                self.tree_stale = true;
             }
             (Asked::Target | Asked::Settings, Ok(_)) => {
                 self.polled.remove("tree");
@@ -645,7 +649,17 @@ impl GameState {
 
     /// The screenshot harness's chat lines, once the game ran a while
     /// (its login told).
-    pub fn send_later(&mut self, system: &dyn System, now: f64) {
+    pub fn send_later(&mut self, system: &dyn System, now: f64, focused: bool) {
+        // (the game in the foreground while Studio's window is: its frame
+        // rate the game's settings', in the background `maxFPSBk`, S085)
+        if self.running() && self.foreground_sent != Some(focused) {
+            self.ask(
+                system,
+                Asked::Settings,
+                GameRequest::SetForeground { on: focused },
+            );
+            self.foreground_sent = Some(focused);
+        }
         // (the world as the checkbox has it, each session told once a
         // change; S078)
         if !self.world_ready {
@@ -1431,10 +1445,14 @@ pub fn frames(ui: &mut Ui, state: &mut GameState, system: &dyn System) {
         empty(ui, "No session: the frame tree is the running client's.", p);
         return;
     }
-    // Read when shown, then again after input, a target, the game's
-    // settings, `hidden` or the refresh button: a large UI's whole tree
-    // read on a timer cost its frames (SuuUI's: 200 ms each).
-    if state.poll(now, "tree", f64::INFINITY) && !state.waiting(&Asked::Tree) {
+    // Read when shown, then again after a target, the game's settings,
+    // `hidden` or the refresh button, and after input at most once a
+    // second: a large UI's whole tree read on a timer cost its frames
+    // (SuuUI's: 200 ms each), and while playing every mouse move is input
+    // (S086).
+    let every = if state.tree_stale { 1.0 } else { f64::INFINITY };
+    if state.poll(now, "tree", every) && !state.waiting(&Asked::Tree) {
+        state.tree_stale = false;
         let hidden = state.hidden;
         state.ask(system, Asked::Tree, GameRequest::FrameTree { hidden });
     }

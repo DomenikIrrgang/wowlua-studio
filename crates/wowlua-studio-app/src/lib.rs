@@ -866,8 +866,11 @@ impl Studio {
         self.game.manual = self.debug.config.as_ref().is_some_and(|c| c.manual);
         self.placing_between_pages();
         self.game.world_ready = self.settings.installation_data;
-        self.game
-            .send_later(&*self.host.system, ctx.input(|i| i.time));
+        self.game.send_later(
+            &*self.host.system,
+            ctx.input(|i| i.time),
+            ctx.input(|i| i.viewport().focused.unwrap_or(true)),
+        );
         if self.harness_full && self.game.running() && system_screen(self) {
             self.harness_full = false;
             commands.push(Command::GameFullScreen);

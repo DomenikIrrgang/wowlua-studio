@@ -143,6 +143,7 @@ fn to_debug(request: GameRequest) -> Request {
         },
         GameRequest::Advance { frames, seconds } => Request::Advance { seconds, frames },
         GameRequest::SetClock { manual } => Request::SetClock { manual },
+        GameRequest::SetForeground { on } => Request::SetForeground { on },
         GameRequest::Breakpoints => Request::Breakpoints,
         GameRequest::World(script) => Request::World { script },
         GameRequest::FireEvent { event, args } => Request::FireEvent { event, args },

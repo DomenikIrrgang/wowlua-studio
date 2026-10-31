@@ -45,22 +45,22 @@ wowlua-studio-app = { path = "crates/wowlua-studio-app" }
 # credentials for an app, install records and the build's progress (M9). #104:
 # the language server's settings, auto-import, cache parts (M10). #105: the
 # flavor table's names and support, four flavors (M10).
-wowlua-casc = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "f59fdaf329f621f2c6845391e334005d514d2b7f" }
-wowlua-debug = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "f59fdaf329f621f2c6845391e334005d514d2b7f" }
-wowlua-diagnostics = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "f59fdaf329f621f2c6845391e334005d514d2b7f" }
-wowlua-engine = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "f59fdaf329f621f2c6845391e334005d514d2b7f" }
-wowlua-render = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "f59fdaf329f621f2c6845391e334005d514d2b7f" }
-wowlua-vm = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "f59fdaf329f621f2c6845391e334005d514d2b7f" }
-wowlua-driver = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "f59fdaf329f621f2c6845391e334005d514d2b7f" }
-wowlua-flavors = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "f59fdaf329f621f2c6845391e334005d514d2b7f" }
-wowlua-manifest = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "f59fdaf329f621f2c6845391e334005d514d2b7f" }
-wowlua-pkg = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "f59fdaf329f621f2c6845391e334005d514d2b7f" }
-wowlua-test = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "f59fdaf329f621f2c6845391e334005d514d2b7f" }
-wowlua-lsp = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "f59fdaf329f621f2c6845391e334005d514d2b7f" }
-wowlua-span = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "f59fdaf329f621f2c6845391e334005d514d2b7f" }
-wowlua-toc = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "f59fdaf329f621f2c6845391e334005d514d2b7f" }
-wowlua-syntax = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "f59fdaf329f621f2c6845391e334005d514d2b7f" }
-wowlua-fmt = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "f59fdaf329f621f2c6845391e334005d514d2b7f" }
+wowlua-casc = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "b477c210522cb7531e8af3ef191b954b52a8bbc6" }
+wowlua-debug = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "b477c210522cb7531e8af3ef191b954b52a8bbc6" }
+wowlua-diagnostics = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "b477c210522cb7531e8af3ef191b954b52a8bbc6" }
+wowlua-engine = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "b477c210522cb7531e8af3ef191b954b52a8bbc6" }
+wowlua-render = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "b477c210522cb7531e8af3ef191b954b52a8bbc6" }
+wowlua-vm = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "b477c210522cb7531e8af3ef191b954b52a8bbc6" }
+wowlua-driver = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "b477c210522cb7531e8af3ef191b954b52a8bbc6" }
+wowlua-flavors = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "b477c210522cb7531e8af3ef191b954b52a8bbc6" }
+wowlua-manifest = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "b477c210522cb7531e8af3ef191b954b52a8bbc6" }
+wowlua-pkg = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "b477c210522cb7531e8af3ef191b954b52a8bbc6" }
+wowlua-test = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "b477c210522cb7531e8af3ef191b954b52a8bbc6" }
+wowlua-lsp = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "b477c210522cb7531e8af3ef191b954b52a8bbc6" }
+wowlua-span = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "b477c210522cb7531e8af3ef191b954b52a8bbc6" }
+wowlua-toc = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "b477c210522cb7531e8af3ef191b954b52a8bbc6" }
+wowlua-syntax = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "b477c210522cb7531e8af3ef191b954b52a8bbc6" }
+wowlua-fmt = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "b477c210522cb7531e8af3ef191b954b52a8bbc6" }
 
 [workspace.lints.rust]
 # Denied, not forbidden: one macOS module may allow it (decision S022).

@@ -301,6 +301,12 @@ pub enum GameRequest {
     SetClock {
         manual: bool,
     },
+    /// The game in the foreground (Studio's window the user works in) or
+    /// the background: its frame rate `maxFPS`'s or `maxFPSBk`'s (S085;
+    /// wowlua T537).
+    SetForeground {
+        on: bool,
+    },
     /// Stepping into Blizzard's UI code from now on (wowlua T496).
     SetDebugBlizzardUi {
         on: bool,
