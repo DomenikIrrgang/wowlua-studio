@@ -539,6 +539,62 @@ impl Studio {
         self.game.chat_later.push(line.to_owned());
     }
 
+    /// A unit placed in the game view (S080): the world page's ask goes to
+    /// the game page; the places clicked come back to the profile, as its
+    /// `world` (a place) or its patrol's `path`.
+    fn placing_between_pages(&mut self) {
+        if self
+            .world
+            .placing
+            .as_ref()
+            .is_some_and(|p| !p.profile.is_empty())
+            && let Some(p) = self.world.placing.take()
+        {
+            self.game.placing = Some((p, Vec::new()));
+            self.queue(Command::ShowPage(Page::Game));
+        }
+        let Some((p, points)) = self.game.placed.take() else {
+            return;
+        };
+        let round = |v: f64| (v * 100.0).round() / 100.0;
+        let place = |a: &[f64; 3]| serde_json::json!({ "y": round(a[0]), "x": round(a[1]), "z": round(a[2]) });
+        let units = world::json::Key::Name("units".into());
+        let change = if p.path {
+            let mut m = p
+                .movement
+                .clone()
+                .filter(serde_json::Value::is_object)
+                .unwrap_or_else(|| serde_json::json!({}));
+            m["kind"] = serde_json::json!("patrol");
+            m["path"] = serde_json::Value::Array(points.iter().map(place).collect());
+            world::Change {
+                path: vec![
+                    units,
+                    p.unit.clone(),
+                    world::json::Key::Name("movement".into()),
+                ],
+                value: Some(m),
+                typing: false,
+            }
+        } else {
+            let Some(at) = points.first() else {
+                return;
+            };
+            world::Change {
+                path: vec![
+                    units,
+                    p.unit.clone(),
+                    world::json::Key::Name("world".into()),
+                ],
+                value: Some(place(at)),
+                typing: false,
+            }
+        };
+        self.world.selected = Some(p.profile.clone());
+        self.world.pending.push(change);
+        self.queue(Command::ShowPage(Page::World));
+    }
+
     /// A key held in play mode once the game runs (the screenshot
     /// harness's `hold:KEY:SECONDS`).
     pub fn hold_later(&mut self, key: &str, seconds: f64) {
@@ -808,6 +864,7 @@ impl Studio {
         }
 
         self.game.manual = self.debug.config.as_ref().is_some_and(|c| c.manual);
+        self.placing_between_pages();
         self.game.world_ready = self.settings.installation_data;
         self.game
             .send_later(&*self.host.system, ctx.input(|i| i.time));
@@ -3003,7 +3060,14 @@ impl Studio {
         self.queue(Command::ShowPage(Page::World));
         self.world.selected = Some(profile.to_owned());
         if let Some(part) = part {
-            self.world.part = part.to_owned();
+            // (`units/2`: the units part, its third unit picked)
+            match part.split_once('/') {
+                Some((p, n)) => {
+                    self.world.part = p.to_owned();
+                    self.world.unit = n.parse().ok();
+                }
+                None => self.world.part = part.to_owned(),
+            }
         }
         self.world.json_view = json;
     }
@@ -3367,7 +3431,8 @@ impl Studio {
                     .first()
                     .map_or("addon".to_owned(), |m| m.name.clone());
                 let mut config = debug::Config::addon(&format!("{addon} · {name}"));
-                config.profile = Some(name);
+                // (a built-in one, S081: the session names no profile)
+                config.profile = (!name.starts_with("default · ")).then_some(name);
                 self.queue(Command::ShowPage(Page::Debug));
                 self.start_session(config);
             }

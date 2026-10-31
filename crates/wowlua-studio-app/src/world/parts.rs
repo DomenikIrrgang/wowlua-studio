@@ -35,6 +35,8 @@ pub struct Cx<'a> {
     /// What the ID pickers found; the questions to ask.
     pub found: &'a HashMap<(Find, String, String), Vec<crate::system::SpellRow>>,
     pub ask: &'a mut Vec<(Find, String)>,
+    /// A unit to place in the game view, or its path to draw (S080).
+    pub place: &'a mut Option<super::Placing>,
 }
 
 /// Where the installation's art comes from.
@@ -1538,6 +1540,7 @@ fn units(ui: &mut Ui, cx: &mut Cx<'_>) {
                                 }
                             }
                         });
+                        where_and_what(ui, cx, &key, &data);
                     });
                 },
             );
@@ -3686,4 +3689,252 @@ mod tests {
         assert_eq!(classes("standard").len(), 13);
         assert!(races("vanilla").len() == 8 && races("tbc").contains(&"Draenei"));
     }
+}
+
+/// Where a unit is and what it does (S080; wowlua T515 to T518): its
+/// place on the map (typed, or placed in the game view), how it moves
+/// (its patrol's waypoints drawn there too) and its actions.
+fn where_and_what(ui: &mut Ui, cx: &mut Cx<'_>, key: &Key, data: &Json) {
+    let label = data["name"].as_str().unwrap_or("the unit").to_owned();
+    let id = path_of(&unit_path(key, ""));
+    ui.add_space(10.0);
+    forms::label(ui, "where it is and what it does");
+    ui.add_space(4.0);
+    // Its place: north, west and up yards on the map.
+    ui.horizontal(|ui| {
+        for (axis, hint) in [("y", "north"), ("x", "west"), ("z", "up")] {
+            ui.vertical(|ui| {
+                forms::label(ui, hint);
+                let mut path = unit_path(key, "world");
+                path.push(name(axis));
+                field(ui, cx, path, Kind::Number, 96.0, "—");
+            });
+        }
+        ui.vertical(|ui| {
+            forms::label(ui, " ");
+            ui.horizontal(|ui| {
+                if widgets::button(
+                    ui,
+                    ButtonKind::Secondary,
+                    "place it in the game view",
+                    true,
+                    None,
+                )
+                .clicked()
+                {
+                    *cx.place = Some(super::Placing {
+                        profile: String::new(),
+                        unit: key.clone(),
+                        label: label.clone(),
+                        path: false,
+                        movement: data.get("movement").cloned(),
+                    });
+                }
+                if data.get("world").is_some() && forms::text_button(ui, "clear ×").clicked() {
+                    cx.set(unit_path(key, "world"), None);
+                }
+            });
+        });
+    });
+    hint(
+        ui,
+        "or only a distance, as before: it stands that far in front of you",
+    );
+    ui.add_space(8.0);
+    // How it moves.
+    let movement = data.get("movement");
+    let kind = movement
+        .and_then(|m| m["kind"].as_str())
+        .unwrap_or("stand")
+        .to_owned();
+    let kinds = ["stand", "patrol", "follow", "approach", "flee"];
+    ui.horizontal(|ui| {
+        forms::label(ui, "movement");
+        let at_kind = kinds.iter().position(|k| *k == kind).unwrap_or(0);
+        if let Some(i) = widgets::seg(ui, &format!("{id}movement"), &kinds, at_kind, false) {
+            if i == 0 {
+                cx.set(unit_path(key, "movement"), None);
+            } else {
+                let mut path = unit_path(key, "movement");
+                path.push(name("kind"));
+                cx.set(path, Some(json!(kinds[i])));
+            }
+        }
+    });
+    let mpath = |k: &str| {
+        let mut p = unit_path(key, "movement");
+        p.push(name(k));
+        p
+    };
+    match kind.as_str() {
+        "patrol" => {
+            ui.add_space(4.0);
+            let points = movement
+                .and_then(|m| m.get("path"))
+                .map(list)
+                .unwrap_or_default();
+            ui.horizontal_wrapped(|ui| {
+                forms::label(ui, &format!("path · {} waypoints", points.len()));
+                for (k, p) in &points {
+                    let text = format!(
+                        "{:.1}, {:.1}",
+                        p["y"].as_f64().unwrap_or(0.0),
+                        p["x"].as_f64().unwrap_or(0.0)
+                    );
+                    if forms::text_button(ui, &format!("{text} ×")).clicked() {
+                        let mut path = mpath("path");
+                        path.push(k.clone());
+                        cx.set(path, None);
+                    }
+                }
+                if widgets::button(
+                    ui,
+                    ButtonKind::Secondary,
+                    "draw in the game view",
+                    true,
+                    None,
+                )
+                .clicked()
+                {
+                    *cx.place = Some(super::Placing {
+                        profile: String::new(),
+                        unit: key.clone(),
+                        label: label.clone(),
+                        path: true,
+                        movement: movement.cloned(),
+                    });
+                }
+            });
+            ui.horizontal(|ui| {
+                check(ui, cx, "loops", mpath("loop"), true);
+                speed(ui, cx, mpath("speed"), "2.5");
+            });
+        }
+        "follow" | "approach" | "flee" => {
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if kind != "flee" {
+                    stepped(
+                        ui,
+                        cx,
+                        "keeps",
+                        mpath("keep"),
+                        180.0,
+                        (Some(0.0), None),
+                        "yd",
+                        &[("melee 2".to_owned(), 2.0), ("10".to_owned(), 10.0)],
+                        2.0,
+                    );
+                }
+                speed(ui, cx, mpath("speed"), "7");
+            });
+            if kind == "follow" {
+                hint(
+                    ui,
+                    "it walks after you when you move, so your range checks change as you play",
+                );
+            }
+        }
+        _ => {}
+    }
+    ui.add_space(8.0);
+    // What it does.
+    forms::label(ui, "actions");
+    hint(
+        ui,
+        "seconds after the session starts, every so many seconds, or when you come near",
+    );
+    let actions = data.get("actions").map(list).unwrap_or_default();
+    for (k, a) in &actions {
+        let apath = |f: &str| {
+            let mut p = unit_path(key, "actions");
+            p.push(k.clone());
+            if !f.is_empty() {
+                p.push(name(f));
+            }
+            p
+        };
+        ui.horizontal(|ui| {
+            let whens = ["at", "every", "within"];
+            let when = whens.iter().position(|w| a.get(*w).is_some()).unwrap_or(0);
+            if let Some(i) = widgets::seg(
+                ui,
+                &format!("{}when", path_of(&apath(""))),
+                &whens,
+                when,
+                false,
+            ) && i != when
+            {
+                let value = a.get(whens[when]).cloned().unwrap_or(json!(0));
+                cx.set(apath(whens[when]), None);
+                cx.set(apath(whens[i]), Some(value));
+            }
+            field(ui, cx, apath(whens[when]), Kind::Number, 64.0, "0");
+            ui.label(match whens[when] {
+                "within" => "yd",
+                _ => "s",
+            });
+            field(
+                ui,
+                cx,
+                apath("do"),
+                Kind::Choice(["attack", "cast", "face"].map(str::to_owned).to_vec()),
+                110.0,
+                "attack",
+            );
+            match a["do"].as_str().unwrap_or("attack") {
+                "attack" => {
+                    forms::label(ui, "damage");
+                    field(ui, cx, apath("damage"), Kind::Number, 64.0, "10");
+                    forms::label(ui, "every");
+                    field(ui, cx, apath("speed"), Kind::Number, 56.0, "2");
+                    ui.label("s");
+                }
+                "cast" => {
+                    forms::label(ui, "spell");
+                    field(ui, cx, apath("spell"), Kind::Number, 80.0, "ID");
+                    forms::label(ui, "cast time");
+                    field(ui, cx, apath("castTime"), Kind::Number, 56.0, "its own");
+                    ui.label("s");
+                }
+                _ => {}
+            }
+            if forms::text_button(ui, "×").clicked() {
+                cx.set(apath(""), None);
+            }
+        });
+    }
+    if forms::text_button(ui, "+ action").clicked() {
+        let new = json!({ "at": 0, "do": "attack", "damage": 10 });
+        let mut path = unit_path(key, "actions");
+        if data.get("actions").is_some() {
+            path.push(Key::Index(actions.len()));
+            cx.set(path, Some(new));
+        } else {
+            cx.set(path, Some(json!([new])));
+        }
+    }
+}
+
+/// A line of help under a field, in the muted ink.
+fn hint(ui: &mut Ui, text: &str) {
+    let ink = palette(ui.ctx()).ink_muted;
+    forms::paragraph(ui, text, 12.0, 18.0, ink);
+}
+
+/// A walk's speed (yards a second, fractions too), its default `hint`,
+/// with a walk's and a run's (wowlua T517).
+fn speed(ui: &mut Ui, cx: &mut Cx<'_>, path: Vec<Key>, hint: &str) {
+    ui.vertical(|ui| {
+        forms::label(ui, "speed");
+        ui.horizontal(|ui| {
+            field(ui, cx, path.clone(), Kind::Number, 64.0, hint);
+            ui.label("yd/s");
+            for (label, v) in [("walk 2.5", 2.5), ("run 7", 7.0)] {
+                if forms::text_button(ui, label).clicked() {
+                    cx.set(path.clone(), Some(json!(v)));
+                }
+            }
+        });
+    });
 }
