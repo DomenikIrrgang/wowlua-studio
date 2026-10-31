@@ -76,6 +76,9 @@ pub struct Settings {
     /// time (S041).
     #[serde(alias = "frame_stats")]
     pub frame_stats: bool,
+    /// The window waits for the display before it shows a frame (S087);
+    /// off, it shows each at once.
+    pub window_vsync: bool,
     /// Keys recorded for commands, by the command's name (S062): they
     /// replace the command's own.
     pub keys: BTreeMap<String, Vec<String>>,
@@ -123,6 +126,7 @@ impl Default for Settings {
             layouts_per_workspace: true,
             float_windows: true,
             frame_stats: false,
+            window_vsync: true,
             keys: BTreeMap::new(),
         }
     }

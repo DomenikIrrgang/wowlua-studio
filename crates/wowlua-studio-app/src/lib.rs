@@ -35,6 +35,7 @@ pub mod state;
 pub mod system;
 pub mod terminal;
 pub mod tests;
+pub mod view;
 pub mod world;
 
 use std::collections::{HashMap, VecDeque};
@@ -153,7 +154,7 @@ pub struct Studio {
     /// The workspace's world profiles (`tests/profiles/*.json`), by name.
     profiles: Vec<String>,
     /// The world profiles of the title bar's addon, by its folder.
-    run_profiles: Option<(PathBuf, Vec<String>)>,
+    run_profiles: Option<(PathBuf, String, Vec<String>)>,
     /// Background jobs (S044); the checks running, by package.
     jobs: jobs::Jobs,
     checks: std::collections::HashMap<PathBuf, u64>,
@@ -356,6 +357,35 @@ impl Studio {
     /// The last frame's time, building and drawing it, for the frame stats.
     pub fn set_frame_time(&mut self, seconds: f32) {
         self.frame_cpu = Some(seconds);
+    }
+
+    /// The world seen from a camera (`follow`, `orbit`, `above`; S088):
+    /// the screenshot harness's.
+    pub fn game_camera(&mut self, name: &str) {
+        self.game.camera = match name {
+            "orbit" => system::ViewCamera::Orbit {
+                yaw: std::f64::consts::PI,
+                pitch: 0.45,
+                distance: 18.0,
+            },
+            "above" => system::ViewCamera::Above { height: 60.0 },
+            _ => system::ViewCamera::Follow,
+        };
+    }
+
+    /// Every overlay over the world on (S088): the screenshot harness's.
+    pub fn game_overlays(&mut self) {
+        self.game.overlays = [true; 3];
+    }
+
+    /// Whether the window waits for the display (the settings', S087).
+    pub fn window_vsync(&self) -> bool {
+        self.settings.window_vsync
+    }
+
+    /// The refresh rate of the display the window is on (S087).
+    pub fn set_display_rate(&mut self, hz: f64) {
+        self.game.display_hz = Some(hz);
     }
 
     pub fn platform(&self) -> Platform {
@@ -866,8 +896,11 @@ impl Studio {
         self.game.manual = self.debug.config.as_ref().is_some_and(|c| c.manual);
         self.placing_between_pages();
         self.game.world_ready = self.settings.installation_data;
-        self.game
-            .send_later(&*self.host.system, ctx.input(|i| i.time));
+        self.game.send_later(
+            &*self.host.system,
+            ctx.input(|i| i.time),
+            ctx.input(|i| i.viewport().focused.unwrap_or(true)),
+        );
         if self.harness_full && self.game.running() && system_screen(self) {
             self.harness_full = false;
             commands.push(Command::GameFullScreen);
@@ -1309,7 +1342,9 @@ impl Studio {
             Panel::Watch => debug::watch(ui, debug_state, system),
             Panel::Console => debug::console(ui, debug_state, system),
             Panel::LiveWorld if on_world => {
-                if let Some(a) = world::live(ui, world_state, debug_state, workspace, system) {
+                if let Some(a) =
+                    world::live(ui, world_state, debug_state, game_state, workspace, system)
+                {
                     world_action = Some(a);
                 }
             }
@@ -1510,7 +1545,7 @@ impl Studio {
             self.show_place(&place, ctx);
         }
         if self.debug.running()
-            && let Some(s) = self.host.system.game_screen()
+            && let Some(s) = self.host.system.game_screen(self.game.camera)
         {
             self.debug.clock = (s.time, s.frames);
         }
@@ -2914,10 +2949,16 @@ impl Studio {
             .position(|f| Some(f) == self.debug.kept.run_flavor.as_ref())
             .or_else(|| flavors.iter().position(|f| f.1))
             .unwrap_or(0);
-        // (the addon's world profiles, read when it changes)
+        // (the addon's world profiles, then wowlua's built-in ones it has
+        // none of the name of (S083), read when it or the flavor changes)
         let dir = member.map_or_else(|| w.root.clone(), |m| m.dir.clone());
-        if self.run_profiles.as_ref().is_none_or(|(d, _)| *d != dir) {
-            let list = self
+        let flavor_id = ids.get(flavor).cloned().unwrap_or_default();
+        if self
+            .run_profiles
+            .as_ref()
+            .is_none_or(|(d, f, _)| *d != dir || *f != flavor_id)
+        {
+            let mut list: Vec<String> = self
                 .host
                 .system
                 .list(&dir.join("tests").join("profiles"))
@@ -2925,12 +2966,17 @@ impl Studio {
                 .filter(|e| !e.is_dir && e.name.ends_with(".json"))
                 .map(|e| e.name.trim_end_matches(".json").to_owned())
                 .collect();
-            self.run_profiles = Some((dir.clone(), list));
+            for (name, _) in self.host.system.built_in_profiles(&flavor_id) {
+                if !list.contains(&name) {
+                    list.push(name);
+                }
+            }
+            self.run_profiles = Some((dir.clone(), flavor_id, list));
         }
         let names = self
             .run_profiles
             .as_ref()
-            .map(|(_, l)| l.clone())
+            .map(|(_, _, l)| l.clone())
             .unwrap_or_default();
         let mut profiles = vec!["world: none".to_owned()];
         profiles.extend(names.iter().map(|n| format!("world: {n}")));
@@ -4613,5 +4659,5 @@ struct RunChoices {
 
 /// Whether the game draws its screen yet (the screenshot harness waits).
 fn system_screen(studio: &Studio) -> bool {
-    studio.host.system.game_screen().is_some()
+    studio.host.system.game_screen(studio.game.camera).is_some()
 }

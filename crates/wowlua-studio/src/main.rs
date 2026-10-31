@@ -103,6 +103,8 @@ fn app_icon() -> Option<egui::IconData> {
 
 struct App {
     studio: Studio,
+    /// When the display's refresh rate was last read.
+    display_checked: Option<f64>,
     stats: Option<FrameStats>,
     screenshot: Option<Screenshot>,
     #[cfg(target_os = "macos")]
@@ -136,6 +138,7 @@ impl App {
             #[cfg(target_os = "macos")]
             menu_bar: menu_bar::MenuBar::new(ctx, &studio.entries()),
             studio,
+            display_checked: None,
             stats: FrameStats::from_env(),
             screenshot,
         }
@@ -159,6 +162,32 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         if let Some(cpu) = frame.info().cpu_usage {
             self.studio.set_frame_time(cpu);
+        }
+        // (the window waits for the display, or not, as the settings say:
+        // S087)
+        let present = if self.studio.window_vsync() {
+            eframe::wgpu::PresentMode::AutoVsync
+        } else {
+            eframe::wgpu::PresentMode::AutoNoVsync
+        };
+        if let Some(mut config) = frame.wgpu_surface_config()
+            && config.present_mode != present
+        {
+            config.present_mode = present;
+            frame.set_wgpu_surface_config(config);
+        }
+        // (the refresh rate of the window's display, once a second: the
+        // game's vsync keeps to it, S087)
+        let now = ui.input(|i| i.time);
+        if self.display_checked.is_none_or(|t| now - t >= 1.0) {
+            self.display_checked = Some(now);
+            if let Some(mhz) = frame
+                .winit_window()
+                .and_then(|w| w.current_monitor())
+                .and_then(|m| m.refresh_rate_millihertz())
+            {
+                self.studio.set_display_rate(f64::from(mhz) / 1000.0);
+            }
         }
         let started = std::time::Instant::now();
         self.studio.ui(ui);

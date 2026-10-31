@@ -434,6 +434,56 @@ pub fn seg(ui: &mut Ui, id: &str, options: &[&str], selected: usize, large: bool
     picked
 }
 
+/// A row of toggles in the segmented control's look (S088): each option on
+/// or off by itself; returns the option clicked this frame.
+pub fn toggles(ui: &mut Ui, id: &str, options: &[(&str, &str)], on: &[bool]) -> Option<usize> {
+    let p = palette(ui.ctx());
+    let (font_size, height, pad) = (11.0, 18.0, 8.0);
+    let galleys: Vec<_> = options
+        .iter()
+        .map(|(o, _)| galley(ui, o, Face::Plex.at(font_size), p.ink, 0.0))
+        .collect();
+    let inner_w: f32 = galleys.iter().map(|g| g.size().x + 2.0 * pad).sum();
+    let outer = Vec2::new(inner_w + 4.0, height + 4.0);
+    let (rect, _) = ui.allocate_exact_size(outer, Sense::hover());
+    ui.painter().rect_filled(rect, CornerRadius::ZERO, p.bg_000);
+    ui.painter().rect_stroke(
+        rect,
+        CornerRadius::ZERO,
+        Stroke::new(1.0, p.line_strong),
+        StrokeKind::Inside,
+    );
+    let mut picked = None;
+    let mut x = rect.left() + 2.0;
+    for (i, g) in galleys.into_iter().enumerate() {
+        let w = g.size().x + 2.0 * pad;
+        let r = Rect::from_min_size(Pos2::new(x, rect.top() + 2.0), Vec2::new(w, height));
+        let resp = ui.interact(r, ui.scope_id().with((id, i)), Sense::click());
+        let is_on = on.get(i).copied().unwrap_or(false);
+        resp.widget_info(|| WidgetInfo::selected(Role::CheckBox, true, is_on, options[i].0));
+        let (bg, fg) = if is_on {
+            (p.bg_400, p.ink)
+        } else if resp.hovered() {
+            (p.bg_300, p.ink)
+        } else {
+            (Color32::TRANSPARENT, p.ink_muted)
+        };
+        ui.painter().rect_filled(r, CornerRadius::ZERO, bg);
+        ui.painter().galley(r.center() - g.size() / 2.0, g, fg);
+        focus_ring(ui, r, &resp);
+        if resp.clicked() {
+            picked = Some(i);
+        }
+        let tip = options[i].1;
+        let resp = resp.on_hover_cursor(CursorIcon::PointingHand);
+        if !tip.is_empty() {
+            resp.on_hover_text(tip);
+        }
+        x += w;
+    }
+    picked
+}
+
 /// Text placed at `pos` by `anchor`, in one line.
 pub fn text_at(
     ui: &Ui,

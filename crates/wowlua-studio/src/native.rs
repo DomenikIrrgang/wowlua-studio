@@ -604,6 +604,7 @@ impl System for NativeSystem {
             let rows = match what {
                 wowlua_studio_app::system::Find::Spell => data.search_spells(&flavor, &query),
                 wowlua_studio_app::system::Find::Item => data.search_items(&flavor, &query),
+                wowlua_studio_app::system::Find::Creature => data.search_creatures(&flavor, &query),
             };
             Event::Found(what, flavor, query, rows)
         });
@@ -720,6 +721,18 @@ impl System for NativeSystem {
 
     fn default_profile(&self, flavor: &str) -> Option<String> {
         wowlua_test::profile::default_for(flavor).map(str::to_owned)
+    }
+
+    fn built_in_profiles(&self, flavor: &str) -> Vec<(String, String)> {
+        wowlua_manifest::world::BUILT_IN
+            .iter()
+            .filter_map(|name| {
+                Some((
+                    (*name).to_owned(),
+                    wowlua_manifest::world::built_in(flavor, name)?,
+                ))
+            })
+            .collect()
     }
 
     fn check_world_profile(&self, text: &str) -> Vec<wowlua_studio_app::system::ProfileProblem> {
@@ -895,9 +908,12 @@ impl System for NativeSystem {
         self.spawn(move || Event::Ship(ShipEvent::Tagged(crate::ship::tag_and_push(&root, &tag))));
     }
 
-    fn game_screen(&self) -> Option<wowlua_studio_app::system::GameScreen> {
+    fn game_screen(
+        &self,
+        view: wowlua_studio_app::system::ViewCamera,
+    ) -> Option<wowlua_studio_app::system::GameScreen> {
         let frames = self.game_frames.borrow().clone();
-        self.game_screen.borrow_mut().as_mut()?.show(&frames)
+        self.game_screen.borrow_mut().as_mut()?.show(&frames, view)
     }
 
     fn test_stop(&self) {

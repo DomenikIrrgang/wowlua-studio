@@ -533,7 +533,8 @@ fn the_world_page_stays_within_the_budget() {
                 );
             });
             ui.scope_builder(UiBuilder::new().max_rect(right), |ui| {
-                world::live(ui, &mut state, &mut debug, &workspace, &NoSystem);
+                let mut game = wowlua_studio_app::game::GameState::default();
+                world::live(ui, &mut state, &mut debug, &mut game, &workspace, &NoSystem);
             });
         });
         let _ = ctx.tessellate(output.shapes, output.pixels_per_point);

@@ -233,10 +233,13 @@ pub enum GameRequest {
         x: f64,
         y: f64,
     },
-    /// The place of the world under a point of the screen (wowlua T529).
+    /// The place of the world under a point of the screen (wowlua T529),
+    /// as the game's camera sees it or Studio's (its eye, look, up and
+    /// field of view across: wowlua T547, S089).
     WorldPoint {
         x: f64,
         y: f64,
+        camera: Option<HostCamera>,
     },
     Units,
     /// The player targets a unit by its index in the units' list.
@@ -300,6 +303,17 @@ pub enum GameRequest {
     },
     SetClock {
         manual: bool,
+    },
+    /// The game in the foreground (Studio's window the user works in) or
+    /// the background: its frame rate `maxFPS`'s or `maxFPSBk`'s (S085;
+    /// wowlua T537).
+    SetForeground {
+        on: bool,
+    },
+    /// The display's refresh rate: the game keeps to it with `vsync` on
+    /// (S087; wowlua T544).
+    SetDisplayRate {
+        hz: f64,
     },
     /// Stepping into Blizzard's UI code from now on (wowlua T496).
     SetDebugBlizzardUi {
@@ -410,11 +424,35 @@ pub enum GameInput {
     /// The mouse wheel over the world: the camera zooms out `steps` yards.
     Zoom(f64),
     /// A click on the world: the frame there clicked, else the unit
-    /// there targeted.
+    /// there targeted; the right button talks to it (wowlua T530).
     ClickWorld {
         x: f64,
         y: f64,
+        right: bool,
     },
+    /// Playing (S084; wowlua T535): the mouse moved to a point, a button
+    /// pressed and let go there, the wheel turned (`delta` 1 a notch up),
+    /// text typed; the game decides what the frame or the world there does.
+    MouseMove {
+        x: f64,
+        y: f64,
+    },
+    MouseDown {
+        x: f64,
+        y: f64,
+        right: bool,
+    },
+    MouseUp {
+        x: f64,
+        y: f64,
+        right: bool,
+    },
+    Wheel {
+        x: f64,
+        y: f64,
+        delta: f64,
+    },
+    Text(String),
     /// A slash command (`/wl`).
     Slash(String),
     /// A chat message as the player sends it (`SAY`, `PARTY`, a
@@ -467,7 +505,7 @@ pub enum GameEvent {
 
 /// The game's screen as last drawn: its texture and size in pixels, and
 /// how many scenes were drawn (a new one: changed).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct GameScreen {
     pub texture: egui::TextureId,
     pub size: [u32; 2],
@@ -476,6 +514,52 @@ pub struct GameScreen {
     /// drawn.
     pub time: f64,
     pub frames: u64,
+    /// The 3D world as it was drawn, while it is on (S088).
+    pub world: Option<WorldSeen>,
+}
+
+/// Studio's camera as it saw the world, for the place under a point
+/// (wowlua T547): its eye, the way it looks and its up (north, west, up
+/// yards), its field of view across (radians).
+pub type HostCamera = ([f64; 3], [f64; 3], [f64; 3], f64);
+
+/// How Studio looks at the 3D world (S088): the game's own camera, or a
+/// camera of Studio's that circles the character (radians around from
+/// north and up from level, yards away) or looks straight down on it,
+/// north up (yards above). Studio's camera leaves the game's alone.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum ViewCamera {
+    #[default]
+    Follow,
+    Orbit {
+        yaw: f64,
+        pitch: f64,
+        distance: f64,
+    },
+    Above {
+        height: f64,
+    },
+}
+
+/// The 3D world as drawn (S088): the camera it was seen from (north, west,
+/// up yards; the field of view across, radians) and its units.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct WorldSeen {
+    pub eye: [f64; 3],
+    pub look: [f64; 3],
+    pub up: [f64; 3],
+    pub fov: f64,
+    pub far: f64,
+    pub units: Vec<SeenUnit>,
+}
+
+/// A unit of the world as drawn: which (its index; the player 0), where it
+/// stands and where it faces.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SeenUnit {
+    pub id: usize,
+    pub at: [f64; 3],
+    pub facing: f64,
 }
 
 /// A test run (the tests page, S052): which tests (`path::name` filters,
@@ -645,6 +729,8 @@ pub enum Art {
     Spell(u32),
     /// An item's icon, by item ID.
     Item(u32),
+    /// A creature display's model, drawn as a model frame draws it (S082).
+    Model(u32),
 }
 
 /// A spell of the client's tables: its ID, name, icon and description.
@@ -991,6 +1077,9 @@ pub enum GitEvent {
 pub enum Find {
     Spell,
     Item,
+    /// A creature the installation knows (wowlua T531): a row's `icon` is
+    /// its display, its `text` its type and classification.
+    Creature,
 }
 
 impl Find {
@@ -999,6 +1088,7 @@ impl Find {
         match self {
             Find::Spell => "spell",
             Find::Item => "item",
+            Find::Creature => "creature",
         }
     }
 }
@@ -1943,6 +2033,11 @@ pub trait System {
     fn default_profile(&self, _flavor: &str) -> Option<String> {
         None
     }
+    /// The world profiles wowlua has built in for a flavor (wowlua T533),
+    /// by name, with their text: a package names one as its own.
+    fn built_in_profiles(&self, _flavor: &str) -> Vec<(String, String)> {
+        Vec::new()
+    }
     /// A world profile's problems (E4400, E4401), from its text as edited.
     fn check_world_profile(&self, _text: &str) -> Vec<ProfileProblem> {
         Vec::new()
@@ -1972,8 +2067,9 @@ pub trait System {
     ) -> Result<Vec<(String, serde_json::Value)>, String> {
         Err("no SavedVariables here".into())
     }
-    /// The running session's screen, drawn on the UI's GPU device.
-    fn game_screen(&self) -> Option<GameScreen> {
+    /// The running session's screen, drawn on the UI's GPU device, its 3D
+    /// world from `view` (S088).
+    fn game_screen(&self, _view: ViewCamera) -> Option<GameScreen> {
         None
     }
     /// What the ship page shows of the package (→ [`ShipEvent::Read`]).
