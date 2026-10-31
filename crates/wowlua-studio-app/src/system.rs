@@ -233,6 +233,11 @@ pub enum GameRequest {
         x: f64,
         y: f64,
     },
+    /// The place of the world under a point of the screen (wowlua T529).
+    WorldPoint {
+        x: f64,
+        y: f64,
+    },
     Units,
     /// The player targets a unit by its index in the units' list.
     Target(Option<usize>),
@@ -1932,6 +1937,11 @@ pub trait System {
     /// The package's world profiles, by name.
     fn world_profiles(&self, _root: &Path) -> Vec<WorldProfile> {
         Vec::new()
+    }
+    /// The world a test or session starts in that names no profile: the
+    /// flavor's fresh character as wowlua recorded it (S081), its text.
+    fn default_profile(&self, _flavor: &str) -> Option<String> {
+        None
     }
     /// A world profile's problems (E4400, E4401), from its text as edited.
     fn check_world_profile(&self, _text: &str) -> Vec<ProfileProblem> {

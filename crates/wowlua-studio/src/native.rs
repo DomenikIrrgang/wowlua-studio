@@ -718,6 +718,10 @@ impl System for NativeSystem {
         crate::world::profiles(root)
     }
 
+    fn default_profile(&self, flavor: &str) -> Option<String> {
+        wowlua_test::profile::default_for(flavor).map(str::to_owned)
+    }
+
     fn check_world_profile(&self, text: &str) -> Vec<wowlua_studio_app::system::ProfileProblem> {
         crate::world::check(text)
     }

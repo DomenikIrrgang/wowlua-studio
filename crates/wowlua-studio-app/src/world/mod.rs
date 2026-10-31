@@ -182,6 +182,19 @@ impl ArtCache {
 /// The snapshots found, and warnings; or why none could be looked for.
 pub type Snapshots = Result<(Vec<WorldSnapshot>, Vec<String>), String>;
 
+/// A unit to place in the game view (S080): its profile, its key in the
+/// profile's `units`, its name, and whether its patrol's path is drawn
+/// (waypoints until done) or its place (one click); its movement as it
+/// was, for the path's.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Placing {
+    pub profile: String,
+    pub unit: Key,
+    pub label: String,
+    pub path: bool,
+    pub movement: Option<Json>,
+}
+
 /// A change a form makes: the value at `path` set (none: removed).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Change {
@@ -247,6 +260,11 @@ pub struct WorldState {
     pub(crate) all_ranks: bool,
     /// Changes made from outside a form (the screenshot harness).
     pub pending: Vec<Change>,
+    /// The built-in profiles (S081): each flavor's default character, its
+    /// text, by its path (`wowlua:/default/<flavor>.json`).
+    builtins: Vec<(WorldProfile, String)>,
+    /// A unit to place in the game view, asked by its form (S080).
+    pub placing: Option<Placing>,
 }
 
 impl Default for WorldState {
@@ -281,6 +299,8 @@ impl Default for WorldState {
             found_asked: std::collections::HashSet::new(),
             all_ranks: false,
             pending: Vec::new(),
+            builtins: Vec::new(),
+            placing: None,
         }
     }
 }
@@ -304,7 +324,18 @@ impl WorldState {
     /// The selected profile.
     pub fn profile(&self) -> Option<&WorldProfile> {
         let name = self.selected.as_ref()?;
-        self.profiles.iter().find(|p| &p.name == name)
+        self.profiles
+            .iter()
+            .chain(self.builtins.iter().map(|(p, _)| p))
+            .find(|p| &p.name == name)
+    }
+
+    /// The built-in text of a profile that is one (S081).
+    fn builtin(&self, path: &Path) -> Option<&str> {
+        self.builtins
+            .iter()
+            .find(|(p, _)| p.path == path)
+            .map(|(_, t)| t.as_str())
     }
 
     /// Lists the profiles again every 2 seconds while the page shows.
@@ -314,19 +345,36 @@ impl WorldState {
         }
         self.listed_at = Some(now);
         self.profiles = system.world_profiles(&workspace.root);
-        if self
-            .selected
-            .as_ref()
-            .is_none_or(|s| !self.profiles.iter().any(|p| &p.name == s))
-        {
-            self.selected = self.profiles.first().map(|p| p.name.clone());
+        if self.builtins.is_empty() {
+            self.builtins = workspace
+                .flavors
+                .iter()
+                .filter_map(|f| {
+                    let text = system.default_profile(f)?;
+                    let profile = WorldProfile {
+                        name: format!("default · {f}"),
+                        path: PathBuf::from(format!("wowlua:/default/{f}.json")),
+                    };
+                    Some((profile, text))
+                })
+                .collect();
+        }
+        if self.profile().is_none() {
+            self.selected = self
+                .profiles
+                .first()
+                .or(self.builtins.first().map(|(p, _)| p))
+                .map(|p| p.name.clone());
         }
     }
 
     /// The profile's document held, and parsed as of its version.
     fn refresh(&mut self, editors: &mut Editors, system: &dyn System) -> Option<usize> {
         let path = self.profile()?.path.clone();
-        let i = editors.held(&path, system).ok()?;
+        let i = match self.builtin(&path) {
+            Some(text) => editors.held_text(&path, text),
+            None => editors.held(&path, system).ok()?,
+        };
         let doc = &editors.tabs[i].doc;
         if self
             .parsed
@@ -432,9 +480,16 @@ pub fn profiles(
             }
             if let Some(name) = &mut state.new_name {
                 forms::padded(ui, 12, 6, |ui| {
-                    let r = forms::text_input(ui, name, (ui.available_width() - 70.0).max(80.0), "raid-pull");
+                    let r = forms::text_input(
+                        ui,
+                        name,
+                        (ui.available_width() - 70.0).max(80.0),
+                        "raid-pull",
+                    );
                     let ok = !name.is_empty()
-                        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+                        && name
+                            .chars()
+                            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
                     let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                     if (forms::text_button(ui, "add").clicked() || enter) && ok {
                         let path = workspace
@@ -451,7 +506,11 @@ pub fn profiles(
                         }
                     }
                 });
-                if state.selected.as_ref().is_some_and(|s| state.new_name.as_ref() == Some(s)) {
+                if state
+                    .selected
+                    .as_ref()
+                    .is_some_and(|s| state.new_name.as_ref() == Some(s))
+                {
                     state.new_name = None;
                 }
             }
@@ -459,13 +518,12 @@ pub fn profiles(
                 forms::padded(ui, 12, 12, |ui| {
                     forms::paragraph(
                         ui,
-                        "No profiles yet. Tests and sessions start in a plain level 1 character in an empty world.",
+                        "No profiles yet. Tests and sessions start in the built-in default below.",
                         12.5,
                         19.0,
                         p.ink_muted,
                     );
                 });
-                return;
             }
             let problems = state
                 .parsed
@@ -482,6 +540,21 @@ pub fn profiles(
                     state.selected = Some(profile.name.clone());
                     state.unit = None;
                     state.entry = 0;
+                }
+            }
+            // The built-in ones (S081): read-only, to look at and copy.
+            if !state.builtins.is_empty() {
+                forms::padded(ui, 12, 8, |ui| {
+                    forms::label(ui, "built in");
+                });
+                for i in 0..state.builtins.len() {
+                    let name = state.builtins[i].0.name.clone();
+                    let selected = state.selected.as_ref() == Some(&name);
+                    if row(ui, p, &name, 0, selected) {
+                        state.selected = Some(name);
+                        state.unit = None;
+                        state.entry = 0;
+                    }
                 }
             }
         });
@@ -725,6 +798,7 @@ pub fn editor(
     }
     let used = state.uses.as_ref().map_or(0, |(_, u)| u.len());
     let dirty = editors.tabs[tab].doc.is_dirty();
+    let builtin = state.builtin(&profile.path).is_some();
 
     // The bar.
     forms::padded(ui, 12, 6, |ui| {
@@ -736,8 +810,13 @@ pub fn editor(
             );
             let wide = ui.available_width() > 1000.0;
             if wide {
+                let place = if builtin {
+                    "built in · wowlua's recording".to_owned()
+                } else {
+                    format!("tests/profiles/{}.json", profile.name)
+                };
                 ui.label(
-                    egui::RichText::new(format!("tests/profiles/{}.json", profile.name))
+                    egui::RichText::new(place)
                         .font(Face::Plex.at(11.0))
                         .color(p.ink_faint),
                 );
@@ -752,6 +831,14 @@ pub fn editor(
                 state.json_view = i == 1;
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if builtin {
+                    if widgets::button(ui, ButtonKind::Primary, "copy to a new profile", true, None)
+                        .clicked()
+                    {
+                        action = copy_builtin(state, &profile, editors, tab, workspace, system);
+                    }
+                    return;
+                }
                 let word = if dirty { "save" } else { "saved" };
                 if widgets::button(ui, ButtonKind::Primary, word, true, None).clicked() && dirty {
                     action = Some(Action::Save(profile.path.clone()));
@@ -784,6 +871,22 @@ pub fn editor(
         });
     });
 
+    // A built-in one: what it is, and read-only (S081).
+    if builtin {
+        forms::padded(ui, 12, 6, |ui| {
+            forms::callout(ui, CalloutKind::Note, |ui| {
+                forms::paragraph(
+                    ui,
+                    "The world a test or session starts in when it names no profile (world: none): \
+                     a fresh character of this flavor as wowlua recorded it from the client, \
+                     what every profile adds to. Read-only here: copy it to a new profile to change it.",
+                    12.0,
+                    18.0,
+                    p.ink,
+                );
+            });
+        });
+    }
     // Its problems, and the tests naming no profile (E4402).
     let text = editors.tabs[tab].doc.text();
     let problems = state
@@ -938,6 +1041,7 @@ pub fn editor(
                     all_ranks: &mut state.all_ranks,
                     found: &state.found,
                     ask: &mut asks,
+                    place: &mut state.placing,
                 };
                 if DESIGNED.contains(&part.as_str()) {
                     if let Some(a) = parts::designed(ui, &mut cx, &part) {
@@ -957,6 +1061,17 @@ pub fn editor(
                 }
             });
         });
+    // (a unit to place: in this profile)
+    if let Some(p) = state.placing.as_mut()
+        && p.profile.is_empty()
+    {
+        p.profile = profile.name.clone();
+    }
+    // (a built-in one is read-only: its forms change nothing)
+    if builtin {
+        changes.clear();
+        state.pending.clear();
+    }
     // The changes, as edits of the document's text.
     changes.append(&mut state.pending);
     for change in changes {
@@ -983,6 +1098,39 @@ pub fn editor(
         }
     }
     (None, action)
+}
+
+/// A built-in profile copied into the package (S081): `tests/profiles/`
+/// under the first free name of `default-<flavor>`, then picked.
+fn copy_builtin(
+    state: &mut WorldState,
+    profile: &WorldProfile,
+    editors: &Editors,
+    tab: usize,
+    workspace: &Workspace,
+    system: &dyn System,
+) -> Option<Action> {
+    let flavor = profile
+        .path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let dir = workspace.root.join("tests/profiles");
+    let name = (1..)
+        .map(|n| match n {
+            1 => format!("default-{flavor}"),
+            n => format!("default-{flavor}-{n}"),
+        })
+        .find(|n| !state.profiles.iter().any(|p| &p.name == n))?;
+    let text = editors.tabs[tab].doc.text();
+    match system.write_file(&dir.join(format!("{name}.json")), &text) {
+        Ok(()) => {
+            state.selected = Some(name);
+            state.listed_at = None;
+            None
+        }
+        Err(e) => Some(Action::Note("copy to a new profile".into(), e)),
+    }
 }
 
 /// The package's first flavor (the classes and races a character may have).

@@ -247,6 +247,7 @@ enum Asked {
     Chat,
     Advance,
     Settings,
+    WorldPoint,
     Input(usize),
     Shot(PathBuf),
 }
@@ -364,6 +365,11 @@ pub struct GameState {
     pub full: Option<(u32, u32)>,
     /// Lines the screenshot harness types into the chat once it runs.
     pub chat_later: Vec<String>,
+    /// A unit being placed in the game view (S080): the world page's ask,
+    /// and the places clicked so far.
+    pub placing: Option<(crate::world::Placing, Vec<[f64; 3]>)>,
+    /// A placing done: for the app to write into its profile.
+    pub placed: Option<(crate::world::Placing, Vec<[f64; 3]>)>,
     /// A key the screenshot harness holds in play mode once the game runs,
     /// for so many seconds; and until when it is held.
     pub hold_later: Option<(String, f64)>,
@@ -443,6 +449,7 @@ impl GameState {
             full: keep.7,
             shots: std::mem::take(&mut self.shots),
             chat_later: std::mem::take(&mut self.chat_later),
+            placing: self.placing.take(),
             hold_later: self.hold_later.take(),
             world,
             world_ready,
@@ -514,6 +521,21 @@ impl GameState {
                 }
             }
             (Asked::Units, Ok(Json::Array(list))) => self.units = list,
+            (Asked::WorldPoint, Ok(at)) => {
+                let point = (|| Some([at["y"].as_f64()?, at["x"].as_f64()?, at["z"].as_f64()?]))();
+                match (point, self.placing.as_mut()) {
+                    (Some(p), Some((placing, points))) => {
+                        points.push(p);
+                        if !placing.path {
+                            self.placed = self.placing.take();
+                        }
+                    }
+                    (None, Some(_)) => {
+                        self.toast = Some(("no ground there: click the world".into(), now));
+                    }
+                    _ => {}
+                }
+            }
             (Asked::Chat, Ok(data)) => {
                 for line in data["lines"].as_array().into_iter().flatten() {
                     if self.chat.len() == CHAT_KEPT {
@@ -879,6 +901,41 @@ pub fn screen(
                 .request_repaint_after(std::time::Duration::from_millis(500));
         }
     }
+    // A unit being placed (S080): what to click, and done for a path.
+    if let Some((placing, points)) = &state.placing {
+        let (label, path, n) = (placing.label.clone(), placing.path, points.len());
+        let mut done = false;
+        let mut cancel = false;
+        forms::padded(ui, 12, 6, |ui| {
+            forms::callout(ui, CalloutKind::Note, |ui| {
+                ui.horizontal(|ui| {
+                    let text = match (path, state.running()) {
+                        (_, false) => format!("start the game to place {label}"),
+                        (false, true) => format!("click where {label} stands"),
+                        (true, true) => format!("click {label}'s waypoints, in order · {n} so far"),
+                    };
+                    forms::paragraph(ui, &text, 12.0, 18.0, p.ink);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if widgets::button(ui, ButtonKind::Tertiary, "cancel", true, None).clicked()
+                        {
+                            cancel = true;
+                        }
+                        if path
+                            && widgets::button(ui, ButtonKind::Primary, "done", n >= 2, None)
+                                .clicked()
+                        {
+                            done = true;
+                        }
+                    });
+                });
+            });
+        });
+        if cancel {
+            state.placing = None;
+        } else if done {
+            state.placed = state.placing.take();
+        }
+    }
     if let Some(s) = &state.started
         && s.installation.is_none()
     {
@@ -1089,6 +1146,16 @@ fn pointer(
         let v = (pos - rect.min) / scale;
         (f64::from(v.x.floor()), f64::from(v.y.floor()))
     };
+    // (placing a unit: a click is a place of the world, S080)
+    if state.placing.is_some() {
+        if response.clicked()
+            && let Some(pos) = response.interact_pointer_pos()
+        {
+            let (x, y) = at(pos);
+            state.ask(system, Asked::WorldPoint, GameRequest::WorldPoint { x, y });
+        }
+        return;
+    }
     match state.mode {
         Mode::Inspect => {
             if response.clicked()
@@ -2409,6 +2476,41 @@ mod unit {
 #[cfg(test)]
 mod chat_tests {
     use super::*;
+
+    fn placing(path: bool) -> crate::world::Placing {
+        crate::world::Placing {
+            profile: "wolves".into(),
+            unit: crate::world::json::Key::Index(0),
+            label: "Young Wolf".into(),
+            path,
+            movement: None,
+        }
+    }
+
+    /// Placing a unit (S080): a place is its first point; a path's points
+    /// gather until done; no ground there leaves it as it was.
+    #[test]
+    fn a_unit_is_placed_by_the_points_clicked() {
+        let mut state = GameState {
+            placing: Some((placing(false), Vec::new())),
+            ..GameState::default()
+        };
+        state.answer(Asked::WorldPoint, Ok(Json::Null), 0.0);
+        assert!(state.placing.is_some() && state.placed.is_none());
+        let point = serde_json::json!({ "y": 1.0, "x": 2.0, "z": 3.0 });
+        state.answer(Asked::WorldPoint, Ok(point), 0.0);
+        let (p, points) = state.placed.take().expect("placed");
+        assert_eq!((p.path, points), (false, vec![[1.0, 2.0, 3.0]]));
+        assert!(state.placing.is_none());
+        state.placing = Some((placing(true), Vec::new()));
+        for i in 0..3 {
+            let v = f64::from(i);
+            let point = serde_json::json!({ "y": v, "x": v, "z": 0.0 });
+            state.answer(Asked::WorldPoint, Ok(point), 0.0);
+        }
+        assert!(state.placed.is_none());
+        assert_eq!(state.placing.as_ref().map(|(_, p)| p.len()), Some(3));
+    }
 
     #[test]
     fn the_chat_box_s_own_commands_are_chat() {
