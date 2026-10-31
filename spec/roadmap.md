@@ -437,7 +437,7 @@ lose asked first, then the clone deleted; clones left by a window that quit
 cleaned up or offered; a read-only repository's fork. Not yet: checked by
 hand on macOS only.
 
-## M13: The 3D world (planned)
+## M13: The 3D world
 
 Artboards: game, world profiles (S076).
 
@@ -454,7 +454,17 @@ Artboards: game, world profiles (S076).
 Needs new work in wowlua: unit positions, movement and actions in the
 engine, world profiles and the test API; a world renderer with the
 zone's terrain, buildings, doodads and models from the installation.
-Built so far: the game screen's toggle shows the world behind the UI (S076, S078): the zone's terrain, buildings, trees and props and the units as their models, solid, from the installation (wowlua T515 to T527).
+Built (S076 to S089, wowlua T515 to T547): the game screen's toggle shows
+the world behind the UI: the zone's terrain, buildings, trees and props and
+the units as their models, solid, from the installation, drawn as the
+game's settings say (frame rate, vsync, render scale); playing moves your
+character with its poses, the mouse turns the camera, clicks target and
+talk; units walk, patrol and act; names and nameplates over them; the
+world seen from the game's camera, from Studio's orbit or from above, with
+overlays of ranges, sight and unit info; the world while the debugger is
+paused; the world profile page's units placed and their paths drawn, in the
+game view and on the page's own view. Not yet: the cameras, overlays and
+the profile page's view checked by hand on macOS.
 
 ## M14: Claude (planned, last)
 
@@ -510,6 +520,11 @@ and tests it on Windows and Linux (S058). On each, with SuuUI's workspace:
     it; commit and push, close: it goes without asking; quit with a change
     and see the start page offer the clone; open a repository you can't
     push to and fork it.
+
+13. **M13**: turn the 3D world on and walk into a building and a fence
+    (they stop you); orbit and look from above; turn on the overlays; pause
+    at a breakpoint and look around; on the world profile page drag a unit
+    and shift-drag its path.
 
 ## Open questions
 
