@@ -4325,7 +4325,7 @@ fn creature_and_role(ui: &mut Ui, cx: &mut Cx<'_>, key: &Key, data: &Json) {
                 );
             });
             if forms::text_button(ui, "×").clicked() {
-                cx.set(sub("loot", &[k.clone()]), None);
+                cx.set(sub("loot", std::slice::from_ref(k)), None);
             }
         });
     }
