@@ -723,6 +723,18 @@ impl System for NativeSystem {
         wowlua_test::profile::default_for(flavor).map(str::to_owned)
     }
 
+    fn built_in_profiles(&self, flavor: &str) -> Vec<(String, String)> {
+        wowlua_manifest::world::BUILT_IN
+            .iter()
+            .filter_map(|name| {
+                Some((
+                    (*name).to_owned(),
+                    wowlua_manifest::world::built_in(flavor, name)?,
+                ))
+            })
+            .collect()
+    }
+
     fn check_world_profile(&self, text: &str) -> Vec<wowlua_studio_app::system::ProfileProblem> {
         crate::world::check(text)
     }

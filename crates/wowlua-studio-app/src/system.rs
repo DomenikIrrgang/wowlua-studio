@@ -1950,6 +1950,11 @@ pub trait System {
     fn default_profile(&self, _flavor: &str) -> Option<String> {
         None
     }
+    /// The world profiles wowlua has built in for a flavor (wowlua T533),
+    /// by name, with their text: a package names one as its own.
+    fn built_in_profiles(&self, _flavor: &str) -> Vec<(String, String)> {
+        Vec::new()
+    }
     /// A world profile's problems (E4400, E4401), from its text as edited.
     fn check_world_profile(&self, _text: &str) -> Vec<ProfileProblem> {
         Vec::new()

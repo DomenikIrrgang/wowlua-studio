@@ -153,7 +153,7 @@ pub struct Studio {
     /// The workspace's world profiles (`tests/profiles/*.json`), by name.
     profiles: Vec<String>,
     /// The world profiles of the title bar's addon, by its folder.
-    run_profiles: Option<(PathBuf, Vec<String>)>,
+    run_profiles: Option<(PathBuf, String, Vec<String>)>,
     /// Background jobs (S044); the checks running, by package.
     jobs: jobs::Jobs,
     checks: std::collections::HashMap<PathBuf, u64>,
@@ -2914,10 +2914,16 @@ impl Studio {
             .position(|f| Some(f) == self.debug.kept.run_flavor.as_ref())
             .or_else(|| flavors.iter().position(|f| f.1))
             .unwrap_or(0);
-        // (the addon's world profiles, read when it changes)
+        // (the addon's world profiles, then wowlua's built-in ones it has
+        // none of the name of (S083), read when it or the flavor changes)
         let dir = member.map_or_else(|| w.root.clone(), |m| m.dir.clone());
-        if self.run_profiles.as_ref().is_none_or(|(d, _)| *d != dir) {
-            let list = self
+        let flavor_id = ids.get(flavor).cloned().unwrap_or_default();
+        if self
+            .run_profiles
+            .as_ref()
+            .is_none_or(|(d, f, _)| *d != dir || *f != flavor_id)
+        {
+            let mut list: Vec<String> = self
                 .host
                 .system
                 .list(&dir.join("tests").join("profiles"))
@@ -2925,12 +2931,17 @@ impl Studio {
                 .filter(|e| !e.is_dir && e.name.ends_with(".json"))
                 .map(|e| e.name.trim_end_matches(".json").to_owned())
                 .collect();
-            self.run_profiles = Some((dir.clone(), list));
+            for (name, _) in self.host.system.built_in_profiles(&flavor_id) {
+                if !list.contains(&name) {
+                    list.push(name);
+                }
+            }
+            self.run_profiles = Some((dir.clone(), flavor_id, list));
         }
         let names = self
             .run_profiles
             .as_ref()
-            .map(|(_, l)| l.clone())
+            .map(|(_, _, l)| l.clone())
             .unwrap_or_default();
         let mut profiles = vec!["world: none".to_owned()];
         profiles.extend(names.iter().map(|n| format!("world: {n}")));
