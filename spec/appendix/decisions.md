@@ -5,6 +5,7 @@
 Why Studio is the way it is. **(user)** marks a decision the user made,
 **(proposal)** one waiting for the user's word.
 
+| S082 | What a unit is, on the world page (wowlua T530, T531; the canvas's v101): the creature (searched among the creatures the installation knows, picking one fills in its name, model, type, family and classification; its model previewed as a model frame draws it, 160 pixels; "browse models" pages through the display IDs from it, eight previews at a time); combat (its swings' damage and speed, the player's threat); what it is to the player (none, vendor, class trainer, gossip, banker, mailbox, auctioneer, flight master: a vendor's goods with the item picker, price, stack, limited count and repairs; a trainer's class; gossip's text and options, each opening its vendor, trainer, the flight map or closing); its loot. In play mode a right-click on a unit talks to it | The user asked to set "if they are a vendor, what items they sell or of they are class trainers, if they are enemies what model name stats and so on"; their answers and the canvas design (approved: "Looks good, build it"). |
 | # | Decision | Why |
 |---|----------|-----|
 | S001 | Studio is a native Rust application: no HTML, no JavaScript, no webview **(user, M0)** | The user's requirement; wowlua's decision T300 already planned "a native Rust IDE" that links the libraries in its own process. wowlua's roadmap M15 described a browser front-end with a desktop shell; it changes to this. |

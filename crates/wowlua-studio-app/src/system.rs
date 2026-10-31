@@ -410,10 +410,11 @@ pub enum GameInput {
     /// The mouse wheel over the world: the camera zooms out `steps` yards.
     Zoom(f64),
     /// A click on the world: the frame there clicked, else the unit
-    /// there targeted.
+    /// there targeted; the right button talks to it (wowlua T530).
     ClickWorld {
         x: f64,
         y: f64,
+        right: bool,
     },
     /// A slash command (`/wl`).
     Slash(String),
@@ -645,6 +646,8 @@ pub enum Art {
     Spell(u32),
     /// An item's icon, by item ID.
     Item(u32),
+    /// A creature display's model, drawn as a model frame draws it (S082).
+    Model(u32),
 }
 
 /// A spell of the client's tables: its ID, name, icon and description.
@@ -991,6 +994,9 @@ pub enum GitEvent {
 pub enum Find {
     Spell,
     Item,
+    /// A creature the installation knows (wowlua T531): a row's `icon` is
+    /// its display, its `text` its type and classification.
+    Creature,
 }
 
 impl Find {
@@ -999,6 +1005,7 @@ impl Find {
         match self {
             Find::Spell => "spell",
             Find::Item => "item",
+            Find::Creature => "creature",
         }
     }
 }

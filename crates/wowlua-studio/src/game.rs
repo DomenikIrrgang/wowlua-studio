@@ -170,7 +170,9 @@ fn to_debug(request: GameRequest) -> Request {
                 GameInput::KeyUp(key) => protocol::Input::KeyUp { key },
                 GameInput::Look { dx, dy, turn } => protocol::Input::Look { dx, dy, turn },
                 GameInput::Zoom(steps) => protocol::Input::Zoom { steps },
-                GameInput::ClickWorld { x, y } => protocol::Input::ClickWorld { x, y },
+                GameInput::ClickWorld { x, y, right } => {
+                    protocol::Input::ClickWorld { x, y, right }
+                }
                 GameInput::Slash(text) => protocol::Input::Slash { text },
                 GameInput::Chat {
                     text,

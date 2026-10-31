@@ -1180,12 +1180,16 @@ fn pointer(
                     },
                 );
             }
-            if response.clicked()
-                && let Some(pos) = response.interact_pointer_pos()
-            {
-                let (x, y) = at(pos);
-                state.play(system, GameInput::ClickWorld { x, y });
-                response.request_focus();
+            // (the right button talks to the unit there, as in the game)
+            for (clicked, right) in [
+                (response.clicked(), false),
+                (response.secondary_clicked(), true),
+            ] {
+                if clicked && let Some(pos) = response.interact_pointer_pos() {
+                    let (x, y) = at(pos);
+                    state.play(system, GameInput::ClickWorld { x, y, right });
+                    response.request_focus();
+                }
             }
             if response.hovered() {
                 let scroll = ui.input(|i| i.smooth_scroll_delta().y);

@@ -604,6 +604,7 @@ impl System for NativeSystem {
             let rows = match what {
                 wowlua_studio_app::system::Find::Spell => data.search_spells(&flavor, &query),
                 wowlua_studio_app::system::Find::Item => data.search_items(&flavor, &query),
+                wowlua_studio_app::system::Find::Creature => data.search_creatures(&flavor, &query),
             };
             Event::Found(what, flavor, query, rows)
         });
