@@ -72,7 +72,7 @@ fn to_debug(request: GameRequest) -> Request {
         GameRequest::FrameTree { hidden } => Request::FrameTree { root: None, hidden },
         GameRequest::Inspect(frame) => Request::Inspect { frame },
         GameRequest::Pick { x, y } => Request::Pick { x, y },
-        GameRequest::WorldPoint { x, y } => Request::WorldPoint { x, y },
+        GameRequest::WorldPoint { x, y, camera } => Request::WorldPoint { x, y, camera },
         GameRequest::Units => Request::Units,
         GameRequest::ChatLines { since } => Request::ChatLines { since },
         GameRequest::Target(unit) => Request::Target { unit },

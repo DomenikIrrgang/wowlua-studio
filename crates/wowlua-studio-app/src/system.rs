@@ -233,10 +233,13 @@ pub enum GameRequest {
         x: f64,
         y: f64,
     },
-    /// The place of the world under a point of the screen (wowlua T529).
+    /// The place of the world under a point of the screen (wowlua T529),
+    /// as the game's camera sees it or Studio's (its eye, look, up and
+    /// field of view across: wowlua T547, S089).
     WorldPoint {
         x: f64,
         y: f64,
+        camera: Option<HostCamera>,
     },
     Units,
     /// The player targets a unit by its index in the units' list.
@@ -514,6 +517,11 @@ pub struct GameScreen {
     /// The 3D world as it was drawn, while it is on (S088).
     pub world: Option<WorldSeen>,
 }
+
+/// Studio's camera as it saw the world, for the place under a point
+/// (wowlua T547): its eye, the way it looks and its up (north, west, up
+/// yards), its field of view across (radians).
+pub type HostCamera = ([f64; 3], [f64; 3], [f64; 3], f64);
 
 /// How Studio looks at the 3D world (S088): the game's own camera, or a
 /// camera of Studio's that circles the character (radians around from

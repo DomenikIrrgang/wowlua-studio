@@ -1342,7 +1342,9 @@ impl Studio {
             Panel::Watch => debug::watch(ui, debug_state, system),
             Panel::Console => debug::console(ui, debug_state, system),
             Panel::LiveWorld if on_world => {
-                if let Some(a) = world::live(ui, world_state, debug_state, workspace, system) {
+                if let Some(a) =
+                    world::live(ui, world_state, debug_state, game_state, workspace, system)
+                {
                     world_action = Some(a);
                 }
             }

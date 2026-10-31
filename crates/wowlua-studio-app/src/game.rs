@@ -13,7 +13,10 @@ use wowlua_studio_ui::forms::{self, CalloutKind};
 use wowlua_studio_ui::widgets::{self, ButtonKind};
 use wowlua_studio_ui::{Face, Icon, Palette, icons, palette};
 
-use crate::system::{GameEvent, GameInput, GameRequest, GameScreen, System, ViewCamera, Workspace};
+use crate::system::{
+    GameEvent, GameInput, GameRequest, GameScreen, System, ViewCamera, Workspace, WorldSeen,
+};
+use crate::world::json::Key as ProfileKey;
 
 /// A row, at the settings' density (S062).
 fn row_h() -> f32 {
@@ -378,6 +381,14 @@ pub struct GameState {
     pub placing: Option<(crate::world::Placing, Vec<[f64; 3]>)>,
     /// A placing done: for the app to write into its profile.
     pub placed: Option<(crate::world::Placing, Vec<[f64; 3]>)>,
+    /// The places still asked for a drawn path (S089): it is placed when
+    /// the last comes.
+    placing_left: usize,
+    /// The world as last drawn (S088): Studio's camera's points are asked
+    /// for as it sees them.
+    seen: Option<WorldSeen>,
+    /// A unit dragged on the world profile page's view (S089).
+    view_drag: Option<ViewDrag>,
     /// A key the screenshot harness holds in play mode once the game runs,
     /// for so many seconds; and until when it is held.
     pub hold_later: Option<(String, f64)>,
@@ -548,6 +559,7 @@ impl GameState {
                     (Some(p), Some((placing, points))) => {
                         points.push(p);
                         if !placing.path {
+                            self.placing_left = 0;
                             self.placed = self.placing.take();
                         }
                     }
@@ -555,6 +567,19 @@ impl GameState {
                         self.toast = Some(("no ground there: click the world".into(), now));
                     }
                     _ => {}
+                }
+                // (a drawn path: placed with its last point, S089)
+                if self.placing_left > 0 {
+                    self.placing_left -= 1;
+                    if self.placing_left == 0
+                        && let Some((placing, points)) = self.placing.take()
+                    {
+                        if points.len() >= 2 {
+                            self.placed = Some((placing, points));
+                        } else {
+                            self.toast = Some(("draw a longer path over the ground".into(), now));
+                        }
+                    }
                 }
             }
             (Asked::Chat, Ok(data)) => {
@@ -607,6 +632,33 @@ impl GameState {
     /// Whether a request of this kind waits for its answer.
     fn waiting(&self, kind: &Asked) -> bool {
         self.asked.values().any(|a| a == kind)
+    }
+
+    /// Studio's camera as it saw the world, for the places under points
+    /// (wowlua T547); none for the game's.
+    fn host_camera(&self) -> Option<crate::system::HostCamera> {
+        let w = self.seen.as_ref().filter(|_| self.viewing())?;
+        Some((w.eye, w.look, w.up, w.fov))
+    }
+
+    /// The places under points of the screen asked for `placing` (S089):
+    /// a place, or a path's points, placed as their answers come.
+    pub fn place_at(
+        &mut self,
+        system: &dyn System,
+        placing: crate::world::Placing,
+        points: &[(f64, f64)],
+    ) {
+        let camera = self.host_camera();
+        self.placing_left = if placing.path { points.len() } else { 0 };
+        self.placing = Some((placing, Vec::new()));
+        for &(x, y) in points {
+            self.ask(
+                system,
+                Asked::WorldPoint,
+                GameRequest::WorldPoint { x, y, camera },
+            );
+        }
     }
 
     /// Whether Studio's own camera sees the world (S088).
@@ -1059,6 +1111,7 @@ pub fn screen(
             });
         });
     }
+    state.seen.clone_from(&screen.world);
     // (the units' sight and facing for the overlays, S088)
     if state.world
         && (state.overlays[1] || state.overlays[2])
@@ -1228,7 +1281,12 @@ fn pointer(
             && let Some(pos) = response.interact_pointer_pos()
         {
             let (x, y) = at(pos);
-            state.ask(system, Asked::WorldPoint, GameRequest::WorldPoint { x, y });
+            let camera = state.host_camera();
+            state.ask(
+                system,
+                Asked::WorldPoint,
+                GameRequest::WorldPoint { x, y, camera },
+            );
         }
         return;
     }
@@ -2158,6 +2216,153 @@ fn world_checkbox(ui: &mut Ui, state: &mut GameState) {
     }
 }
 
+/// A unit dragged on the world profile page's view (S089): which (its
+/// profile's key, name and movement), drawing a path (shift) or moving
+/// it, and the points of the screen the drag passed.
+#[derive(Clone, Debug, PartialEq)]
+struct ViewDrag {
+    unit: ProfileKey,
+    label: String,
+    movement: Option<Json>,
+    path: bool,
+    points: Vec<Pos2>,
+}
+
+/// The world on the world profile page's live panel (S089): the game's
+/// screen, the profile's units marked on it; drag a unit to move it,
+/// shift-drag from it to draw its path: the profile follows.
+pub fn profile_view(
+    ui: &mut Ui,
+    state: &mut GameState,
+    system: &dyn System,
+    profile: &str,
+    units: &[crate::world::ProfileUnit],
+) {
+    let p = palette(ui.ctx());
+    let now = ui.input(|i| i.time);
+    ui.horizontal(|ui| {
+        world_checkbox(ui, state);
+        view_controls(ui, state, false);
+    });
+    let hint = if state.world {
+        "Drag a unit to move it, shift-drag from it to draw its path; the profile follows. Unchecked, \
+         the screen is your UI on black."
+    } else {
+        "Your UI only, on black. Check 3D world to see the zone behind it and place units in it."
+    };
+    forms::paragraph(ui, hint, 11.0, 16.0, p.ink_faint);
+    let Some(screen) = system.game_screen(state.camera).filter(|_| state.running()) else {
+        return;
+    };
+    state.seen.clone_from(&screen.world);
+    if state.world && state.poll(now, "units", 1.0) && !state.waiting(&Asked::Units) {
+        state.ask(system, Asked::Units, GameRequest::Units);
+    }
+    let size = Vec2::new(screen.size[0] as f32, screen.size[1] as f32);
+    let width = ui.available_width();
+    let scale = width / size.x;
+    let (rect, response) = ui.allocate_exact_size(size * scale, Sense::click_and_drag());
+    ui.painter().image(
+        screen.texture,
+        rect,
+        Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+        egui::Color32::WHITE,
+    );
+    let Some(w) = screen.world.as_ref().filter(|_| state.world) else {
+        return;
+    };
+    // (the profile's units as the session has them, by name)
+    let name_of = |id: usize| {
+        state
+            .units
+            .iter()
+            .find(|u| u["id"].as_u64() == Some(id as u64))
+            .and_then(|u| u["name"].as_str())
+            .map(str::to_owned)
+    };
+    let to = |at: [f64; 3]| {
+        crate::view::project(w, size.x, size.y, at)
+            .map(|s| rect.min + Vec2::new(s[0], s[1]) * scale)
+    };
+    let amber = egui::Color32::from_rgb(255, 190, 80);
+    let marks: Vec<(Pos2, &crate::world::ProfileUnit)> = w
+        .units
+        .iter()
+        .filter(|u| u.id != 0)
+        .filter_map(|u| {
+            let name = name_of(u.id)?;
+            let unit = units.iter().find(|(_, n, _)| *n == name)?;
+            Some((to([u.at[0], u.at[1], u.at[2] + 1.0])?, unit))
+        })
+        .collect();
+    let painter = ui.painter_at(rect);
+    for (at, (_, name, _)) in &marks {
+        painter.circle_stroke(*at, 7.0, egui::Stroke::new(1.5, amber));
+        painter.text(
+            *at + Vec2::new(0.0, -10.0),
+            egui::Align2::CENTER_BOTTOM,
+            name,
+            Face::Plex.at(11.0),
+            amber,
+        );
+    }
+    // A drag from a unit moves it or, with shift, draws its path.
+    if response.drag_started()
+        && let Some(from) = response.interact_pointer_pos()
+        && let Some((_, (key, name, movement))) = marks
+            .iter()
+            .filter(|(at, _)| at.distance(from) <= 16.0)
+            .min_by(|a, b| a.0.distance(from).total_cmp(&b.0.distance(from)))
+    {
+        state.view_drag = Some(ViewDrag {
+            unit: key.clone(),
+            label: name.clone(),
+            movement: movement.clone(),
+            path: ui.input(|i| i.modifiers.shift),
+            points: vec![from],
+        });
+    }
+    if let (Some(drag), Some(pos)) = (state.view_drag.as_mut(), response.interact_pointer_pos())
+        && response.dragged()
+    {
+        let far = drag
+            .points
+            .last()
+            .is_none_or(|last| last.distance(pos) >= 24.0);
+        if drag.path && far {
+            drag.points.push(pos);
+        }
+        let mut line = drag.points.clone();
+        line.push(pos);
+        painter.add(egui::Shape::line(line, egui::Stroke::new(2.0, amber)));
+        painter.circle_filled(pos, 4.0, amber);
+    }
+    if response.drag_stopped()
+        && let Some(mut drag) = state.view_drag.take()
+    {
+        if let Some(end) = response.interact_pointer_pos() {
+            drag.points.push(end);
+        }
+        let game = |q: &Pos2| {
+            let v = (*q - rect.min) / scale;
+            (f64::from(v.x.floor()), f64::from(v.y.floor()))
+        };
+        let points: Vec<(f64, f64)> = if drag.path {
+            drag.points.iter().map(game).collect()
+        } else {
+            drag.points.last().map(game).into_iter().collect()
+        };
+        let placing = crate::world::Placing {
+            profile: profile.to_owned(),
+            unit: drag.unit,
+            label: drag.label,
+            path: drag.path,
+            movement: drag.movement,
+        };
+        state.place_at(system, placing, &points);
+    }
+}
+
 /// The cameras the world is seen from, and the overlays over it (S088).
 const CAMERAS: [&str; 3] = ["follow you", "orbit", "from above"];
 const OVERLAYS: [(&str, &str); 3] = [
@@ -2822,6 +3027,25 @@ mod chat_tests {
         }
         assert!(state.placed.is_none());
         assert_eq!(state.placing.as_ref().map(|(_, p)| p.len()), Some(3));
+    }
+
+    /// A path drawn on the world profile page (S089): its points asked for
+    /// at once, placed when the last answer comes.
+    #[test]
+    fn a_drawn_path_is_placed_with_its_last_point() {
+        let mut state = GameState {
+            placing: Some((placing(true), Vec::new())),
+            placing_left: 3,
+            ..GameState::default()
+        };
+        for i in 0..3 {
+            assert!(state.placed.is_none());
+            let v = f64::from(i);
+            let point = serde_json::json!({ "y": v, "x": v, "z": 0.0 });
+            state.answer(Asked::WorldPoint, Ok(point), 0.0);
+        }
+        let (p, points) = state.placed.take().expect("placed");
+        assert!(p.path && points.len() == 3 && state.placing.is_none());
     }
 
     #[test]

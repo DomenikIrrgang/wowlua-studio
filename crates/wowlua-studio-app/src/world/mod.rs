@@ -182,6 +182,9 @@ impl ArtCache {
 /// The snapshots found, and warnings; or why none could be looked for.
 pub type Snapshots = Result<(Vec<WorldSnapshot>, Vec<String>), String>;
 
+/// A unit of a profile (S089): its key in `units`, its name, its movement.
+pub type ProfileUnit = (json::Key, String, Option<Json>);
+
 /// A unit to place in the game view (S080): its profile, its key in the
 /// profile's `units`, its name, and whether its patrol's path is drawn
 /// (waypoints until done) or its place (one click); its movement as it
@@ -375,6 +378,30 @@ impl WorldState {
                 .first()
                 .or(self.builtins.first().map(|(p, _)| p))
                 .map(|p| p.name.clone());
+        }
+    }
+
+    /// The profile's units: each one's key in `units`, name and movement
+    /// (S089).
+    pub fn profile_units(&self) -> Vec<ProfileUnit> {
+        let Some(Ok(root)) = self.parsed.as_ref().map(|p| &p.value) else {
+            return Vec::new();
+        };
+        let entry = |key: json::Key, u: &Json| {
+            let name = u["name"].as_str()?.to_owned();
+            Some((key, name, u.get("movement").cloned()))
+        };
+        match &root["units"] {
+            Json::Object(m) => m
+                .iter()
+                .filter_map(|(k, u)| entry(json::Key::Name(k.clone()), u))
+                .collect(),
+            Json::Array(list) => list
+                .iter()
+                .enumerate()
+                .filter_map(|(i, u)| entry(json::Key::Index(i), u))
+                .collect(),
+            _ => Vec::new(),
         }
     }
 
@@ -1518,6 +1545,7 @@ pub fn live(
     ui: &mut Ui,
     state: &mut WorldState,
     debug: &mut DebugState,
+    game: &mut crate::game::GameState,
     workspace: &Workspace,
     system: &dyn System,
 ) -> Option<Action> {
@@ -1540,6 +1568,11 @@ pub fn live(
                             );
                         });
                         if started == &name {
+                            // (the world: units dragged to their places,
+                            // paths drawn; S089)
+                            let units = state.profile_units();
+                            crate::game::profile_view(ui, game, system, &name, &units);
+                            ui.add_space(8.0);
                             forms::checkbox(ui, &mut state.auto_apply, "apply edits", Some("to the running world"));
                             forms::paragraph(
                                 ui,
