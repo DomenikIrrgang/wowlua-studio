@@ -2491,8 +2491,10 @@ mod chat_tests {
     /// gather until done; no ground there leaves it as it was.
     #[test]
     fn a_unit_is_placed_by_the_points_clicked() {
-        let mut state = GameState::default();
-        state.placing = Some((placing(false), Vec::new()));
+        let mut state = GameState {
+            placing: Some((placing(false), Vec::new())),
+            ..GameState::default()
+        };
         state.answer(Asked::WorldPoint, Ok(Json::Null), 0.0);
         assert!(state.placing.is_some() && state.placed.is_none());
         let point = serde_json::json!({ "y": 1.0, "x": 2.0, "z": 3.0 });

@@ -3652,45 +3652,6 @@ fn map_rows(
     new_key(ui, cx, base, word);
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn typed_text_becomes_its_kind() {
-        assert_eq!(parse(&Kind::Number, "62"), Ok(Some(json!(62))));
-        assert_eq!(parse(&Kind::Number, "0.5"), Ok(Some(json!(0.5))));
-        // Not a number yet: written as typed, the check says so.
-        assert_eq!(parse(&Kind::Number, "6x"), Ok(Some(json!("6x"))));
-        assert_eq!(parse(&Kind::Number, " "), Ok(None));
-        assert_eq!(parse(&Kind::Scalar, "true"), Ok(Some(json!(true))));
-        assert_eq!(parse(&Kind::Scalar, "1"), Ok(Some(json!(1))));
-        assert_eq!(
-            parse(&Kind::Scalar, "ACTIONBUTTON1"),
-            Ok(Some(json!("ACTIONBUTTON1")))
-        );
-        assert_eq!(
-            parse(&Kind::Numbers, "1, 2,x, 3"),
-            Ok(Some(json!([1, 2, 3])))
-        );
-        assert_eq!(parse(&Kind::Json, "{ \"a\": "), Err(()));
-        assert_eq!(
-            parse(&Kind::Json, "{ \"a\": 1 }"),
-            Ok(Some(json!({ "a": 1 })))
-        );
-    }
-
-    #[test]
-    fn a_flavor_s_classes_and_races() {
-        assert_eq!(classes("camelot").len(), 9);
-        assert_eq!(classes("tbc").len(), 9);
-        assert_eq!(classes("mists").len(), 11);
-        assert!(races("mists").contains(&"Pandaren") && !races("mists").contains(&"Nightborne"));
-        assert_eq!(classes("standard").len(), 13);
-        assert!(races("vanilla").len() == 8 && races("tbc").contains(&"Draenei"));
-    }
-}
-
 /// Where a unit is and what it does (S080; wowlua T515 to T518): its
 /// place on the map (typed, or placed in the game view), how it moves
 /// (its patrol's waypoints drawn there too) and its actions.
@@ -3937,4 +3898,43 @@ fn speed(ui: &mut Ui, cx: &mut Cx<'_>, path: Vec<Key>, hint: &str) {
             }
         });
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn typed_text_becomes_its_kind() {
+        assert_eq!(parse(&Kind::Number, "62"), Ok(Some(json!(62))));
+        assert_eq!(parse(&Kind::Number, "0.5"), Ok(Some(json!(0.5))));
+        // Not a number yet: written as typed, the check says so.
+        assert_eq!(parse(&Kind::Number, "6x"), Ok(Some(json!("6x"))));
+        assert_eq!(parse(&Kind::Number, " "), Ok(None));
+        assert_eq!(parse(&Kind::Scalar, "true"), Ok(Some(json!(true))));
+        assert_eq!(parse(&Kind::Scalar, "1"), Ok(Some(json!(1))));
+        assert_eq!(
+            parse(&Kind::Scalar, "ACTIONBUTTON1"),
+            Ok(Some(json!("ACTIONBUTTON1")))
+        );
+        assert_eq!(
+            parse(&Kind::Numbers, "1, 2,x, 3"),
+            Ok(Some(json!([1, 2, 3])))
+        );
+        assert_eq!(parse(&Kind::Json, "{ \"a\": "), Err(()));
+        assert_eq!(
+            parse(&Kind::Json, "{ \"a\": 1 }"),
+            Ok(Some(json!({ "a": 1 })))
+        );
+    }
+
+    #[test]
+    fn a_flavor_s_classes_and_races() {
+        assert_eq!(classes("camelot").len(), 9);
+        assert_eq!(classes("tbc").len(), 9);
+        assert_eq!(classes("mists").len(), 11);
+        assert!(races("mists").contains(&"Pandaren") && !races("mists").contains(&"Nightborne"));
+        assert_eq!(classes("standard").len(), 13);
+        assert!(races("vanilla").len() == 8 && races("tbc").contains(&"Draenei"));
+    }
 }
