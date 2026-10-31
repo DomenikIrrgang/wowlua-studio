@@ -19,7 +19,9 @@ use wowlua_driver::Session;
 use wowlua_driver::project::{LoadOptions, load_projects};
 use wowlua_manifest::model::PackageKind;
 use wowlua_render::client::ClientAssets;
-use wowlua_studio_app::system::{GameEvent, GameInput, GameRequest, GameScreen, Launch};
+use wowlua_studio_app::system::{
+    GameEvent, GameInput, GameRequest, GameScreen, Launch, SeenUnit, ViewCamera, WorldSeen,
+};
 use wowlua_test::runs::{self, Switches};
 
 use crate::tests::first_error;
@@ -588,6 +590,13 @@ pub struct Screen {
     renderer: Option<wowlua_render::Renderer>,
     target: Option<(wgpu::Texture, egui::TextureId, [u32; 2])>,
     drawn: u64,
+    /// The newest scene, its assets and number, kept: a view of its world
+    /// from another camera draws it again (S088), also while the session
+    /// is paused.
+    last: Option<(wowlua_engine::scene::Scene, crate::art::CachedAssets, u64)>,
+    /// The view it was last drawn from, and its world as drawn.
+    view: ViewCamera,
+    seen: Option<WorldSeen>,
 }
 
 impl Screen {
@@ -597,32 +606,39 @@ impl Screen {
             renderer: None,
             target: None,
             drawn: 0,
+            last: None,
+            view: ViewCamera::Follow,
+            seen: None,
         }
     }
 
-    /// Draws the session's newest scene, if it has one not drawn yet; the
-    /// screen as it is.
-    pub fn show(&mut self, frames: &Mutex<Frames>) -> Option<GameScreen> {
-        let (scene, count, mut assets, time, frames_run) = {
+    /// Draws the session's newest scene, if it has one not drawn yet, or
+    /// the last one again from another view (S088); the screen as it is.
+    pub fn show(&mut self, frames: &Mutex<Frames>, view: ViewCamera) -> Option<GameScreen> {
+        let (time, frames_run) = {
             let mut f = frames.lock().ok()?;
-            if f.count == self.drawn {
-                let (_, id, size) = self.target.as_ref()?;
-                return Some(GameScreen {
-                    texture: *id,
-                    size: *size,
-                    drawn: self.drawn,
-                    time: f.time,
-                    frames: f.frames_run,
-                });
+            if f.count != self.drawn
+                && let (Some(scene), Some(assets)) = (f.scene.take(), f.assets.clone())
+            {
+                self.last = Some((scene, assets, f.count));
             }
-            (
-                f.scene.take()?,
-                f.count,
-                f.assets.clone()?,
-                f.time,
-                f.frames_run,
-            )
+            (f.time, f.frames_run)
         };
+        let fresh = self.last.as_ref().is_some_and(|(_, _, n)| *n != self.drawn);
+        if !fresh && view == self.view {
+            let (_, id, size) = self.target.as_ref()?;
+            return Some(GameScreen {
+                texture: *id,
+                size: *size,
+                drawn: self.drawn,
+                time,
+                frames: frames_run,
+                world: self.seen.clone(),
+            });
+        }
+        let (kept, assets, count) = self.last.as_ref()?;
+        let (mut assets, count) = (assets.clone(), *count);
+        let scene = seen_from(kept, view);
         let size = [scene.width.max(1), scene.height.max(1)];
         if self.target.as_ref().is_none_or(|(_, _, s)| *s != size) {
             let texture = self.gpu.device.create_texture(&wgpu::TextureDescriptor {
@@ -668,16 +684,136 @@ impl Screen {
             )
         });
         let (texture, id, _) = self.target.as_ref()?;
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let encoder = renderer.draw(&scene, &view, size[0], size[1], 1.0, &mut assets);
+        let target = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let encoder = renderer.draw(&scene, &target, size[0], size[1], 1.0, &mut assets);
         self.gpu.queue.submit([encoder.finish()]);
         self.drawn = count;
+        self.view = view;
+        self.seen = scene.world.as_ref().map(|w| WorldSeen {
+            eye: w.eye,
+            look: w.look,
+            up: w.up,
+            fov: w.fov,
+            far: w.far,
+            units: w
+                .units
+                .iter()
+                .map(|u| SeenUnit {
+                    id: u.id,
+                    at: u.at,
+                    facing: u.facing,
+                })
+                .collect(),
+        });
         Some(GameScreen {
             texture: *id,
             size,
             drawn: count,
             time,
             frames: frames_run,
+            world: self.seen.clone(),
         })
+    }
+}
+
+/// The scene as `view` sees its world (S088): the game's camera as it is;
+/// Studio's, its eye on the player and without what stands over the units
+/// as the game's camera sees them (nameplates, names: wowlua's T546).
+fn seen_from(scene: &wowlua_engine::scene::Scene, view: ViewCamera) -> wowlua_engine::scene::Scene {
+    let mut scene = scene.clone();
+    let player = scene
+        .world
+        .as_ref()
+        .and_then(|w| w.units.iter().find(|u| u.id == 0))
+        .map(|u| u.at);
+    let (Some(world), Some(at)) = (scene.world.as_mut(), player) else {
+        return scene;
+    };
+    let Some((eye, look, up)) = wowlua_studio_app::view::camera(view, at) else {
+        return scene;
+    };
+    (world.eye, world.look, world.up) = (eye, look, up);
+    let over = std::mem::take(&mut scene.over_units);
+    scene.items = std::mem::take(&mut scene.items)
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| !over.iter().any(|r| r.contains(i)))
+        .map(|(_, item)| item)
+        .collect();
+    scene
+}
+
+#[cfg(test)]
+mod tests {
+    use wowlua_engine::scene::WorldView;
+    use wowlua_studio_app::system::{ViewCamera, WorldSeen};
+
+    /// Studio's overlays are placed where wowlua's renderer draws the
+    /// world (S088): the app's projection and the renderer's agree, from
+    /// the game's camera and from Studio's.
+    #[test]
+    fn the_overlays_stand_where_the_world_is_drawn() {
+        let player = [-8949.95, -132.49, 82.0];
+        let views = [
+            ([0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]),
+            wowlua_studio_app::view::camera(
+                ViewCamera::Orbit {
+                    yaw: 2.0,
+                    pitch: 0.6,
+                    distance: 25.0,
+                },
+                player,
+            )
+            .unwrap(),
+            wowlua_studio_app::view::camera(ViewCamera::Above { height: 60.0 }, player).unwrap(),
+        ];
+        for (eye, look, up) in views {
+            let w = WorldView {
+                map: 0,
+                eye,
+                look,
+                up,
+                fov: 1.4,
+                far: 1000.0,
+                detail: 500.0,
+                objects: 500.0,
+                cull: 18.0,
+                render_scale: 1.0,
+                units: Vec::new(),
+                time: 0.0,
+            };
+            let seen = WorldSeen {
+                eye,
+                look,
+                up,
+                fov: 1.4,
+                far: 1000.0,
+                units: Vec::new(),
+            };
+            let ahead = [
+                eye[0] + 20.0 * look[0] + 3.0,
+                eye[1] + 20.0 * look[1] - 2.0,
+                eye[2] + 20.0 * look[2] + 1.0,
+            ];
+            for p in [
+                ahead,
+                [player[0] + 5.0, player[1] - 4.0, player[2]],
+                [player[0] - 10.0, player[1] + 10.0, player[2] + 2.0],
+            ] {
+                for (width, height) in [(1920, 1080), (800, 600)] {
+                    let theirs = wowlua_render::project(&w, width, height, p);
+                    let ours =
+                        wowlua_studio_app::view::project(&seen, width as f32, height as f32, p);
+                    match (theirs, ours) {
+                        (Some(a), Some(b)) => assert!(
+                            (a[0] - b[0]).abs() < 1.0 && (a[1] - b[1]).abs() < 1.0,
+                            "{a:?} {b:?}"
+                        ),
+                        (None, None) => {}
+                        other => panic!("{other:?}"),
+                    }
+                }
+            }
+        }
     }
 }

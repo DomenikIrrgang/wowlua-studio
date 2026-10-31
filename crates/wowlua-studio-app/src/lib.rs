@@ -35,6 +35,7 @@ pub mod state;
 pub mod system;
 pub mod terminal;
 pub mod tests;
+pub mod view;
 pub mod world;
 
 use std::collections::{HashMap, VecDeque};
@@ -356,6 +357,25 @@ impl Studio {
     /// The last frame's time, building and drawing it, for the frame stats.
     pub fn set_frame_time(&mut self, seconds: f32) {
         self.frame_cpu = Some(seconds);
+    }
+
+    /// The world seen from a camera (`follow`, `orbit`, `above`; S088):
+    /// the screenshot harness's.
+    pub fn game_camera(&mut self, name: &str) {
+        self.game.camera = match name {
+            "orbit" => system::ViewCamera::Orbit {
+                yaw: std::f64::consts::PI,
+                pitch: 0.45,
+                distance: 18.0,
+            },
+            "above" => system::ViewCamera::Above { height: 60.0 },
+            _ => system::ViewCamera::Follow,
+        };
+    }
+
+    /// Every overlay over the world on (S088): the screenshot harness's.
+    pub fn game_overlays(&mut self) {
+        self.game.overlays = [true; 3];
     }
 
     /// Whether the window waits for the display (the settings', S087).
@@ -1523,7 +1543,7 @@ impl Studio {
             self.show_place(&place, ctx);
         }
         if self.debug.running()
-            && let Some(s) = self.host.system.game_screen()
+            && let Some(s) = self.host.system.game_screen(self.game.camera)
         {
             self.debug.clock = (s.time, s.frames);
         }
@@ -4637,5 +4657,5 @@ struct RunChoices {
 
 /// Whether the game draws its screen yet (the screenshot harness waits).
 fn system_screen(studio: &Studio) -> bool {
-    studio.host.system.game_screen().is_some()
+    studio.host.system.game_screen(studio.game.camera).is_some()
 }

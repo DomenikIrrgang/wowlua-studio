@@ -908,9 +908,12 @@ impl System for NativeSystem {
         self.spawn(move || Event::Ship(ShipEvent::Tagged(crate::ship::tag_and_push(&root, &tag))));
     }
 
-    fn game_screen(&self) -> Option<wowlua_studio_app::system::GameScreen> {
+    fn game_screen(
+        &self,
+        view: wowlua_studio_app::system::ViewCamera,
+    ) -> Option<wowlua_studio_app::system::GameScreen> {
         let frames = self.game_frames.borrow().clone();
-        self.game_screen.borrow_mut().as_mut()?.show(&frames)
+        self.game_screen.borrow_mut().as_mut()?.show(&frames, view)
     }
 
     fn test_stop(&self) {

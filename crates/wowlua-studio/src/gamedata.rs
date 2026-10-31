@@ -296,6 +296,7 @@ impl GameData {
             height: 160,
             items: vec![scene::Item::Model(item)],
             world: None,
+            over_units: Vec::new(),
         };
         let mut assets = wowlua_render::client::ClientAssets::new(Some(casc.clone()), &[]);
         let mut renderer = self.renderer.lock().ok()?;

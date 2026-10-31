@@ -502,7 +502,7 @@ pub enum GameEvent {
 
 /// The game's screen as last drawn: its texture and size in pixels, and
 /// how many scenes were drawn (a new one: changed).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct GameScreen {
     pub texture: egui::TextureId,
     pub size: [u32; 2],
@@ -511,6 +511,47 @@ pub struct GameScreen {
     /// drawn.
     pub time: f64,
     pub frames: u64,
+    /// The 3D world as it was drawn, while it is on (S088).
+    pub world: Option<WorldSeen>,
+}
+
+/// How Studio looks at the 3D world (S088): the game's own camera, or a
+/// camera of Studio's that circles the character (radians around from
+/// north and up from level, yards away) or looks straight down on it,
+/// north up (yards above). Studio's camera leaves the game's alone.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum ViewCamera {
+    #[default]
+    Follow,
+    Orbit {
+        yaw: f64,
+        pitch: f64,
+        distance: f64,
+    },
+    Above {
+        height: f64,
+    },
+}
+
+/// The 3D world as drawn (S088): the camera it was seen from (north, west,
+/// up yards; the field of view across, radians) and its units.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct WorldSeen {
+    pub eye: [f64; 3],
+    pub look: [f64; 3],
+    pub up: [f64; 3],
+    pub fov: f64,
+    pub far: f64,
+    pub units: Vec<SeenUnit>,
+}
+
+/// A unit of the world as drawn: which (its index; the player 0), where it
+/// stands and where it faces.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SeenUnit {
+    pub id: usize,
+    pub at: [f64; 3],
+    pub facing: f64,
 }
 
 /// A test run (the tests page, S052): which tests (`path::name` filters,
@@ -2018,8 +2059,9 @@ pub trait System {
     ) -> Result<Vec<(String, serde_json::Value)>, String> {
         Err("no SavedVariables here".into())
     }
-    /// The running session's screen, drawn on the UI's GPU device.
-    fn game_screen(&self) -> Option<GameScreen> {
+    /// The running session's screen, drawn on the UI's GPU device, its 3D
+    /// world from `view` (S088).
+    fn game_screen(&self, _view: ViewCamera) -> Option<GameScreen> {
         None
     }
     /// What the ship page shows of the package (→ [`ShipEvent::Read`]).

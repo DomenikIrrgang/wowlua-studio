@@ -168,6 +168,14 @@ impl Screenshot {
                 studio.world_on();
                 continue;
             }
+            if let Some(name) = step.strip_prefix("camera:") {
+                studio.game_camera(name);
+                continue;
+            }
+            if step == "overlays" {
+                studio.game_overlays();
+                continue;
+            }
             if let Some(rest) = step.strip_prefix("hold:") {
                 let (key, secs) = rest.split_once(':').unwrap_or((rest, "1"));
                 studio.hold_later(key, secs.parse().unwrap_or(1.0));
