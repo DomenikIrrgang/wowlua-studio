@@ -173,6 +173,11 @@ fn to_debug(request: GameRequest) -> Request {
                 GameInput::ClickWorld { x, y, right } => {
                     protocol::Input::ClickWorld { x, y, right }
                 }
+                GameInput::MouseMove { x, y } => protocol::Input::MouseMove { x, y },
+                GameInput::MouseDown { x, y, right } => protocol::Input::MouseDown { x, y, right },
+                GameInput::MouseUp { x, y, right } => protocol::Input::MouseUp { x, y, right },
+                GameInput::Wheel { x, y, delta } => protocol::Input::Wheel { x, y, delta },
+                GameInput::Text(text) => protocol::Input::Text { text },
                 GameInput::Slash(text) => protocol::Input::Slash { text },
                 GameInput::Chat {
                     text,

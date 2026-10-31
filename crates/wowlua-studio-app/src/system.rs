@@ -416,6 +416,29 @@ pub enum GameInput {
         y: f64,
         right: bool,
     },
+    /// Playing (S084; wowlua T535): the mouse moved to a point, a button
+    /// pressed and let go there, the wheel turned (`delta` 1 a notch up),
+    /// text typed; the game decides what the frame or the world there does.
+    MouseMove {
+        x: f64,
+        y: f64,
+    },
+    MouseDown {
+        x: f64,
+        y: f64,
+        right: bool,
+    },
+    MouseUp {
+        x: f64,
+        y: f64,
+        right: bool,
+    },
+    Wheel {
+        x: f64,
+        y: f64,
+        delta: f64,
+    },
+    Text(String),
     /// A slash command (`/wl`).
     Slash(String),
     /// A chat message as the player sends it (`SAY`, `PARTY`, a

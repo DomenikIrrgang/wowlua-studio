@@ -381,6 +381,9 @@ pub struct GameState {
     /// The keys held down in play mode, as WoW names each (its up goes
     /// by the same name).
     held: std::collections::HashMap<Key, String>,
+    /// The mouse button held down in play mode (true: the right one),
+    /// pressed on the screen (S084).
+    play_held: Option<bool>,
     /// The 3D world behind the UI (M13, S078); the UI draws over black
     /// without it.
     pub world: bool,
@@ -1166,36 +1169,46 @@ fn pointer(
             }
         }
         Mode::Play => {
-            // (a drag turns the camera, the right button the player too;
-            // a click the frame or unit there; the wheel zooms)
-            let d = response.drag_delta() / scale;
-            if d != egui::Vec2::ZERO {
-                let turn = response.dragged_by(egui::PointerButton::Secondary);
-                state.play(
-                    system,
-                    GameInput::Look {
-                        dx: f64::from(d.x),
-                        dy: f64::from(d.y),
-                        turn,
-                    },
-                );
-            }
-            // (the right button talks to the unit there, as in the game)
-            for (clicked, right) in [
-                (response.clicked(), false),
-                (response.secondary_clicked(), true),
-            ] {
-                if clicked && let Some(pos) = response.interact_pointer_pos() {
-                    let (x, y) = at(pos);
-                    state.play(system, GameInput::ClickWorld { x, y, right });
-                    response.request_focus();
+            // (the mouse as the game takes it, S084: where it is, its
+            // buttons and wheel; the game decides what the frame or the
+            // world there does: hover, click, drag, the camera)
+            let (pos, moved, scroll) = ui.input(|i| {
+                (
+                    i.pointer.latest_pos(),
+                    i.pointer.delta() != egui::Vec2::ZERO,
+                    i.smooth_scroll_delta().y,
+                )
+            });
+            if let Some(pos) = pos {
+                let inside = response.rect.contains(pos);
+                let (x, y) = at(pos);
+                if moved && (inside || state.play_held.is_some()) {
+                    state.play(system, GameInput::MouseMove { x, y });
                 }
-            }
-            if response.hovered() {
-                let scroll = ui.input(|i| i.smooth_scroll_delta().y);
-                if scroll != 0.0 {
-                    // (a notch, about 50 points: a yard nearer)
-                    state.play(system, GameInput::Zoom(-f64::from(scroll) / 50.0));
+                for (button, right) in [
+                    (egui::PointerButton::Primary, false),
+                    (egui::PointerButton::Secondary, true),
+                ] {
+                    let (pressed, released) = ui.input(|i| {
+                        (
+                            i.pointer.button_pressed(button),
+                            i.pointer.button_released(button),
+                        )
+                    });
+                    if pressed && inside && state.play_held.is_none() {
+                        state.play_held = Some(right);
+                        state.play(system, GameInput::MouseDown { x, y, right });
+                        response.request_focus();
+                    }
+                    if released && state.play_held == Some(right) {
+                        state.play_held = None;
+                        state.play(system, GameInput::MouseUp { x, y, right });
+                    }
+                }
+                if inside && scroll != 0.0 {
+                    // (a notch, about 50 points)
+                    let delta = f64::from(scroll) / 50.0;
+                    state.play(system, GameInput::Wheel { x, y, delta });
                 }
             }
             keys(ui, state, system, response);
@@ -1268,6 +1281,10 @@ fn keys(ui: &mut Ui, state: &mut GameState, system: &dyn System, response: &egui
             match (state.mode, e) {
                 (Mode::Type, egui::Event::Text(t)) => {
                     state.give(system, "type", t.clone(), GameInput::Type(t));
+                }
+                // (play: text into the focused edit box, S084)
+                (Mode::Play, egui::Event::Text(t)) => {
+                    state.play(system, GameInput::Text(t));
                 }
                 (
                     Mode::Key,
