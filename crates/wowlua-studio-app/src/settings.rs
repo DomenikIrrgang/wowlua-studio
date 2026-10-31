@@ -232,6 +232,12 @@ fn rows() -> Vec<Row> {
         ),
         row(
             Appearance,
+            "window vsync",
+            "Studio's window waits for your display before it shows a frame, as the game does with vsync. Off, it shows every frame at once: the frame rate unlimited, with some tearing.",
+            Flag(|s| s.window_vsync, |s, v| s.window_vsync = v),
+        ),
+        row(
+            Appearance,
             "reduce motion",
             "No blinking caret, no animated panels.",
             Flag(|s| s.reduce_motion, |s, v| s.reduce_motion = v),

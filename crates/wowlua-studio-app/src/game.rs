@@ -393,6 +393,10 @@ pub struct GameState {
     world_sent: Option<bool>,
     /// Whether the session was told the game is in the foreground (S085).
     foreground_sent: Option<bool>,
+    /// The display's refresh rate (the window's monitor, S087), and the
+    /// one the session was told.
+    pub display_hz: Option<f64>,
+    display_sent: Option<f64>,
     /// Play mode runs the session's clock in real time over a manual one
     /// (S079): whether it does now.
     clock_run: bool,
@@ -483,6 +487,9 @@ impl GameState {
                 installation,
             } => {
                 self.status = None;
+                // (a new session is told the window's state again)
+                self.foreground_sent = None;
+                self.display_sent = None;
                 self.started = Some(Started {
                     addon,
                     flavor,
@@ -659,6 +666,14 @@ impl GameState {
                 GameRequest::SetForeground { on: focused },
             );
             self.foreground_sent = Some(focused);
+        }
+        // (the display's rate: the game's vsync keeps to it, S087)
+        if self.running()
+            && let Some(hz) = self.display_hz
+            && self.display_sent != Some(hz)
+        {
+            self.ask(system, Asked::Settings, GameRequest::SetDisplayRate { hz });
+            self.display_sent = Some(hz);
         }
         // (the world as the checkbox has it, each session told once a
         // change; S078)

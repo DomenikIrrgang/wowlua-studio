@@ -307,6 +307,11 @@ pub enum GameRequest {
     SetForeground {
         on: bool,
     },
+    /// The display's refresh rate: the game keeps to it with `vsync` on
+    /// (S087; wowlua T544).
+    SetDisplayRate {
+        hz: f64,
+    },
     /// Stepping into Blizzard's UI code from now on (wowlua T496).
     SetDebugBlizzardUi {
         on: bool,

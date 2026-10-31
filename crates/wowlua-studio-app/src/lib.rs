@@ -358,6 +358,16 @@ impl Studio {
         self.frame_cpu = Some(seconds);
     }
 
+    /// Whether the window waits for the display (the settings', S087).
+    pub fn window_vsync(&self) -> bool {
+        self.settings.window_vsync
+    }
+
+    /// The refresh rate of the display the window is on (S087).
+    pub fn set_display_rate(&mut self, hz: f64) {
+        self.game.display_hz = Some(hz);
+    }
+
     pub fn platform(&self) -> Platform {
         self.host.platform
     }
