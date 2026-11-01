@@ -164,6 +164,11 @@ impl TestsState {
         self.next
     }
 
+    /// The number the next run will get.
+    pub fn peek_run(&self) -> u64 {
+        self.next + 1
+    }
+
     /// A test run's news; the run's end when it ended.
     pub fn event(&mut self, run: u64, event: TestEvent) -> Option<TestDone> {
         self.generation += 1;

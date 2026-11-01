@@ -7,6 +7,8 @@
 mod art;
 mod bindings;
 mod claude;
+mod claude_run;
+mod claude_tools;
 /// The argument that opens a window on the start page's from-GitHub panel
 /// (M12).
 pub const FROM_GITHUB: &str = "--from-github";
@@ -20,6 +22,7 @@ mod git;
 mod github;
 mod log;
 mod lsp;
+mod mcp_link;
 #[cfg(target_os = "macos")]
 mod menu_bar;
 mod native;
@@ -48,6 +51,20 @@ const PLATFORM: Platform = if cfg!(target_os = "macos") {
 };
 
 fn main() -> eframe::Result {
+    // Claude Code's way to Studio's tools (S096): no window, only the
+    // bridge between its standard input and output and Studio's socket.
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("mcp-bridge") {
+        let (Some(socket), Some(token)) = (args.get(2), args.get(3)) else {
+            eprintln!("usage: wowlua-studio mcp-bridge <socket> <token>");
+            std::process::exit(2);
+        };
+        if let Err(e) = mcp_link::bridge(std::path::Path::new(socket), token) {
+            eprintln!("wowlua studio is not reachable: {e}");
+            std::process::exit(1);
+        }
+        std::process::exit(0);
+    }
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("wowlua studio")
         .with_inner_size([1440.0, 900.0])

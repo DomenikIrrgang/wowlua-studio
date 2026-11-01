@@ -126,6 +126,11 @@ pub struct Studio {
     /// when its status was last read.
     claude_wait: Option<f64>,
     claude_read: f64,
+    /// The conversation with Claude (S097), what Studio's tools ask in it
+    /// (S096).
+    claude: claude::Conversation,
+    /// Claude's test run: its question's id, the run, its files so far.
+    claude_test: Option<(u64, u64, Vec<system::TestFile>)>,
     /// The problems panel shows the editor's file only.
     problems_this_file: bool,
     /// The tests page (S052).
@@ -301,6 +306,8 @@ impl Studio {
             terminal: terminal::TerminalState::default(),
             claude_wait: None,
             claude_read: 0.0,
+            claude: claude::Conversation::default(),
+            claude_test: None,
             problems_this_file: false,
             tests: tests::TestsState::default(),
             game: game::GameState::default(),
@@ -1138,6 +1145,7 @@ impl Studio {
         let mut settings_action = None;
         let mut claude_action = None;
         let claude_waiting = self.claude_wait.is_some();
+        let conversation = &mut self.claude;
         let installation = self.start.installation();
         let on_world = self.layout_page == Page::World;
         let on_debug = self.layout_page == Page::Debug;
@@ -1471,8 +1479,10 @@ impl Studio {
                 }
             }
             Panel::Chat => {
-                claude_action = claude::chat(ui, settings_page, system, claude_waiting);
+                claude_action =
+                    claude::chat(ui, settings_page, system, claude_waiting, conversation);
             }
+            Panel::Tools => claude::tools(ui, conversation, studio_settings, system),
             _ => dock::placeholder(ui, panel),
         };
         let changed = dock::show(ui, area, layout, &mut self.dock, &mut content);
@@ -1524,8 +1534,8 @@ impl Studio {
         if let Some(a) = settings_action {
             self.settings_action(a, ctx);
         }
-        if let Some(claude::Action::SignIn(line)) = claude_action {
-            self.claude_sign_in(&line, ctx);
+        if let Some(a) = claude_action {
+            self.claude_action(a, ctx);
         }
         if let Some(a) = manifest_action {
             match a {
@@ -2590,7 +2600,12 @@ impl Studio {
                         self.host.system.open(&w.root);
                     }
                 }
-                Event::Tests { run, event } => self.test_event(run, event, ctx),
+                Event::Tests { run, event } => {
+                    self.claude_test_event(run, &event);
+                    self.test_event(run, event, ctx)
+                }
+                Event::Claude { id, event } => self.claude_event(id, event, ctx),
+                Event::Conversation(event) => self.claude.event(event),
                 Event::Game { session, event } => {
                     let now = ctx.input(|i| i.time);
                     let profiling = matches!(&event, system::GameEvent::Reply { id, .. } if *id >= profiler::IDS);
@@ -3209,6 +3224,117 @@ impl Studio {
         self.terminal.run(line);
         self.queue(Command::ShowPanel(Panel::Terminal, dock::Dock::Bottom));
         self.claude_wait = Some(ctx.input(|i| i.time));
+    }
+
+    /// The claude page's actions (S095, S097).
+    fn claude_action(&mut self, action: claude::Action, ctx: &Context) {
+        let system = &*self.host.system;
+        match action {
+            claude::Action::SignIn(line) => self.claude_sign_in(&line, ctx),
+            claude::Action::Send(text) => {
+                let Some(w) = &self.workspace else {
+                    return;
+                };
+                self.claude.entries.push(claude::Entry::You(text.clone()));
+                self.claude.busy = true;
+                if self.claude.running {
+                    if let Err(e) = system.claude_send(&text) {
+                        self.claude.busy = false;
+                        self.claude.entries.push(claude::Entry::Note(e));
+                    }
+                    return;
+                }
+                // Claude Code starts (again: with the session to go on
+                // with), Studio's tools open for it.
+                self.claude.begin(&self.settings);
+                let path = self.settings_page.claude().and_then(|c| c.path.clone());
+                let start = path
+                    .ok_or_else(|| "Claude Code is not found".to_string())
+                    .and_then(|claude| {
+                        let link = system.claude_link(&w.root, self.claude.permissions.clone())?;
+                        Ok(system::ClaudeStart {
+                            claude,
+                            mcp_config: link.mcp_config,
+                            model: self.settings.claude_model.clone(),
+                            effort: (self.settings.claude_effort != state::CLAUDE_EFFORT_DEFAULT)
+                                .then(|| self.settings.claude_effort.clone()),
+                            resume: self.claude.session.clone(),
+                            prompt: text,
+                        })
+                    });
+                match start.and_then(|s| system.claude_start(&w.root, s)) {
+                    Ok(()) => self.claude.running = true,
+                    Err(e) => {
+                        self.claude.busy = false;
+                        self.claude.entries.push(claude::Entry::Note(e));
+                    }
+                }
+            }
+            claude::Action::Stop => {
+                system.claude_stop();
+                self.claude.running = false;
+                self.claude.busy = false;
+                self.claude.entries.push(claude::Entry::Note(
+                    "stopped; the next message goes on".into(),
+                ));
+            }
+            claude::Action::New => {
+                for id in self.claude.open_asks() {
+                    system.claude_reply(id, system::ClaudeReply::Allowed(false));
+                }
+                system.claude_link_close();
+                self.claude = claude::Conversation::default();
+            }
+        }
+        ctx.request_repaint();
+    }
+
+    /// What Studio's tools for Claude need (S096): the user's answer, or a
+    /// run of the tests page.
+    fn claude_event(&mut self, id: u64, event: system::ClaudeEvent, ctx: &Context) {
+        match event {
+            system::ClaudeEvent::Ask { group, what, .. } => {
+                self.claude.ask(id, group, what);
+            }
+            system::ClaudeEvent::Test { request } => {
+                if self.tests.running.is_some() || self.workspace.is_none() {
+                    self.host.system.claude_reply(
+                        id,
+                        system::ClaudeReply::Failed("a test run is going in Studio already".into()),
+                    );
+                    return;
+                }
+                let run = self.tests.peek_run();
+                self.start_tests(request, ctx);
+                self.claude_test = Some((id, run, Vec::new()));
+            }
+        }
+        ctx.request_repaint();
+    }
+
+    /// Claude's test run's files, and its end answered.
+    fn claude_test_event(&mut self, run: u64, event: &system::TestEvent) {
+        let Some((id, mine, files)) = &mut self.claude_test else {
+            return;
+        };
+        if *mine != run {
+            return;
+        }
+        match event {
+            system::TestEvent::File(f) => files.push(f.clone()),
+            system::TestEvent::Done(done) => {
+                let (id, files) = (*id, std::mem::take(files));
+                self.claude_test = None;
+                self.host.system.claude_reply(
+                    id,
+                    system::ClaudeReply::Tests {
+                        files,
+                        done: done.clone(),
+                    },
+                );
+            }
+            _ => {}
+        }
     }
 
     /// While a sign-in runs: Claude Code's status every 3 s, until it is
