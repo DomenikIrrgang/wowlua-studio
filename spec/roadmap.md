@@ -471,6 +471,65 @@ the profile page's view checked by hand on macOS.
 Building AddOns with Claude inside Studio, through Studio's tools, every
 change approved.
 
+Artboards: claude, claude's changes, ask claude from any page, M14 open
+questions (all answered, S090 to S094).
+
+How it works (S090): Studio runs the Claude Code the user installed and
+signed in to, on their Claude plan; Studio never signs in to Claude nor
+keeps a sign-in. The native host starts `claude -p` with JSON in and out
+(`--input-format stream-json --output-format stream-json
+--include-partial-messages`), its own tools off (`--disallowedTools`),
+Studio's tools given over MCP (`--mcp-config`), the model and effort
+chosen (`--model`, `--effort`); a conversation goes on with `--resume`.
+`claude auth status` tells whether it is signed in. The flags are checked
+against Claude Code's reference when built. Native only: the browser build
+has no Claude.
+
+The plan, in this order:
+
+1. **Claude Code found and signed in** (host): where `claude` is (the
+   PATH, or a setting), its version, `claude auth status`; the claude
+   page's states: not installed (where to get it), not signed in ("sign in
+   through Claude Code" runs `claude auth login`, which opens the browser),
+   ready. A conversation's process, its JSON stream read on a thread of
+   the host, events for the app (system::System gains Claude's part).
+2. **Studio's tools over MCP** (host): wowlua's tools as `wowlua mcp`
+   has them (wowlua T549: sessions, screenshots, the frame tree, input,
+   time, the debugger, the profiler, inspect, pick, units, events,
+   save_world, set_screen; check, fmt, build, test with coverage), served
+   in process (`wowlua_debug::mcp::Server` with Studio's launcher), on
+   Claude's own windowless session; and Studio's own: the workspace's
+   files (read; edit and create, each asking, S091) and git (S094). How
+   Claude Code reaches them (Studio's binary as a stdio bridge, or a local
+   HTTP endpoint with a token) is to be decided when built.
+3. **The conversation** (the claude page): messages as they stream, each
+   tool call as a row (what it read, ran or changed), an edit's diff with
+   allow, "allow edits in this conversation" and deny; the tools and
+   permissions panel (allow, ask, never per tool group; answers last for
+   the conversation, S091); the screenshot of a game call with "open the
+   session" (the game page shows Claude's session, S092).
+4. **Changes and checkpoints** (the claude's changes board, S091): Studio
+   keeps a file before Claude's first edit after each of your messages;
+   the conversation's changed files, per-hunk undo and redo, going back
+   to a checkpoint (only Claude's changes; your own stay), undo all,
+   commit these changes.
+5. **What Claude knows** (S092): wowlua's docs and the stdlib's
+   reference, the addon's CLAUDE.md, `wowlua.json`, the open file and its
+   problems; `@` chips for files, worlds, tests, the stop, a recording.
+6. **Asked from the other pages** (S093): fix with Claude (the editor's
+   quick fixes and menu), why it fails (tests), explain this stop
+   (debugger), make it faster (profiler), ask about this frame (the game's
+   frame picker), fix the failing check and help with a conflict (git and
+   GitHub).
+7. **Model, usage, conversations** (S092): the model and effort picker
+   (the newest model by default), the plan's usage per conversation as
+   Claude Code reports it, "paused: usage limit" until it resets; the
+   conversations of a workspace in Studio's data, listed, one running at a
+   time.
+
+Needs new work in wowlua: the rest of wowlua's tools in `wowlua mcp`
+(T549, done).
+
 ## Checked by hand on Windows and Linux
 
 Studio is checked by hand on macOS as each milestone is built; CI builds
