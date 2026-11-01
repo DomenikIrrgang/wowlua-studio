@@ -59,7 +59,23 @@ pub struct NativeSystem {
     dev: RefCell<crate::ship::Dev>,
     /// Set to stop a GitHub sign-in under way (S062).
     github_stop: RefCell<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// Studio's tools for Claude while a conversation runs (S096), and the
+    /// questions waiting for the app's answer.
+    claude_link: RefCell<Option<crate::mcp_link::Link>>,
+    claude_waiting: Waiting,
+    claude_permissions: crate::claude_tools::Permissions,
+    /// What Claude changed in the conversation (S098).
+    claude_changes: crate::claude_changes::Shared,
+    /// The running conversation (S097).
+    claude_run: RefCell<Option<crate::claude_run::Conversation>>,
 }
+
+/// The questions of Studio's tools for Claude waiting for the app's answer.
+type Waiting = std::sync::Arc<
+    std::sync::Mutex<
+        std::collections::HashMap<u64, Sender<wowlua_studio_app::system::ClaudeReply>>,
+    >,
+>;
 
 impl NativeSystem {
     pub fn new(ctx: &egui::Context) -> Self {
@@ -82,6 +98,11 @@ impl NativeSystem {
             gamedata: std::sync::Arc::default(),
             dev: RefCell::default(),
             github_stop: RefCell::default(),
+            claude_link: RefCell::new(None),
+            claude_waiting: Waiting::default(),
+            claude_permissions: crate::claude_tools::Permissions::default(),
+            claude_changes: crate::claude_changes::Shared::default(),
+            claude_run: RefCell::new(None),
         }
     }
 
@@ -817,6 +838,170 @@ impl System for NativeSystem {
 
     fn claude_key(&self, key: Option<String>) {
         crate::settings::claude_key(key.as_deref());
+    }
+
+    fn claude_link(
+        &self,
+        root: &Path,
+        permissions: std::collections::BTreeMap<String, String>,
+    ) -> Result<wowlua_studio_app::system::ClaudeLink, String> {
+        use wowlua_studio_app::system::{ClaudeLink, ClaudeReply};
+        // The app's answers: each question waits on a channel of its own.
+        let waiting = self.claude_waiting.clone();
+        let send = std::sync::Mutex::new(self.send.clone());
+        let ctx = self.ctx.clone();
+        let next = std::sync::atomic::AtomicU64::new(1);
+        let ask: crate::claude_tools::AskApp = std::sync::Arc::new(move |event| {
+            let id = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let (tx, rx) = channel::<ClaudeReply>();
+            if let Ok(mut w) = waiting.lock() {
+                w.insert(id, tx);
+            }
+            if let Ok(send) = send.lock() {
+                let _ = send.send(Event::Claude { id, event });
+            }
+            ctx.request_repaint();
+            rx.recv_timeout(std::time::Duration::from_secs(3600))
+                .map_err(|_| "Studio did not answer".to_string())
+        });
+        let root = root.to_path_buf();
+        if let Ok(mut p) = self.claude_permissions.lock() {
+            *p = permissions;
+        }
+        let shared = self.claude_permissions.clone();
+        // (the conversation's changes: kept while it goes on, new for a new
+        // workspace)
+        if let Ok(mut c) = self.claude_changes.lock()
+            && c.root() != root.as_path()
+        {
+            *c = crate::claude_changes::Changes::new(&root);
+        }
+        let changes = self.claude_changes.clone();
+        // (a connection: Claude Code's; each its own tools)
+        let link = crate::mcp_link::Link::open(move || {
+            let mut tools = crate::claude_tools::StudioTools::new(
+                root.clone(),
+                shared.clone(),
+                ask.clone(),
+                changes.clone(),
+            );
+            Box::new(move |msg| tools.handle(msg))
+        })
+        .map_err(|e| format!("cannot open Studio's tools for Claude: {e}"))?;
+        let exe = std::env::current_exe().map_err(|e| format!("Studio's own path: {e}"))?;
+        let mcp_config = serde_json::json!({
+            "mcpServers": {
+                "wowlua-studio": {
+                    "type": "stdio",
+                    "command": exe,
+                    "args": ["mcp-bridge", link.socket, link.token],
+                }
+            }
+        })
+        .to_string();
+        *self.claude_link.borrow_mut() = Some(link);
+        Ok(ClaudeLink { mcp_config })
+    }
+
+    fn claude_permission(&self, group: &str, permission: &str) {
+        if let Ok(mut p) = self.claude_permissions.lock() {
+            p.insert(group.to_owned(), permission.to_owned());
+        }
+    }
+
+    fn claude_start(
+        &self,
+        root: &Path,
+        start: wowlua_studio_app::system::ClaudeStart,
+    ) -> Result<(), String> {
+        let send = std::sync::Mutex::new(self.send.clone());
+        let ctx = self.ctx.clone();
+        let conversation = crate::claude_run::Conversation::start(root, &start, move |event| {
+            if let Ok(send) = send.lock() {
+                let _ = send.send(Event::Conversation(event));
+            }
+            ctx.request_repaint();
+        })?;
+        *self.claude_run.borrow_mut() = Some(conversation);
+        Ok(())
+    }
+
+    fn claude_send(&self, text: &str) -> Result<(), String> {
+        match self.claude_run.borrow_mut().as_mut() {
+            Some(c) => c.send(text),
+            None => Err("no conversation runs".into()),
+        }
+    }
+
+    fn claude_stop(&self) {
+        if let Some(mut c) = self.claude_run.borrow_mut().take() {
+            c.stop();
+        }
+    }
+
+    fn claude_checkpoint(&self, label: &str) {
+        if let Ok(mut c) = self.claude_changes.lock() {
+            c.checkpoint(label);
+        }
+    }
+
+    fn claude_changes(&self) -> Option<wowlua_studio_app::system::ClaudeChanges> {
+        self.claude_changes.lock().ok().map(|c| c.view())
+    }
+
+    fn claude_undo(
+        &self,
+        path: &str,
+        hunk: &wowlua_studio_app::system::ClaudeHunk,
+    ) -> Result<(), String> {
+        self.claude_changes
+            .lock()
+            .map_err(|_| "busy".to_string())?
+            .undo(path, hunk)
+    }
+
+    fn claude_redo(&self, i: usize) -> Result<(), String> {
+        self.claude_changes
+            .lock()
+            .map_err(|_| "busy".to_string())?
+            .redo(i)
+    }
+
+    fn claude_back_to(&self, k: usize) -> Result<Vec<String>, String> {
+        self.claude_changes
+            .lock()
+            .map_err(|_| "busy".to_string())?
+            .back_to(k)
+    }
+
+    fn claude_link_close(&self) {
+        self.claude_stop();
+        if let Ok(mut c) = self.claude_changes.lock() {
+            *c = crate::claude_changes::Changes::default();
+        }
+        self.claude_link.borrow_mut().take();
+        // (questions still waiting get no answer: their tools say so)
+        if let Ok(mut w) = self.claude_waiting.lock() {
+            w.clear();
+        }
+    }
+
+    fn claude_reply(&self, id: u64, reply: wowlua_studio_app::system::ClaudeReply) {
+        let tx = self
+            .claude_waiting
+            .lock()
+            .ok()
+            .and_then(|mut w| w.remove(&id));
+        if let Some(tx) = tx {
+            let _ = tx.send(reply);
+        }
+    }
+
+    fn claude_sign_out(&self) {
+        self.spawn(|| {
+            crate::claude::sign_out();
+            Event::Settings(crate::settings::info())
+        });
     }
 
     fn deps_read(&self, dir: &Path) {

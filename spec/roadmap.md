@@ -466,7 +466,7 @@ paused; the world profile page's units placed and their paths drawn, in the
 game view and on the page's own view. Not yet: the cameras, overlays and
 the profile page's view checked by hand on macOS.
 
-## M14: Claude (planned, last)
+## M14: Claude
 
 Building AddOns with Claude inside Studio, through Studio's tools, every
 change approved.
@@ -529,6 +529,13 @@ The plan, in this order:
 
 Needs new work in wowlua: the rest of wowlua's tools in `wowlua mcp`
 (T549, done).
+Built so far: step 1, Claude Code found and signed in, and the settings
+(S095); step 2, Studio's tools over MCP through a stdio bridge in
+Studio's own binary (S096); step 3, the conversation (S097); step 4,
+changes and checkpoints (S098); step 5, what Claude knows (S099); step
+6, asking Claude from the other pages (S100); step 7, the model and
+effort per conversation, and the kept conversations (S101). Checked by
+hand on macOS (2026-11-01); not yet on Windows and Linux.
 
 ## Checked by hand on Windows and Linux
 
@@ -584,18 +591,25 @@ and tests it on Windows and Linux (S058). On each, with SuuUI's workspace:
     (they stop you); orbit and look from above; turn on the overlays; pause
     at a breakpoint and look around; on the world profile page drag a unit
     and shift-drag its path.
+14. **M14**: with Claude Code installed, the claude page finds it (signed
+    in, or "sign in through Claude Code" in the terminal); ask Claude to
+    read a file and change it: the question about the edit, allow, the
+    change in "claude's changes", undo its hunk, go back to the checkpoint;
+    "fix with Claude" on a problem in the editor; "ask Claude why" on a
+    failed test; a new conversation and the first one opened again from
+    the claude panel. On Windows the bridge's socket is a Unix socket
+    (Windows 10 and later).
 
 ## Open questions
 
 Asked when their milestone starts; nothing here is decided yet.
 
 - Installers and code signing per system (first release).
-- Whether "sign in with Claude" is possible for a third-party app (M14).
 
 ## Design changes owed
 
 Where Studio was decided to differ from the canvas, or the canvas is
-missing a part; the canvas is updated to match. On 2026-10-30 the settings board got the git section (fetch every) and the editor's blame row, the git board the changes' stage all and the staged files' unstage all (S070). None are owed now: on 2026-10-30 the start board got a clone's progress ("from GitHub, cloning") and the from-GitHub board the closing dialog's "discard them and close" (S075).
+missing a part; the canvas is updated to match. On 2026-10-30 the settings board got the git section (fetch every) and the editor's blame row, the git board the changes' stage all and the staged files' unstage all (S070). None are owed now: on 2026-10-30 the start board got a clone's progress ("from GitHub, cloning") and the from-GitHub board the closing dialog's "discard them and close" (S075). On 2026-11-01 the settings board's claude section got Claude Code, the model, the effort, the tool groups' permissions and the saved key's removal (S095); the claude boards lost their planned marks, the conversation's footer got the model and effort and the cost, and the claude's changes board is the tab beside the conversation (S097 to S101).
 
 Brought up to date on 2026-10-27: the panels board's presets
 for every page (S017), the palette's prompt (S018), the menus (S019), the

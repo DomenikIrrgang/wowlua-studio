@@ -61,10 +61,15 @@ pub struct Settings {
     pub github_load: String,
     pub github_watch: bool,
     pub github_notify: bool,
-    /// What Claude may do without asking (M14 reads it).
-    pub claude_approvals: String,
-    pub claude_tools: bool,
-    pub claude_shell: bool,
+    /// Claude's permission per tool group at a conversation's start
+    /// (S095): `allow`, `ask` or `never` by [`CLAUDE_TOOLS`]' keys; a group
+    /// not here has its default.
+    pub claude_permissions: BTreeMap<String, String>,
+    /// A conversation's model and effort at its start (S092): a Claude Code
+    /// alias (`fable`, the newest, by default), and an effort level or
+    /// Claude Code's own.
+    pub claude_model: String,
+    pub claude_effort: String,
     /// Opening a page switches to its layout (the panels board's rules).
     #[serde(alias = "follow_presets")]
     pub follow_presets: bool,
@@ -119,9 +124,9 @@ impl Default for Settings {
             github_load: "opened files first".into(),
             github_watch: true,
             github_notify: true,
-            claude_approvals: "ask every time".into(),
-            claude_tools: true,
-            claude_shell: false,
+            claude_permissions: BTreeMap::new(),
+            claude_model: "fable".into(),
+            claude_effort: CLAUDE_EFFORT_DEFAULT.into(),
             follow_presets: true,
             layouts_per_workspace: true,
             float_windows: true,
@@ -193,6 +198,103 @@ pub fn parse<T: for<'de> Deserialize<'de> + Default>(text: Option<String>) -> T 
 
 pub fn to_text<T: Serialize>(value: &T) -> String {
     serde_json::to_string_pretty(value).unwrap_or_default()
+}
+
+/// Claude's tool groups (S091, S094, S095): key, label, what they do, the
+/// permission they start with. Publishing and the WoW folder are not
+/// among them: those stay the user's.
+pub const CLAUDE_TOOLS: &[(&str, &str, &str, &str)] = &[
+    (
+        "files.read",
+        "read the workspace",
+        "Open, list and search the workspace's files.",
+        "allow",
+    ),
+    (
+        "files.edit",
+        "edit files",
+        "Write, create and delete the workspace's files.",
+        "ask",
+    ),
+    (
+        "wowlua.check",
+        "check and format",
+        "wowlua check and fmt.",
+        "allow",
+    ),
+    (
+        "wowlua.test",
+        "run tests",
+        "wowlua test, with coverage.",
+        "allow",
+    ),
+    ("wowlua.build", "build", "wowlua build, into dist/.", "ask"),
+    (
+        "game.look",
+        "the game: look",
+        "Start and stop Claude's own session; screenshots, the frame tree, inspect, pick, units, events.",
+        "allow",
+    ),
+    (
+        "game.play",
+        "the game: play",
+        "Click, hover, drag, type, keys, slash commands, chat, time, events, world changes, the screen.",
+        "allow",
+    ),
+    (
+        "debugger",
+        "the debugger",
+        "Breakpoints, stepping, the stack, variables, eval, the profiler.",
+        "allow",
+    ),
+    ("git.read", "git: read", "Diff, log and status.", "allow"),
+    ("git.commit", "git: commit", "Commit the changes.", "ask"),
+    (
+        "git.push",
+        "git: push and pull",
+        "Push to and pull from the remote.",
+        "ask",
+    ),
+    (
+        "git.branches",
+        "git: branches",
+        "Create, switch and delete branches.",
+        "ask",
+    ),
+];
+
+/// A tool group's permissions.
+pub const CLAUDE_PERMISSIONS: &[&str] = &["allow", "ask", "never"];
+
+/// The effort when the settings leave it to Claude Code.
+pub const CLAUDE_EFFORT_DEFAULT: &str = "Claude Code's default";
+
+impl Settings {
+    /// A tool group's permission at a conversation's start.
+    pub fn claude_permission(&self, key: &str) -> String {
+        self.claude_permissions
+            .get(key)
+            .filter(|p| CLAUDE_PERMISSIONS.contains(&p.as_str()))
+            .cloned()
+            .or_else(|| {
+                CLAUDE_TOOLS
+                    .iter()
+                    .find(|t| t.0 == key)
+                    .map(|t| t.3.to_owned())
+            })
+            .unwrap_or_else(|| "ask".into())
+    }
+
+    /// Sets a group's permission (its default: not kept).
+    pub fn set_claude_permission(&mut self, key: &str, permission: &str) {
+        let default = CLAUDE_TOOLS.iter().find(|t| t.0 == key).map(|t| t.3);
+        if default == Some(permission) {
+            self.claude_permissions.remove(key);
+        } else {
+            self.claude_permissions
+                .insert(key.to_owned(), permission.to_owned());
+        }
+    }
 }
 
 #[cfg(test)]

@@ -214,6 +214,14 @@ pub enum Event {
     Deps(DepsEvent),
     /// The settings page's facts of this computer (S062).
     Settings(SettingsInfo),
+    /// Studio's tools for Claude ask (S096): answered with
+    /// [`System::claude_reply`].
+    Claude {
+        id: u64,
+        event: ClaudeEvent,
+    },
+    /// The running conversation's news (S097).
+    Conversation(ConversationEvent),
     Updates(UpdateCheck),
     Github(GithubSignIn),
 }
@@ -1435,8 +1443,164 @@ pub struct SettingsInfo {
     pub log: Option<PathBuf>,
     /// Signed in to GitHub as.
     pub github: Option<String>,
-    /// A Claude API key is saved.
+    /// A Claude API key is saved (from before M14: Studio no longer uses
+    /// it, and the settings offer to remove it, S095).
     pub claude_key: bool,
+    /// Claude Code as Studio found it (S090, S095).
+    pub claude: ClaudeCode,
+}
+
+/// What Studio's tools for Claude need from the app (S096).
+#[derive(Clone, Debug, PartialEq)]
+pub enum ClaudeEvent {
+    /// A tool whose group asks first: what it would do.
+    Ask {
+        group: String,
+        tool: String,
+        what: String,
+    },
+    /// Claude's `test`: a run of the tests page, its results back.
+    Test { request: TestRequest },
+}
+
+/// The app's answer to a [`ClaudeEvent`].
+#[derive(Clone, Debug, PartialEq)]
+pub enum ClaudeReply {
+    /// The user's answer to an [`ClaudeEvent::Ask`].
+    Allowed(bool),
+    Tests {
+        files: Vec<TestFile>,
+        done: TestDone,
+    },
+    /// It could not be done (a test run is going already).
+    Failed(String),
+}
+
+/// What Claude changed in the conversation (S098): each file against how
+/// it was before, the checkpoints, the hunks undone (to redo).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ClaudeChanges {
+    pub files: Vec<ClaudeFile>,
+    pub checkpoints: Vec<ClaudeCheckpoint>,
+    /// Each undone hunk with its file.
+    pub undone: Vec<(String, ClaudeHunk)>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ClaudeFile {
+    /// In the workspace.
+    pub path: String,
+    pub added: usize,
+    pub removed: usize,
+    /// Claude made it; deleted it.
+    pub created: bool,
+    pub deleted: bool,
+    pub hunks: Vec<ClaudeHunk>,
+}
+
+/// Lines removed and added: where they are (1-based) before and now.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ClaudeHunk {
+    pub old_start: usize,
+    pub old: Vec<String>,
+    pub new_start: usize,
+    pub new: Vec<String>,
+}
+
+/// Before one of the user's messages: the message, and the files Claude
+/// changed after it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ClaudeCheckpoint {
+    pub label: String,
+    pub files: usize,
+}
+
+/// How a conversation with Claude starts (S097): Claude Code, the link to
+/// Studio's tools, the model and effort, the session to go on with, the
+/// first message.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ClaudeStart {
+    pub claude: PathBuf,
+    pub mcp_config: String,
+    pub model: String,
+    /// None: Claude Code's own.
+    pub effort: Option<String>,
+    pub resume: Option<String>,
+    pub prompt: String,
+    /// What Claude knows from the start (S099): Studio, the workspace, the
+    /// addon's notes and manifest.
+    pub system: String,
+}
+
+/// What a conversation with Claude tells as it goes (S097).
+#[derive(Clone, Debug, PartialEq)]
+pub enum ConversationEvent {
+    /// Claude Code runs: its session (to go on with) and model.
+    Started { session: String, model: String },
+    /// Claude's text as it streams.
+    TextDelta(String),
+    /// A whole text of Claude's.
+    Text(String),
+    /// Claude calls a tool (its input as JSON).
+    ToolUse {
+        id: String,
+        name: String,
+        input: String,
+    },
+    /// The tool's answer (`image`: it held one).
+    ToolResult {
+        id: String,
+        text: String,
+        error: bool,
+        image: bool,
+    },
+    /// The turn ended: the conversation's cost so far (an estimate), its
+    /// error, the calls Claude Code denied.
+    TurnDone {
+        cost: f64,
+        error: Option<String>,
+        denied: usize,
+    },
+    /// The plan's limit: reached until `resets_at` (seconds since the
+    /// epoch), and how much is used.
+    Limit {
+        rejected: bool,
+        resets_at: Option<u64>,
+        utilization: Option<f64>,
+    },
+    /// Claude Code ended (what it said last when it failed).
+    Ended(Option<String>),
+}
+
+/// Where Claude Code reaches Studio's tools while a conversation runs
+/// (S096): the `--mcp-config` JSON that starts the bridge.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ClaudeLink {
+    pub mcp_config: String,
+}
+
+/// Claude Code as Studio found it (S090, S095): the program, its version
+/// and whom it is signed in as.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ClaudeCode {
+    /// The program Studio runs; none: not found.
+    pub path: Option<PathBuf>,
+    /// `2.1.314`.
+    pub version: Option<String>,
+    /// Signed in (`claude auth status`); none: signed out.
+    pub account: Option<ClaudeAccount>,
+    /// The line the terminal runs to sign in (`claude auth login`, the
+    /// program's path quoted for the terminal's shell).
+    pub sign_in: String,
+    /// Why Claude Code could not be asked.
+    pub problem: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ClaudeAccount {
+    pub email: String,
+    /// The plan (`max`, `pro`, …), else how it signed in.
+    pub plan: String,
 }
 
 /// Studio's releases (`check for updates`).
@@ -2152,7 +2316,55 @@ pub trait System {
     /// out (`false`).
     fn github_sign_in(&self, _on: bool) {}
     /// Saves the Claude API key, or removes it.
+    /// Removes the Claude API key kept before M14 (none: removes it).
     fn claude_key(&self, _key: Option<String>) {}
+    /// Signs Claude Code out (`claude auth logout`), then reads the
+    /// settings' information again (S095).
+    fn claude_sign_out(&self) {}
+    /// Opens Studio's tools for Claude on the workspace at `root`, with
+    /// each tool group's permission (S096); the link closes when another
+    /// opens or [`claude_link_close`](Self::claude_link_close).
+    fn claude_link(
+        &self,
+        _root: &Path,
+        _permissions: BTreeMap<String, String>,
+    ) -> Result<ClaudeLink, String> {
+        Err("Claude runs in Studio's desktop app only".into())
+    }
+    fn claude_link_close(&self) {}
+    /// A tool group's permission from now on, in the running conversation
+    /// (S097: "allow edits in this conversation", the tools panel).
+    fn claude_permission(&self, _group: &str, _permission: &str) {}
+    /// Starts Claude Code in the workspace at `root` (S097).
+    fn claude_start(&self, _root: &Path, _start: ClaudeStart) -> Result<(), String> {
+        Err("Claude runs in Studio's desktop app only".into())
+    }
+    /// The user's next message in the running conversation.
+    fn claude_send(&self, _text: &str) -> Result<(), String> {
+        Err("no conversation runs".into())
+    }
+    /// Ends Claude Code; the conversation goes on with `resume`.
+    fn claude_stop(&self) {}
+    /// A checkpoint before the user's message `label` (S098).
+    fn claude_checkpoint(&self, _label: &str) {}
+    /// What Claude changed in the conversation.
+    fn claude_changes(&self) -> Option<ClaudeChanges> {
+        None
+    }
+    fn claude_undo(&self, _path: &str, _hunk: &ClaudeHunk) -> Result<(), String> {
+        Err("no conversation".into())
+    }
+    /// Redoes the `i`th hunk undone.
+    fn claude_redo(&self, _i: usize) -> Result<(), String> {
+        Err("no conversation".into())
+    }
+    /// Back to checkpoint `k` (0: the conversation's start): the files the
+    /// user changed after Claude are kept, and named.
+    fn claude_back_to(&self, _k: usize) -> Result<Vec<String>, String> {
+        Err("no conversation".into())
+    }
+    /// The app's answer to [`Event::Claude`] `id`.
+    fn claude_reply(&self, _id: u64, _reply: ClaudeReply) {}
     /// The package's dependencies (→ [`DepsEvent::Read`]).
     fn deps_read(&self, _dir: &Path) {}
     /// Newer versions of them (→ [`DepsEvent::Outdated`]): the network.
