@@ -103,10 +103,4 @@ impl Page {
             Page::Settings => Icon::Config,
         }
     }
-
-    /// Pages the design marks as planned: they need new work in wowlua or
-    /// come last (the roadmap's M14).
-    pub fn planned(self) -> bool {
-        self == Page::Claude
-    }
 }
