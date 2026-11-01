@@ -35,21 +35,29 @@ roadmap until the canvas has it.
   [wl] mark and the wordmark, widgets, form controls). egui only.
 - `wowlua-studio-app`: the application (chrome, docking, commands, the
   palette, pages, the start page, the explorer, the editor, the language
-  server's client, search, the terminal panel, notifications, jobs). egui
+  server's client, search, the terminal panel, notifications, jobs, the
+  tests page and coverage, the game page, the debugger). egui
   and serde only: the host gives it the platform, wowlua's version, a file
   store and the system (`system::System`: the disk, Git, wowlua's library,
   the language server, highlighting, the terminal, new windows; slow work
   comes back as events). Both build for wasm (CI checks).
 - `wowlua-studio`: the native host (eframe, the store in the system's
   folder for application data, `native.rs`'s system, the language server's
-  thread `lsp.rs`, the terminals `terminal.rs`, macOS's menu bar) and
+  thread `lsp.rs`, the terminals `terminal.rs`, test runs `tests.rs`,
+  the game's session and screen `game.rs`, macOS's menu bar) and
   wowlua's crates.
 
 ## Seeing it
 
 `WOWLUA_STUDIO_SCREENSHOT=out.png` draws a few frames, saves the window as
 a PNG and quits; `WOWLUA_STUDIO_SCREENSHOT_RUN="open:<folder>;page:debug;theme:light;palette"`
-runs commands first (`new` and `adopt` show the start page's forms). `WOWLUA_STUDIO_DATA=<dir>` keeps settings and layouts
+runs commands first (`new` and `adopt` show the start page's forms;
+`world:<profile>[/<part>][@json]`, `spells:<query>` and
+`worldlive:<profile>|<path>=<json>|…` the world profiles page;
+`ship:<tab>[/<profile>]` and `shipdo:<build|install|dry|publish|tag|dev>`
+the ship page, run with `WOWLUA_NO_KEYRING=1` so no credential store
+dialog opens; `settings:<section>` the settings page;
+`manifest:<section>[@json]` the workspace's `wowlua.json` in its tab). `WOWLUA_STUDIO_DATA=<dir>` keeps settings and layouts
 there instead of the user's folder.
 
 ## wowlua
@@ -67,6 +75,13 @@ Cargo uses the patch only when the checkout's version is compatible with
 the pinned one (0.13.x for `v0.13.0`); otherwise it warns that the patch
 was not used. A change Studio needs in wowlua is made in wowlua, by its own
 rules, and Studio moves its pin to the release that has it.
+
+## Patched dependencies
+
+`patches/` holds copies of published crates with a change Studio needs
+before their authors release it, patched in with `[patch.crates-io]` and
+kept out of the workspace (`exclude`), so Studio's checks leave them alone.
+`patches/README.md` says what each changes and when to drop it.
 
 ## Checks
 

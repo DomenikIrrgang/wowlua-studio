@@ -66,6 +66,12 @@ pub struct Item {
     pub range: Option<(Wire, Wire)>,
     /// Where it is in the list (the server's sort text, else the label).
     pub sort: String,
+    /// Edits besides its own: the import an auto-import adds (S062).
+    pub edits: Vec<TextEdit>,
+    /// Its documentation, given or resolved (`completionItem/resolve`).
+    pub doc: Option<String>,
+    /// The item as the server sent it, for `completionItem/resolve`.
+    pub raw: Json,
 }
 
 /// A symbol of the outline.
@@ -107,6 +113,12 @@ pub enum Reply {
         /// The list is cut: asked again as the word grows.
         incomplete: bool,
     },
+    /// An item's documentation, by its label.
+    Resolved {
+        path: PathBuf,
+        label: String,
+        doc: String,
+    },
     Signature {
         path: PathBuf,
         text: String,
@@ -131,6 +143,11 @@ pub enum Reply {
     Symbols {
         path: PathBuf,
         symbols: Vec<Symbol>,
+    },
+    /// A test file's tests, from its text (`wowlua/tests`).
+    Tests {
+        path: PathBuf,
+        tests: Vec<Discovered>,
     },
     /// The file's formatting; `then_save` when a save waits for it.
     Format {
@@ -179,6 +196,8 @@ enum Ask {
     Initialize,
     Hover(PathBuf, Pos),
     Completion(PathBuf, Pos),
+    /// `completionItem/resolve` of an item, by its label.
+    Resolve(PathBuf, String),
     Signature(PathBuf),
     Definition,
     /// Whether the name at the place has a definition (cmd held over it).
@@ -190,6 +209,7 @@ enum Ask {
     Hints(PathBuf, u64),
     Lenses(PathBuf, u64),
     Fixes(PathBuf),
+    Tests(PathBuf),
 }
 
 #[derive(Default)]
@@ -217,9 +237,31 @@ pub fn served(path: &Path) -> bool {
     )
 }
 
+/// The settings the language server takes (wowlua T504): when it checks,
+/// the build profile its diagnostics follow, its threads.
+pub fn options(s: &crate::state::Settings) -> Json {
+    let check = match s.check_when.as_str() {
+        "while typing" => "typing",
+        "on save" => "save",
+        _ => "pause",
+    };
+    json!({ "check": check, "profile": s.check_profile, "threads": s.check_threads })
+}
+
 impl Lsp {
+    /// The server takes changed settings (S062).
+    pub fn configure(&self, system: &dyn System, options: Json) {
+        if self.root.is_some() {
+            self.notify(
+                system,
+                "workspace/didChangeConfiguration",
+                json!({ "settings": { "wowlua": options } }),
+            );
+        }
+    }
+
     /// Starts the server for the workspace at `root`.
-    pub fn start(&mut self, root: &Path, system: &dyn System) {
+    pub fn start(&mut self, root: &Path, system: &dyn System, options: Json) {
         *self = Lsp::default();
         let root = system.canonical(root);
         let uri = uri_of(&root);
@@ -232,6 +274,7 @@ impl Lsp {
                 "processId": null,
                 "rootUri": uri,
                 "workspaceFolders": [{ "uri": uri, "name": "workspace" }],
+                "initializationOptions": options,
                 "capabilities": {
                     "textDocument": {
                         "hover": { "contentFormat": ["markdown", "plaintext"] },
@@ -381,6 +424,16 @@ impl Lsp {
         }
     }
 
+    /// Asks for an item's documentation (S062).
+    pub fn resolve(&mut self, path: &Path, item: &Item, system: &dyn System) {
+        self.request(
+            system,
+            Ask::Resolve(path.to_path_buf(), item.label.clone()),
+            "completionItem/resolve",
+            item.raw.clone(),
+        );
+    }
+
     pub fn signature(&mut self, doc: &Document, pos: Pos, system: &dyn System) {
         if let Some(params) = self.at(doc, pos) {
             self.request(
@@ -438,6 +491,22 @@ impl Lsp {
         }
     }
 
+    /// Asks for a test file's tests: open or not, the server reads it
+    /// (→ [`Reply::Tests`]).
+    pub fn tests(&mut self, path: &Path, system: &dyn System) {
+        if !self.running() {
+            return;
+        }
+        let canonical = system.canonical(path);
+        let params = json!({ "textDocument": { "uri": uri_of(&canonical) } });
+        self.request(
+            system,
+            Ask::Tests(path.to_path_buf()),
+            "wowlua/tests",
+            params,
+        );
+    }
+
     pub fn symbols(&mut self, doc: &Document, system: &dyn System) {
         if let Some((_, canonical)) = self.opened.get(&doc.path) {
             let params = json!({ "textDocument": { "uri": uri_of(canonical) } });
@@ -450,11 +519,28 @@ impl Lsp {
         }
     }
 
-    /// Asks for the whole file's inlay hints and lenses (after a check).
-    pub fn decorations(&mut self, doc: &Document, system: &dyn System) {
+    /// Asks for the whole file's inlay hints and lenses (after a check),
+    /// those the settings show.
+    pub fn decorations(&mut self, doc: &Document, system: &dyn System, hints: bool, lenses: bool) {
         let Some((_, canonical)) = self.opened.get(&doc.path) else {
             return;
         };
+        let canonical = canonical.clone();
+        if hints {
+            self.hints(doc, &canonical, system);
+        }
+        if lenses {
+            let uri = uri_of(&canonical);
+            self.request(
+                system,
+                Ask::Lenses(doc.path.clone(), doc.version),
+                "textDocument/codeLens",
+                json!({ "textDocument": { "uri": uri } }),
+            );
+        }
+    }
+
+    fn hints(&mut self, doc: &Document, canonical: &Path, system: &dyn System) {
         let uri = uri_of(canonical);
         let lines = doc.line_count();
         self.request(
@@ -465,12 +551,6 @@ impl Lsp {
                 "textDocument": { "uri": uri },
                 "range": { "start": { "line": 0, "character": 0 }, "end": { "line": lines, "character": 0 } },
             }),
-        );
-        self.request(
-            system,
-            Ask::Lenses(doc.path.clone(), doc.version),
-            "textDocument/codeLens",
-            json!({ "textDocument": { "uri": uri } }),
         );
     }
 
@@ -609,6 +689,13 @@ impl Lsp {
                     incomplete,
                 }
             }
+            Ask::Resolve(path, label) => {
+                let doc = match &result["documentation"] {
+                    Json::String(s) => s.clone(),
+                    d => d["value"].as_str().unwrap_or("").to_owned(),
+                };
+                Reply::Resolved { path, label, doc }
+            }
             Ask::Signature(path) => {
                 let sigs = result["signatures"].as_array()?;
                 let active = result["activeSignature"].as_u64().unwrap_or(0) as usize;
@@ -649,6 +736,21 @@ impl Lsp {
                 old,
                 new,
                 files: workspace_edit(result),
+            },
+            Ask::Tests(path) => Reply::Tests {
+                path,
+                tests: result
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|t| Discovered {
+                        name: t["name"].as_str().unwrap_or("").to_owned(),
+                        line: wire(&t["selectionRange"]["start"]).line,
+                        start: wire(&t["range"]["start"]).line,
+                        skip: t["skip"].as_bool().unwrap_or(false),
+                        cases: t["cases"].as_bool().unwrap_or(false),
+                    })
+                    .collect(),
             },
             Ask::Symbols(path) => {
                 let mut symbols = Vec::new();
@@ -714,6 +816,19 @@ impl Lsp {
     }
 }
 
+/// A test of a test file, as its text declares it: its name, the line of
+/// its name, whether `@skip` skips it and whether `@cases` runs it once a
+/// case.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Discovered {
+    pub name: String,
+    pub line: usize,
+    /// Where its declaration starts: its first decorator's line.
+    pub start: usize,
+    pub skip: bool,
+    pub cases: bool,
+}
+
 fn wire(v: &Json) -> Wire {
     Wire {
         line: v["line"].as_u64().unwrap_or(0) as usize,
@@ -756,7 +871,17 @@ fn item(v: &Json) -> Item {
         }
         None => (v["insertText"].as_str().unwrap_or(&label).to_owned(), None),
     };
+    let doc = match &v["documentation"] {
+        Json::String(s) => Some(s.clone()),
+        d => d["value"].as_str().map(str::to_owned),
+    };
     Item {
+        edits: v["additionalTextEdits"]
+            .as_array()
+            .map(|a| a.iter().map(text_edit).collect())
+            .unwrap_or_default(),
+        doc,
+        raw: v.clone(),
         detail: v["detail"].as_str().unwrap_or("").to_owned(),
         kind: v["kind"].as_u64().unwrap_or(0) as u8,
         sort: v["sortText"].as_str().unwrap_or(&label).to_owned(),

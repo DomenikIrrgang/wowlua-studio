@@ -14,10 +14,23 @@ use wowlua_driver::project::{LoadOptions, find_manifest, load_projects};
 use wowlua_driver::scaffold::{InitRequest, NewRequest};
 use wowlua_manifest::model::{CheckMode, PackageKind};
 use wowlua_studio_app::system::{
-    Adopt, AdoptPreview, ClientFolder, Entry, Event, FileChange, Found, FoundIn, Highlight, Hit,
-    Installation, MOST_FOUND, Member, NewAddon, Opened, PackageNames, Search, Syntax, System,
-    UiState, Workspace,
+    Adopt, AdoptPreview, ClientFolder, DepsEvent, Entry, Event, FileChange, Found, FoundIn,
+    Highlight, Hit, Installation, MOST_FOUND, Member, NewAddon, Opened, PackageNames, Search,
+    ShipEvent, Syntax, System, UiState, Workspace,
 };
+
+/// Git's own files the git page follows: `HEAD`, the index, the refs
+/// and a merge's state (M11).
+fn git_state_file(p: &Path) -> bool {
+    let s = p.to_string_lossy().replace('\\', "/");
+    let Some((_, inside)) = s.split_once("/.git/") else {
+        return false;
+    };
+    matches!(
+        inside,
+        "HEAD" | "index" | "MERGE_HEAD" | "ORIG_HEAD" | "FETCH_HEAD" | "packed-refs"
+    ) || inside.starts_with("refs/")
+}
 
 /// Folders the explorer and the watcher leave out: build output and the
 /// tools' own.
@@ -34,10 +47,42 @@ pub struct NativeSystem {
     /// The language server's thread, once started.
     lsp: RefCell<Option<Sender<crate::lsp::Input>>>,
     terminals: crate::terminal::Terminals,
+    /// The test run's stop button.
+    test_stop: RefCell<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// The game page's session, its scenes, and its screen (S055).
+    game: RefCell<Option<crate::game::Running>>,
+    game_frames: RefCell<std::sync::Arc<std::sync::Mutex<crate::game::Frames>>>,
+    game_screen: RefCell<Option<crate::game::Screen>>,
+    /// The installation's art and spells (the world profiles', S060).
+    gamedata: std::sync::Arc<crate::gamedata::GameData>,
+    /// The ship page's dev loop (S061).
+    dev: RefCell<crate::ship::Dev>,
+    /// Set to stop a GitHub sign-in under way (S062).
+    github_stop: RefCell<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// Studio's tools for Claude while a conversation runs (S096), and the
+    /// questions waiting for the app's answer.
+    claude_link: RefCell<Option<crate::mcp_link::Link>>,
+    claude_waiting: Waiting,
+    claude_permissions: crate::claude_tools::Permissions,
+    /// What Claude changed in the conversation (S098).
+    claude_changes: crate::claude_changes::Shared,
+    /// The running conversation (S097).
+    claude_run: RefCell<Option<crate::claude_run::Conversation>>,
 }
+
+/// The questions of Studio's tools for Claude waiting for the app's answer.
+type Waiting = std::sync::Arc<
+    std::sync::Mutex<
+        std::collections::HashMap<u64, Sender<wowlua_studio_app::system::ClaudeReply>>,
+    >,
+>;
 
 impl NativeSystem {
     pub fn new(ctx: &egui::Context) -> Self {
+        // Someone is in front of Studio to answer the OS credential store's
+        // dialogs: the ship page reads and saves `wowlua login`'s tokens
+        // (wowlua T501, S061).
+        wowlua_driver::credentials::allow_dialogs();
         let (send, events) = channel();
         NativeSystem {
             send,
@@ -46,7 +91,25 @@ impl NativeSystem {
             watcher: RefCell::new(None),
             lsp: RefCell::new(None),
             terminals: crate::terminal::Terminals::default(),
+            test_stop: RefCell::default(),
+            game: RefCell::new(None),
+            game_frames: RefCell::default(),
+            game_screen: RefCell::new(None),
+            gamedata: std::sync::Arc::default(),
+            dev: RefCell::default(),
+            github_stop: RefCell::default(),
+            claude_link: RefCell::new(None),
+            claude_waiting: Waiting::default(),
+            claude_permissions: crate::claude_tools::Permissions::default(),
+            claude_changes: crate::claude_changes::Shared::default(),
+            claude_run: RefCell::new(None),
         }
+    }
+
+    /// eframe's GPU device and egui's renderer: the game's screen draws
+    /// there.
+    pub fn set_gpu(&mut self, gpu: eframe::egui_wgpu::RenderState) {
+        self.game_screen = RefCell::new(Some(crate::game::Screen::new(gpu)));
     }
 
     /// Runs `work` on a thread of its own; its event wakes Studio up.
@@ -57,6 +120,21 @@ impl NativeSystem {
             let _ = send.send(work());
             ctx.request_repaint();
         });
+    }
+
+    /// Where a job of the ship page tells its news: each wakes Studio up.
+    fn ship_tell<E: Send + 'static>(
+        &self,
+        wrap: impl Fn(E) -> ShipEvent + Send + Sync + 'static,
+    ) -> crate::ship::Tell<E> {
+        let send = std::sync::Mutex::new(self.send.clone());
+        let ctx = self.ctx.clone();
+        std::sync::Arc::new(move |e| {
+            if let Ok(send) = send.lock() {
+                let _ = send.send(Event::Ship(wrap(e)));
+            }
+            ctx.request_repaint();
+        })
     }
 
     fn post(&self, event: Event) {
@@ -82,6 +160,13 @@ impl System for NativeSystem {
 
     fn pick_folder(&self, title: &str) -> Option<PathBuf> {
         rfd::FileDialog::new().set_title(title).pick_folder()
+    }
+
+    fn pick_file(&self, title: &str, endings: &[&str]) -> Option<PathBuf> {
+        rfd::FileDialog::new()
+            .set_title(title)
+            .add_filter("speedscope", endings)
+            .pick_file()
     }
 
     fn list(&self, dir: &Path) -> Vec<Entry> {
@@ -182,9 +267,11 @@ impl System for NativeSystem {
             let paths: Vec<PathBuf> = event
                 .paths
                 .into_iter()
-                // Git's own files stay out, but `HEAD`: a checkout (S049).
+                // Git's own files stay out, but `HEAD` (a checkout, S049)
+                // and what the git page follows: the index, the refs, a
+                // merge (M11).
                 .filter(|p| {
-                    p.ends_with(".git/HEAD")
+                    git_state_file(p)
                         || !p
                             .components()
                             .any(|c| skipped(&c.as_os_str().to_string_lossy()))
@@ -198,7 +285,7 @@ impl System for NativeSystem {
         let watcher = watcher.and_then(|mut w| w.watch(root, RecursiveMode::Recursive).map(|()| w));
         match watcher {
             Ok(w) => *self.watcher.borrow_mut() = Some(w),
-            Err(e) => eprintln!("wowlua studio: cannot watch {}: {e}", root.display()),
+            Err(e) => crate::log::line(&format!("cannot watch {}: {e}", root.display())),
         }
     }
 
@@ -207,7 +294,7 @@ impl System for NativeSystem {
     }
 
     fn set_installation(&self, path: &Path) {
-        if let Err(e) = write_wow_path(path) {
+        if let Err(e) = wowlua_driver::install::set_wow_path(path) {
             self.post(Event::Installation(Installation {
                 problem: Some(format!(
                     "could not keep the installation in wowlua's config: {e}"
@@ -299,7 +386,16 @@ impl System for NativeSystem {
             command.arg(path);
         }
         if let Err(e) = command.spawn() {
-            eprintln!("wowlua studio: cannot open a new window: {e}");
+            crate::log::line(&format!("cannot open a new window: {e}"));
+        }
+    }
+
+    fn open_window_from_github(&self) {
+        let Ok(exe) = std::env::current_exe() else {
+            return;
+        };
+        if let Err(e) = Command::new(exe).arg(crate::FROM_GITHUB).spawn() {
+            crate::log::line(&format!("cannot open a new window: {e}"));
         }
     }
 
@@ -310,14 +406,7 @@ impl System for NativeSystem {
     }
 
     fn branch(&self, dir: &Path) -> Option<String> {
-        let out = Command::new("git")
-            .arg("-C")
-            .arg(dir)
-            .args(["rev-parse", "--abbrev-ref", "HEAD"])
-            .output()
-            .ok()?;
-        let branch = String::from_utf8_lossy(&out.stdout).trim().to_owned();
-        (out.status.success() && !branch.is_empty()).then_some(branch)
+        repository_branch(dir)
     }
 
     fn canonical(&self, path: &Path) -> PathBuf {
@@ -393,6 +482,647 @@ impl System for NativeSystem {
         replace: Option<&str>,
     ) -> Result<Vec<FoundIn>, String> {
         find_in(text, search, replace)
+    }
+
+    fn test_files(&self, root: &Path) -> Vec<PathBuf> {
+        let mut files: Vec<PathBuf> = ignore::WalkBuilder::new(root)
+            .build()
+            .flatten()
+            .filter(|e| e.file_type().is_some_and(|t| t.is_file()))
+            .map(|e| e.into_path())
+            .filter(|p| p.to_string_lossy().ends_with(".test.wowlua"))
+            .filter(|p| {
+                !p.components()
+                    .any(|c| skipped(&c.as_os_str().to_string_lossy()))
+            })
+            .collect();
+        files.sort();
+        files
+    }
+
+    fn test_run(&self, root: &Path, run: u64, request: wowlua_studio_app::system::TestRequest) {
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        *self.test_stop.borrow_mut() = stop.clone();
+        let send = std::sync::Mutex::new(self.send.clone());
+        let ctx = self.ctx.clone();
+        crate::tests::start(root.to_path_buf(), request, stop, move |event| {
+            if let Ok(send) = send.lock() {
+                let _ = send.send(Event::Tests { run, event });
+            }
+            ctx.request_repaint();
+        });
+    }
+
+    fn game_start(
+        &self,
+        root: &Path,
+        session: u64,
+        launch: wowlua_studio_app::system::Launch,
+        setup: Vec<(u64, wowlua_studio_app::system::GameRequest)>,
+    ) {
+        if let Some(old) = self.game.borrow_mut().take() {
+            old.stop();
+        }
+        let frames = std::sync::Arc::new(std::sync::Mutex::new(crate::game::Frames::default()));
+        *self.game_frames.borrow_mut() = frames.clone();
+        let send = std::sync::Arc::new(std::sync::Mutex::new(self.send.clone()));
+        let ctx = self.ctx.clone();
+        let wake_ctx = self.ctx.clone();
+        let running = crate::game::start(
+            root.to_path_buf(),
+            launch,
+            setup,
+            frames,
+            move |event| {
+                if let Ok(send) = send.lock() {
+                    let _ = send.send(Event::Game { session, event });
+                }
+                ctx.request_repaint();
+            },
+            move || wake_ctx.request_repaint(),
+        );
+        *self.game.borrow_mut() = Some(running);
+    }
+
+    fn game_request(&self, id: u64, request: wowlua_studio_app::system::GameRequest) {
+        if let Some(running) = self.game.borrow().as_ref() {
+            running.ask(id, request);
+        }
+    }
+
+    fn game_stop(&self) {
+        if let Some(running) = self.game.borrow_mut().take() {
+            running.stop();
+        }
+    }
+
+    fn profiles(&self, root: &Path) -> Vec<wowlua_studio_app::system::SavedProfile> {
+        crate::profiles::list(root)
+    }
+
+    fn profile_read(&self, path: &Path) {
+        let path = path.to_path_buf();
+        self.spawn(move || Event::Profile {
+            result: crate::profiles::read(&path),
+            path,
+        });
+    }
+
+    fn profile_keep(
+        &self,
+        root: &Path,
+        name: &str,
+        speedscope: &serde_json::Value,
+    ) -> Result<(PathBuf, wowlua_studio_app::system::Profile), String> {
+        crate::profiles::keep(root, name, speedscope)
+    }
+
+    fn explain(&self, code: &str) -> Option<String> {
+        wowlua_diagnostics::explanation(code).map(|e| e.text.clone())
+    }
+
+    fn function_names(&self, root: &Path, files: Vec<String>) {
+        let root = root.to_path_buf();
+        self.spawn(move || Event::FunctionNames(crate::profiles::function_names(&root, &files)));
+    }
+
+    fn game_recordings(&self, root: &Path) {
+        let root = root.to_path_buf();
+        self.spawn(move || Event::GameRecordings(crate::profiles::game_recordings(&root)));
+    }
+
+    fn game_art(&self, flavor: &str, art: wowlua_studio_app::system::Art) {
+        let data = self.gamedata.clone();
+        let flavor = flavor.to_string();
+        self.spawn(move || {
+            let image = data.art(&flavor, &art);
+            Event::GameArt(art, image)
+        });
+    }
+
+    fn class_spells(&self, flavor: &str, class: &str) {
+        let data = self.gamedata.clone();
+        let (flavor, class) = (flavor.to_string(), class.to_string());
+        self.spawn(move || {
+            let found = data.class_spells(&flavor, &class);
+            Event::ClassSpells(class, found)
+        });
+    }
+
+    fn search_spells(&self, flavor: &str, query: &str) {
+        let data = self.gamedata.clone();
+        let (flavor, query) = (flavor.to_string(), query.to_string());
+        self.spawn(move || {
+            let found = data.search_spells(&flavor, &query);
+            Event::Spells(query, found)
+        });
+    }
+
+    fn find(&self, what: wowlua_studio_app::system::Find, flavor: &str, query: &str) {
+        let data = self.gamedata.clone();
+        let (flavor, query) = (flavor.to_string(), query.to_string());
+        self.spawn(move || {
+            let rows = match what {
+                wowlua_studio_app::system::Find::Spell => data.search_spells(&flavor, &query),
+                wowlua_studio_app::system::Find::Item => data.search_items(&flavor, &query),
+                wowlua_studio_app::system::Find::Creature => data.search_creatures(&flavor, &query),
+            };
+            Event::Found(what, flavor, query, rows)
+        });
+    }
+
+    fn github(&self, root: &Path, request: wowlua_studio_app::system::GithubRequest) {
+        let root = root.to_path_buf();
+        self.spawn(move || {
+            let event = crate::github::answer(&root, request, crate::settings::github_token());
+            Event::GithubApi(root, event)
+        });
+    }
+
+    fn git(&self, root: &Path, request: wowlua_studio_app::system::GitRequest) {
+        let root = root.to_path_buf();
+        self.spawn(move || {
+            let creds = crate::git::Credentials {
+                github_token: crate::settings::github_token(),
+            };
+            let event = crate::git::answer(&root, request, &creds);
+            Event::Git(root, event)
+        });
+    }
+
+    fn github_account(&self, request: wowlua_studio_app::system::AccountRequest) {
+        self.spawn(move || {
+            Event::Account(crate::github::account(
+                request,
+                crate::settings::github_token(),
+            ))
+        });
+    }
+
+    fn clone_repo(&self, repo: &str, branch: &str) {
+        let (repo, branch) = (repo.to_owned(), branch.to_owned());
+        let send = self.send.clone();
+        let ctx = self.ctx.clone();
+        std::thread::spawn(move || {
+            let creds = crate::git::Credentials {
+                github_token: crate::settings::github_token(),
+            };
+            let tell = |progress: Option<f32>, said: String| {
+                let _ = send.send(Event::Cloning {
+                    repo: repo.clone(),
+                    progress,
+                    said,
+                });
+                ctx.request_repaint();
+            };
+            let result = match crate::clones::dir() {
+                Some(dir) => crate::clones::clone_into(
+                    &dir,
+                    &format!("https://github.com/{repo}.git"),
+                    &repo,
+                    &branch,
+                    &creds,
+                    &tell,
+                ),
+                None => Err("Studio has no folder for its data, so nothing to clone into".into()),
+            };
+            let _ = send.send(Event::Cloned {
+                repo,
+                branch,
+                result,
+            });
+            ctx.request_repaint();
+        });
+    }
+
+    fn clones_dir(&self) -> Option<PathBuf> {
+        crate::clones::dir()
+    }
+
+    fn hold_clone(&self, root: &Path) {
+        if let Some(dir) = crate::clones::dir() {
+            crate::clones::hold_clone(&dir, root);
+        }
+    }
+
+    fn clone_losses(&self, root: &Path) -> Result<wowlua_studio_app::system::Losses, String> {
+        crate::clones::losses(root)
+    }
+
+    fn delete_clone(&self, root: &Path) -> Result<(), String> {
+        let dir = crate::clones::dir().ok_or("Studio has no folder for its data")?;
+        crate::clones::delete(&dir, root)
+    }
+
+    fn left_clones(&self) -> Vec<wowlua_studio_app::system::LeftClone> {
+        crate::clones::dir()
+            .map(|d| crate::clones::left(&d))
+            .unwrap_or_default()
+    }
+
+    fn binding_actions(&self, flavor: &str) -> Vec<(String, String)> {
+        crate::bindings::actions(flavor)
+    }
+
+    fn cvars(&self, flavor: &str) -> Vec<wowlua_studio_app::system::CVarInfo> {
+        wowlua_engine::cvars(flavor)
+            .into_iter()
+            .map(|c| wowlua_studio_app::system::CVarInfo {
+                name: c.name,
+                default: c.default,
+                secure: c.secure,
+                read_only: c.read_only,
+            })
+            .collect()
+    }
+
+    fn world_profiles(&self, root: &Path) -> Vec<wowlua_studio_app::system::WorldProfile> {
+        crate::world::profiles(root)
+    }
+
+    fn default_profile(&self, flavor: &str) -> Option<String> {
+        wowlua_test::profile::default_for(flavor).map(str::to_owned)
+    }
+
+    fn built_in_profiles(&self, flavor: &str) -> Vec<(String, String)> {
+        wowlua_manifest::world::BUILT_IN
+            .iter()
+            .filter_map(|name| {
+                Some((
+                    (*name).to_owned(),
+                    wowlua_manifest::world::built_in(flavor, name)?,
+                ))
+            })
+            .collect()
+    }
+
+    fn check_world_profile(&self, text: &str) -> Vec<wowlua_studio_app::system::ProfileProblem> {
+        crate::world::check(text)
+    }
+
+    fn profile_uses(&self, root: &Path, name: &str) -> Vec<String> {
+        crate::world::uses(root, name, &self.test_files(root))
+    }
+
+    fn world_snapshots(&self, root: &Path) {
+        let root = root.to_path_buf();
+        self.spawn(move || Event::WorldSnapshots(crate::world::snapshots(&root)));
+    }
+
+    fn read_saved_variables(
+        &self,
+        path: &Path,
+    ) -> Result<Vec<(String, serde_json::Value)>, String> {
+        crate::world::saved_variables(path)
+    }
+
+    fn reveal(&self, path: &Path) {
+        let opener = if cfg!(target_os = "macos") {
+            "open"
+        } else if cfg!(windows) {
+            "explorer"
+        } else {
+            "xdg-open"
+        };
+        if let Err(e) = Command::new(opener).arg(path).spawn() {
+            crate::log::line(&format!("cannot show {}: {e}", path.display()));
+        }
+    }
+
+    fn settings_info(&self) {
+        self.spawn(|| Event::Settings(crate::settings::info()));
+    }
+
+    fn log_file(&self) -> Option<PathBuf> {
+        crate::log::path()
+    }
+
+    fn clear_check_cache(&self) {
+        crate::settings::clear_check_cache();
+    }
+
+    fn clear_art_cache(&self) {
+        crate::settings::clear_art_cache();
+    }
+
+    fn check_updates(&self) {
+        self.spawn(|| Event::Updates(crate::settings::check_updates()));
+    }
+
+    fn refresh_ui(&self, flavor: &str) {
+        if let Err(e) = wowlua_test::forget_ui_source(flavor) {
+            crate::log::line(&e);
+        }
+        self.download_ui(flavor);
+    }
+
+    fn github_sign_in(&self, on: bool) {
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let old = std::mem::replace(&mut *self.github_stop.borrow_mut(), stop.clone());
+        old.store(true, std::sync::atomic::Ordering::Relaxed);
+        if !on {
+            crate::settings::github_sign_out();
+            return;
+        }
+        let send = std::sync::Mutex::new(self.send.clone());
+        let ctx = self.ctx.clone();
+        std::thread::spawn(move || {
+            crate::settings::github_sign_in(stop, |event| {
+                if let Ok(send) = send.lock() {
+                    let _ = send.send(Event::Github(event));
+                }
+                ctx.request_repaint();
+            });
+        });
+    }
+
+    fn claude_key(&self, key: Option<String>) {
+        crate::settings::claude_key(key.as_deref());
+    }
+
+    fn claude_link(
+        &self,
+        root: &Path,
+        permissions: std::collections::BTreeMap<String, String>,
+    ) -> Result<wowlua_studio_app::system::ClaudeLink, String> {
+        use wowlua_studio_app::system::{ClaudeLink, ClaudeReply};
+        // The app's answers: each question waits on a channel of its own.
+        let waiting = self.claude_waiting.clone();
+        let send = std::sync::Mutex::new(self.send.clone());
+        let ctx = self.ctx.clone();
+        let next = std::sync::atomic::AtomicU64::new(1);
+        let ask: crate::claude_tools::AskApp = std::sync::Arc::new(move |event| {
+            let id = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let (tx, rx) = channel::<ClaudeReply>();
+            if let Ok(mut w) = waiting.lock() {
+                w.insert(id, tx);
+            }
+            if let Ok(send) = send.lock() {
+                let _ = send.send(Event::Claude { id, event });
+            }
+            ctx.request_repaint();
+            rx.recv_timeout(std::time::Duration::from_secs(3600))
+                .map_err(|_| "Studio did not answer".to_string())
+        });
+        let root = root.to_path_buf();
+        if let Ok(mut p) = self.claude_permissions.lock() {
+            *p = permissions;
+        }
+        let shared = self.claude_permissions.clone();
+        // (the conversation's changes: kept while it goes on, new for a new
+        // workspace)
+        if let Ok(mut c) = self.claude_changes.lock()
+            && c.root() != root.as_path()
+        {
+            *c = crate::claude_changes::Changes::new(&root);
+        }
+        let changes = self.claude_changes.clone();
+        // (a connection: Claude Code's; each its own tools)
+        let link = crate::mcp_link::Link::open(move || {
+            let mut tools = crate::claude_tools::StudioTools::new(
+                root.clone(),
+                shared.clone(),
+                ask.clone(),
+                changes.clone(),
+            );
+            Box::new(move |msg| tools.handle(msg))
+        })
+        .map_err(|e| format!("cannot open Studio's tools for Claude: {e}"))?;
+        let exe = std::env::current_exe().map_err(|e| format!("Studio's own path: {e}"))?;
+        let mcp_config = serde_json::json!({
+            "mcpServers": {
+                "wowlua-studio": {
+                    "type": "stdio",
+                    "command": exe,
+                    "args": ["mcp-bridge", link.socket, link.token],
+                }
+            }
+        })
+        .to_string();
+        *self.claude_link.borrow_mut() = Some(link);
+        Ok(ClaudeLink { mcp_config })
+    }
+
+    fn claude_permission(&self, group: &str, permission: &str) {
+        if let Ok(mut p) = self.claude_permissions.lock() {
+            p.insert(group.to_owned(), permission.to_owned());
+        }
+    }
+
+    fn claude_start(
+        &self,
+        root: &Path,
+        start: wowlua_studio_app::system::ClaudeStart,
+    ) -> Result<(), String> {
+        let send = std::sync::Mutex::new(self.send.clone());
+        let ctx = self.ctx.clone();
+        let conversation = crate::claude_run::Conversation::start(root, &start, move |event| {
+            if let Ok(send) = send.lock() {
+                let _ = send.send(Event::Conversation(event));
+            }
+            ctx.request_repaint();
+        })?;
+        *self.claude_run.borrow_mut() = Some(conversation);
+        Ok(())
+    }
+
+    fn claude_send(&self, text: &str) -> Result<(), String> {
+        match self.claude_run.borrow_mut().as_mut() {
+            Some(c) => c.send(text),
+            None => Err("no conversation runs".into()),
+        }
+    }
+
+    fn claude_stop(&self) {
+        if let Some(mut c) = self.claude_run.borrow_mut().take() {
+            c.stop();
+        }
+    }
+
+    fn claude_checkpoint(&self, label: &str) {
+        if let Ok(mut c) = self.claude_changes.lock() {
+            c.checkpoint(label);
+        }
+    }
+
+    fn claude_changes(&self) -> Option<wowlua_studio_app::system::ClaudeChanges> {
+        self.claude_changes.lock().ok().map(|c| c.view())
+    }
+
+    fn claude_undo(
+        &self,
+        path: &str,
+        hunk: &wowlua_studio_app::system::ClaudeHunk,
+    ) -> Result<(), String> {
+        self.claude_changes
+            .lock()
+            .map_err(|_| "busy".to_string())?
+            .undo(path, hunk)
+    }
+
+    fn claude_redo(&self, i: usize) -> Result<(), String> {
+        self.claude_changes
+            .lock()
+            .map_err(|_| "busy".to_string())?
+            .redo(i)
+    }
+
+    fn claude_back_to(&self, k: usize) -> Result<Vec<String>, String> {
+        self.claude_changes
+            .lock()
+            .map_err(|_| "busy".to_string())?
+            .back_to(k)
+    }
+
+    fn claude_link_close(&self) {
+        self.claude_stop();
+        if let Ok(mut c) = self.claude_changes.lock() {
+            *c = crate::claude_changes::Changes::default();
+        }
+        self.claude_link.borrow_mut().take();
+        // (questions still waiting get no answer: their tools say so)
+        if let Ok(mut w) = self.claude_waiting.lock() {
+            w.clear();
+        }
+    }
+
+    fn claude_reply(&self, id: u64, reply: wowlua_studio_app::system::ClaudeReply) {
+        let tx = self
+            .claude_waiting
+            .lock()
+            .ok()
+            .and_then(|mut w| w.remove(&id));
+        if let Some(tx) = tx {
+            let _ = tx.send(reply);
+        }
+    }
+
+    fn claude_sign_out(&self) {
+        self.spawn(|| {
+            crate::claude::sign_out();
+            Event::Settings(crate::settings::info())
+        });
+    }
+
+    fn deps_read(&self, dir: &Path) {
+        let dir = dir.to_path_buf();
+        self.spawn(move || Event::Deps(DepsEvent::Read(Box::new(crate::deps::read(&dir)))));
+    }
+
+    fn deps_outdated(&self, dir: &Path) {
+        let dir = dir.to_path_buf();
+        self.spawn(move || Event::Deps(DepsEvent::Outdated(crate::deps::outdated(&dir))));
+    }
+
+    fn deps_search(&self, _dir: &Path, query: &str) {
+        let query = query.to_owned();
+        self.spawn(move || {
+            let found = crate::deps::search(&query);
+            Event::Deps(DepsEvent::Searched { query, found })
+        });
+    }
+
+    fn deps_versions(&self, _dir: &Path, name: &str) {
+        let name = name.to_owned();
+        self.spawn(move || {
+            let versions = crate::deps::versions(&name);
+            Event::Deps(DepsEvent::Versions { name, versions })
+        });
+    }
+
+    fn deps_run(&self, dir: &Path, job: u64, command: wowlua_studio_app::system::DepsCommand) {
+        let dir = dir.to_path_buf();
+        self.spawn(move || {
+            let (ok, output) = crate::deps::run(&dir, &command);
+            Event::Deps(DepsEvent::Ran {
+                job,
+                command: command.line(),
+                ok,
+                output,
+            })
+        });
+    }
+
+    fn ship_read(&self, root: &Path) {
+        let root = root.to_path_buf();
+        self.spawn(move || Event::Ship(ShipEvent::Read(Box::new(crate::ship::read(&root)))));
+    }
+
+    fn profiles_read(&self, dir: &Path) {
+        let dir = dir.to_path_buf();
+        self.spawn(move || {
+            let read = crate::ship::read(&dir).map(|facts| facts.profiles);
+            Event::Profiles { dir, read }
+        });
+    }
+
+    fn ship_tokens(&self, targets: Vec<wowlua_studio_app::system::ShipTarget>) {
+        self.spawn(move || Event::Ship(ShipEvent::Tokens(crate::ship::tokens(&targets))));
+    }
+
+    fn ship_token(&self, kind: &str, token: Option<String>) {
+        let kind = kind.to_owned();
+        self.spawn(move || {
+            let result = crate::ship::token(&kind, token.as_deref());
+            Event::Ship(ShipEvent::TokenSaved { kind, result })
+        });
+    }
+
+    fn ship_build(&self, root: &Path, job: u64, build: wowlua_studio_app::system::ShipBuild) {
+        let tell = self.ship_tell(move |event| ShipEvent::Build { job, event });
+        crate::ship::build(root.to_path_buf(), build, tell);
+    }
+
+    fn ship_dev(&self, root: &Path, dev: Option<wowlua_studio_app::system::ShipInstall>) {
+        match dev {
+            Some(how) => {
+                let tell = self.ship_tell(ShipEvent::Dev);
+                self.dev.borrow_mut().start(root.to_path_buf(), how, tell);
+            }
+            None => self.dev.borrow_mut().stop(),
+        }
+    }
+
+    fn ship_publish(&self, root: &Path, job: u64, publish: wowlua_studio_app::system::ShipPublish) {
+        let tell = self.ship_tell(move |event| ShipEvent::Publish { job, event });
+        crate::ship::publish(root.to_path_buf(), publish, tell);
+    }
+
+    fn ship_tag(&self, root: &Path, tag: wowlua_studio_app::system::TagPush) {
+        let root = root.to_path_buf();
+        self.spawn(move || Event::Ship(ShipEvent::Tagged(crate::ship::tag_and_push(&root, &tag))));
+    }
+
+    fn game_screen(
+        &self,
+        view: wowlua_studio_app::system::ViewCamera,
+    ) -> Option<wowlua_studio_app::system::GameScreen> {
+        let frames = self.game_frames.borrow().clone();
+        self.game_screen.borrow_mut().as_mut()?.show(&frames, view)
+    }
+
+    fn test_stop(&self) {
+        self.test_stop
+            .borrow()
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn affected_tests(&self, root: &Path, changed: &Path) -> Vec<PathBuf> {
+        crate::tests::affected(root, changed)
+    }
+
+    fn coverage_report(&self, root: &Path) -> Option<wowlua_studio_app::system::Coverage> {
+        crate::tests::read_coverage(root)
+    }
+
+    fn read_image(&self, path: &Path) -> Option<wowlua_studio_app::system::Image> {
+        read_png(path)
+    }
+
+    fn copy_file(&self, from: &Path, to: &Path) -> Result<(), String> {
+        std::fs::copy(from, to)
+            .map(|_| ())
+            .map_err(|e| format!("cannot copy {} to {}: {e}", from.display(), to.display()))
     }
 
     fn search(&self, root: &Path, search: Search) {
@@ -473,6 +1203,7 @@ fn workspace_of(projects: &[wowlua_driver::project::Project]) -> Workspace {
                     .map(|r| r.to_string_lossy().replace('\\', "/"))
                     .unwrap_or_default(),
                 dir: p.manifest.root.clone(),
+                flavors: p.manifest.flavors.clone(),
             }
         })
         .collect();
@@ -522,6 +1253,15 @@ fn raw_workspace(manifest: &Path, why: &str) -> Option<Workspace> {
             .map(|r| r.to_string_lossy().replace('\\', "/"))
             .unwrap_or_default(),
         dir: dir.to_path_buf(),
+        flavors: value
+            .get("flavors")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|f| f.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default(),
     };
     let mut members = vec![member_of(&root, &value)];
     let patterns = value
@@ -592,6 +1332,18 @@ fn kind_name(kind: PackageKind) -> &'static str {
     }
 }
 
+/// The branch checked out in `dir`'s repository.
+pub(crate) fn repository_branch(dir: &Path) -> Option<String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .output()
+        .ok()?;
+    let branch = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    (out.status.success() && !branch.is_empty()).then_some(branch)
+}
+
 /// The installation as `wowlua install` finds it, with its client folders.
 fn installation() -> Installation {
     match wowlua_driver::install::find_wow(None) {
@@ -636,33 +1388,6 @@ fn installation() -> Installation {
             }),
         },
     }
-}
-
-/// Keeps the installation in `wow.path` of wowlua's config (S028), leaving
-/// the rest of the file as it is.
-fn write_wow_path(path: &Path) -> std::io::Result<()> {
-    let home = wowlua_driver::install::wowlua_home()
-        .ok_or_else(|| std::io::Error::other("no home folder for wowlua's config"))?;
-    let file = home.join("config.json");
-    let mut config: serde_json::Value = std::fs::read_to_string(&file)
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or_else(|| serde_json::json!({}));
-    let object = config
-        .as_object_mut()
-        .ok_or_else(|| std::io::Error::other("~/.wowlua/config.json is not a JSON object"))?;
-    let wow = object.entry("wow").or_insert_with(|| serde_json::json!({}));
-    let wow = wow
-        .as_object_mut()
-        .ok_or_else(|| std::io::Error::other("`wow` in ~/.wowlua/config.json is not an object"))?;
-    wow.insert(
-        "path".into(),
-        serde_json::Value::String(path.to_string_lossy().into_owned()),
-    );
-    std::fs::create_dir_all(&home)?;
-    let mut text = serde_json::to_string_pretty(&config).map_err(std::io::Error::other)?;
-    text.push('\n');
-    std::fs::write(&file, text)
 }
 
 fn new_addon(request: &NewAddon) -> Result<PathBuf, String> {
@@ -900,6 +1625,39 @@ fn semantic(text: &str) -> Vec<Highlight> {
         out.push(Highlight { start, end, syntax });
     }
     out
+}
+
+/// A PNG's pixels as RGBA.
+fn read_png(path: &Path) -> Option<wowlua_studio_app::system::Image> {
+    let file = std::fs::File::open(path).ok()?;
+    let mut decoder = png::Decoder::new(std::io::BufReader::new(file));
+    decoder.set_transformations(png::Transformations::normalize_to_color8());
+    let mut reader = decoder.read_info().ok()?;
+    let mut buf = vec![0; reader.output_buffer_size()?];
+    let info = reader.next_frame(&mut buf).ok()?;
+    let pixels = &buf[..info.buffer_size()];
+    let rgba: Vec<u8> = match info.color_type {
+        png::ColorType::Rgba => pixels.to_vec(),
+        png::ColorType::Rgb => pixels
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .flat_map(|&[r, g, b]| [r, g, b, 255])
+            .collect(),
+        png::ColorType::GrayscaleAlpha => pixels
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .flat_map(|&[g, a]| [g, g, g, a])
+            .collect(),
+        png::ColorType::Grayscale => pixels.iter().flat_map(|&g| [g, g, g, 255]).collect(),
+        png::ColorType::Indexed => return None,
+    };
+    Some(wowlua_studio_app::system::Image {
+        width: info.width,
+        height: info.height,
+        rgba,
+    })
 }
 
 /// How many matches a search keeps.
