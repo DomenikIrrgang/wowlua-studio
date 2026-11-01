@@ -125,6 +125,10 @@ pub fn args(start: &ClaudeStart) -> Vec<String> {
     a.push(format!("mcp__{SERVER}"));
     a.push("--model".into());
     a.push(start.model.clone());
+    if !start.system.is_empty() {
+        a.push("--append-system-prompt".into());
+        a.push(start.system.clone());
+    }
     if let Some(effort) = &start.effort {
         a.push("--effort".into());
         a.push(effort.clone());
@@ -350,6 +354,7 @@ mod tests {
             model: "haiku".into(),
             effort: None,
             resume: None,
+            system: String::new(),
             prompt: "Use the list_files tool to list the workspace's files, then read src/counter.wowlua with the read_file tool, then answer with only the word done.".into(),
         };
         let mut conversation = Conversation::start(dir.path(), &start, move |e| {
@@ -415,6 +420,7 @@ mod tests {
             effort: None,
             resume: Some("s1".into()),
             prompt: "hi".into(),
+            system: "You work in wowlua Studio.".into(),
         });
         let joined = a.join(" ");
         assert!(joined.contains("--setting-sources user"), "{joined}");
@@ -424,6 +430,10 @@ mod tests {
             "{joined}"
         );
         assert!(joined.contains("--resume s1"), "{joined}");
+        assert!(
+            joined.contains("--append-system-prompt You work in wowlua Studio."),
+            "{joined}"
+        );
         let tools = a.iter().position(|x| x == "--tools").unwrap();
         assert_eq!(a[tools + 1], "", "Claude Code's own tools off");
         assert!(!a.contains(&"--effort".to_string()));

@@ -532,7 +532,10 @@ Needs new work in wowlua: the rest of wowlua's tools in `wowlua mcp`
 Built so far: step 1, Claude Code found and signed in, and the settings
 (S095); step 2, Studio's tools over MCP through a stdio bridge in
 Studio's own binary (S096); step 3, the conversation (S097); step 4,
-changes and checkpoints (S098). Next: step 5, what Claude knows.
+changes and checkpoints (S098); step 5, what Claude knows (S099); step
+6, asking Claude from the other pages (S100); step 7, the model and
+effort per conversation, and the kept conversations (S101). Not yet: M14
+checked by hand on macOS, and on Windows and Linux.
 
 ## Checked by hand on Windows and Linux
 

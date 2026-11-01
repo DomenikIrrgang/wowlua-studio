@@ -40,6 +40,8 @@ fn group(tool: &str) -> &'static str {
         "git_commit" => "git.commit",
         "git_push" | "git_pull" => "git.push",
         "git_branch" => "git.branches",
+        // wowlua's own docs: only read, always allowed (S099)
+        "wowlua_docs" | "wowlua_reference" => "docs",
         // the debugger's and the profiler's
         _ => "debugger",
     }
@@ -100,6 +102,9 @@ impl StudioTools {
     }
 
     fn permission(&self, tool: &str) -> String {
+        if group(tool) == "docs" {
+            return "allow".into();
+        }
         self.permissions
             .lock()
             .ok()

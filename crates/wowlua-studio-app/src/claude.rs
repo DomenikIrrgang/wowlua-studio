@@ -7,6 +7,7 @@
 use std::collections::BTreeMap;
 
 use egui::{ScrollArea, Ui};
+use serde::{Deserialize, Serialize};
 use wowlua_studio_ui::widgets::{self, ButtonKind};
 use wowlua_studio_ui::{Face, Palette, forms, palette};
 
@@ -24,12 +25,16 @@ pub enum Action {
     Stop,
     /// A new conversation.
     New,
+    /// Open a kept conversation (S101).
+    Open(u64),
+    /// Forget a kept conversation.
+    Forget(u64),
     /// Stage Claude's changed files and commit them on the git page.
     Commit(Vec<String>),
 }
 
 /// One part of the conversation.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Entry {
     You(String),
     /// Claude's text (`streaming`: more to come).
@@ -59,6 +64,13 @@ pub enum Entry {
 /// The conversation on the page.
 #[derive(Default)]
 pub struct Conversation {
+    /// When it started (seconds since the epoch): its key among the kept
+    /// ones (S101).
+    pub id: u64,
+    /// Its model and effort (from the settings at its start; changed in
+    /// its footer).
+    pub model_choice: Option<String>,
+    pub effort_choice: Option<String>,
     pub entries: Vec<Entry>,
     pub draft: String,
     /// Claude Code runs (its process).
@@ -85,11 +97,114 @@ pub struct Conversation {
     /// What Claude is told with the next message: the files went back to
     /// a checkpoint.
     pub notice: Option<String>,
+    /// What goes with the next message besides the open file (S099).
+    pub chips: Vec<Chip>,
+}
+
+/// Context the user adds to a message (`@` chips, S099).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Chip {
+    /// The open file's whole text (its name and problems always go).
+    OpenFile,
+    /// The tests that failed in the last run, with their messages.
+    FailingTests,
+    /// Where the debugger stopped.
+    Stop,
+    /// What another page attached (S100): its label and text.
+    Text { label: String, text: String },
+}
+
+impl Chip {
+    pub const ADDABLE: [Chip; 3] = [Chip::OpenFile, Chip::FailingTests, Chip::Stop];
+
+    pub fn label(&self) -> &str {
+        match self {
+            Chip::OpenFile => "the open file",
+            Chip::FailingTests => "the failing tests",
+            Chip::Stop => "the debugger's stop",
+            Chip::Text { label, .. } => label,
+        }
+    }
+}
+
+/// "Ask Claude" from another page (S100): the message it starts with, and
+/// what the user looks at, attached as a chip.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Prompt {
+    pub draft: String,
+    pub label: String,
+    pub context: String,
+}
+
+/// A conversation kept in Studio's data (S101).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Kept {
+    pub id: u64,
+    pub title: String,
+    pub session: Option<String>,
+    pub entries: Vec<Entry>,
+    pub permissions: BTreeMap<String, String>,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub cost: f64,
+    /// When it was last kept.
+    pub at: u64,
 }
 
 impl Conversation {
-    /// The permissions it starts with: the settings'.
-    pub fn begin(&mut self, settings: &Settings) {
+    /// What is kept of it (none while empty).
+    pub fn kept(&self, now: u64) -> Option<Kept> {
+        let title = self.entries.iter().find_map(|e| match e {
+            Entry::You(t) => Some(short(t, 80)),
+            _ => None,
+        })?;
+        Some(Kept {
+            id: self.id,
+            title,
+            session: self.session.clone(),
+            entries: self.entries.clone(),
+            permissions: self.permissions.clone(),
+            model: self.model_choice.clone(),
+            effort: self.effort_choice.clone(),
+            cost: self.cost,
+            at: now,
+        })
+    }
+
+    /// A kept conversation, to go on with.
+    pub fn from_kept(k: Kept) -> Conversation {
+        let mut entries = k.entries;
+        // (questions left open then cannot be answered now)
+        for e in &mut entries {
+            if let Entry::Ask { answer, .. } = e
+                && answer.is_none()
+            {
+                *answer = Some(false);
+            }
+        }
+        Conversation {
+            id: k.id,
+            model_choice: k.model,
+            effort_choice: k.effort,
+            entries,
+            session: k.session,
+            cost: k.cost,
+            permissions: k.permissions,
+            ..Conversation::default()
+        }
+    }
+
+    /// The permissions, model and effort it starts with: the settings'.
+    pub fn begin(&mut self, settings: &Settings, now: u64) {
+        if self.id == 0 {
+            self.id = now;
+        }
+        if self.model_choice.is_none() {
+            self.model_choice = Some(settings.claude_model.clone());
+        }
+        if self.effort_choice.is_none() {
+            self.effort_choice = Some(settings.claude_effort.clone());
+        }
         if self.permissions.is_empty() {
             self.permissions = CLAUDE_TOOLS
                 .iter()
@@ -258,7 +373,7 @@ pub fn chat(
         return not_ready(ui, settings, claude.as_ref(), waiting, p);
     }
     let mut action = None;
-    let input_h = 118.0;
+    let input_h = 146.0;
     let rect = ui.max_rect();
     let talk = egui::Rect::from_min_max(rect.min, egui::pos2(rect.max.x, rect.max.y - input_h));
     ui.scope_builder(egui::UiBuilder::new().max_rect(talk), |ui| {
@@ -300,6 +415,41 @@ pub fn chat(
         );
         forms::padded(ui, 24, 10, |ui| {
             let limited = c.limited.is_some();
+            // the chips: what goes with the message
+            ui.horizontal_wrapped(|ui| {
+                let mut gone = None;
+                for (i, chip) in c.chips.iter().enumerate() {
+                    if ui
+                        .button(
+                            egui::RichText::new(format!("@ {} ×", chip.label()))
+                                .font(Face::Plex.at(11.5)),
+                        )
+                        .on_hover_text("leave it out")
+                        .clicked()
+                    {
+                        gone = Some(i);
+                    }
+                }
+                if let Some(i) = gone {
+                    c.chips.remove(i);
+                }
+                ui.menu_button(
+                    egui::RichText::new("+ add context").font(Face::Plex.at(11.5)),
+                    |ui| {
+                        for chip in Chip::ADDABLE {
+                            if !c.chips.contains(&chip) && ui.button(chip.label()).clicked() {
+                                c.chips.push(chip);
+                                ui.close();
+                            }
+                        }
+                    },
+                );
+                ui.label(
+                    egui::RichText::new("the open file's name and problems always go")
+                        .font(Face::Plex.at(11.0))
+                        .color(p.ink_faint),
+                );
+            });
             ui.add(
                 egui::TextEdit::multiline(&mut c.draft)
                     .desired_rows(3)
@@ -328,6 +478,41 @@ pub fn chat(
                 .clicked()
                 {
                     action = Some(Action::New);
+                }
+                // this conversation's model and effort (S101)
+                let mut model = c.model_choice.clone().unwrap_or_else(|| "fable".into());
+                let models = ["fable", "opus", "sonnet", "haiku"];
+                let mut at = models.iter().position(|m| *m == model).unwrap_or(0);
+                let opts: Vec<(&str, bool)> = models.iter().map(|m| (*m, true)).collect();
+                if forms::select(ui, "claude-model", &opts, &mut at, 110.0) {
+                    model = models[at].to_owned();
+                    c.model_choice = Some(model);
+                    if c.running && !c.busy {
+                        // (the next message goes on with it)
+                        system.claude_stop();
+                        c.running = false;
+                    }
+                }
+                let efforts = [
+                    crate::state::CLAUDE_EFFORT_DEFAULT,
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh",
+                    "max",
+                ];
+                let effort = c
+                    .effort_choice
+                    .clone()
+                    .unwrap_or_else(|| crate::state::CLAUDE_EFFORT_DEFAULT.into());
+                let mut at = efforts.iter().position(|e| *e == effort).unwrap_or(0);
+                let opts: Vec<(&str, bool)> = efforts.iter().map(|e| (*e, true)).collect();
+                if forms::select(ui, "claude-effort", &opts, &mut at, 190.0) {
+                    c.effort_choice = Some(efforts[at].to_owned());
+                    if c.running && !c.busy {
+                        system.claude_stop();
+                        c.running = false;
+                    }
                 }
                 let mut state = Vec::new();
                 if let Some(m) = &c.model {
@@ -698,10 +883,81 @@ pub fn changes(ui: &mut Ui, c: &mut Conversation, system: &dyn System) -> Option
     action
 }
 
+/// The conversations panel (S101): a new one, and the kept ones of the
+/// workspace, newest first.
+pub fn conversations(ui: &mut Ui, kept: &[Kept], current: u64, busy: bool) -> Option<Action> {
+    let p = palette(ui.ctx());
+    let mut action = None;
+    ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            forms::padded(ui, 10, 10, |ui| {
+                if widgets::button(ui, ButtonKind::Secondary, "new conversation", !busy, None)
+                    .clicked()
+                {
+                    action = Some(Action::New);
+                }
+                ui.add_space(8.0);
+                if kept.is_empty() {
+                    forms::paragraph(
+                        ui,
+                        "Your conversations in this workspace are kept here.",
+                        11.5,
+                        17.0,
+                        p.ink_muted,
+                    );
+                }
+                let mut list: Vec<&Kept> = kept.iter().collect();
+                list.sort_by_key(|k| std::cmp::Reverse(k.at));
+                for k in list {
+                    let here = k.id == current;
+                    let turns = k
+                        .entries
+                        .iter()
+                        .filter(|e| matches!(e, Entry::You(_)))
+                        .count();
+                    let resp = ui.selectable_label(
+                        here,
+                        egui::RichText::new(&k.title).font(Face::Plex.at(12.0)),
+                    );
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{turns} message{} · ≈ ${:.2}",
+                            if turns == 1 { "" } else { "s" },
+                            k.cost
+                        ))
+                        .font(Face::Plex.at(11.0))
+                        .color(p.ink_faint),
+                    );
+                    if resp.clicked() && !here && !busy {
+                        action = Some(Action::Open(k.id));
+                    }
+                    resp.context_menu(|ui| {
+                        if ui.button("forget it").clicked() {
+                            action = Some(Action::Forget(k.id));
+                            ui.close();
+                        }
+                    });
+                    ui.add_space(6.0);
+                }
+                if busy {
+                    forms::paragraph(
+                        ui,
+                        "Claude is working: another conversation opens after.",
+                        11.0,
+                        16.0,
+                        p.ink_faint,
+                    );
+                }
+            });
+        });
+    action
+}
+
 /// The tools panel: this conversation's permission per tool group.
 pub fn tools(ui: &mut Ui, c: &mut Conversation, settings: &Settings, system: &dyn System) {
     let p = palette(ui.ctx());
-    c.begin(settings);
+    c.begin(settings, system.now());
     ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         forms::padded(ui, 14, 12, |ui| {
             forms::paragraph(
@@ -921,5 +1177,29 @@ mod tests {
         });
         assert_eq!(c.limited, Some(Some(57_600)));
         assert_eq!(clock(57_600), "16:00 UTC");
+    }
+
+    /// A conversation kept and opened again (S101): its title, its
+    /// session to go on with; a question left open is answered no.
+    #[test]
+    fn a_conversation_is_kept_and_opened_again() {
+        let mut c = Conversation::default();
+        assert!(c.kept(1).is_none(), "nothing to keep");
+        c.begin(&Settings::default(), 100);
+        assert_eq!(c.id, 100);
+        assert_eq!(c.model_choice.as_deref(), Some("fable"));
+        c.entries
+            .push(Entry::You("a pull countdown on the threat meter".into()));
+        c.session = Some("s1".into());
+        c.ask(3, "files.edit".into(), "write a".into());
+        let k = c.kept(200).unwrap();
+        assert_eq!(k.title, "a pull countdown on the threat meter");
+        let json = serde_json::to_string(&k).unwrap();
+        let back: Kept = serde_json::from_str(&json).unwrap();
+        let again = Conversation::from_kept(back);
+        assert_eq!(again.id, 100);
+        assert_eq!(again.session.as_deref(), Some("s1"));
+        assert!(!again.running);
+        assert!(again.open_asks().is_empty());
     }
 }

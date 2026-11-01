@@ -1527,6 +1527,9 @@ pub struct ClaudeStart {
     pub effort: Option<String>,
     pub resume: Option<String>,
     pub prompt: String,
+    /// What Claude knows from the start (S099): Studio, the workspace, the
+    /// addon's notes and manifest.
+    pub system: String,
 }
 
 /// What a conversation with Claude tells as it goes (S097).

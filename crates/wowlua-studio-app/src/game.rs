@@ -445,6 +445,8 @@ pub enum Action {
     BreakOn(Vec<String>),
     /// The game screen over the whole display (S077).
     FullScreen,
+    /// Ask Claude about the inspected frame (S100).
+    AskClaude(crate::claude::Prompt),
 }
 
 impl GameState {
@@ -2016,6 +2018,22 @@ pub fn inspector(
                         .clicked()
                     {
                         shoot(state, system, Some(id));
+                    }
+                    if widgets::button(ui, ButtonKind::Tertiary, "ask Claude about it", true, None)
+                        .clicked()
+                    {
+                        let label = info["name"]
+                            .as_str()
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| format!("#{id}"));
+                        action = Some(Action::AskClaude(crate::claude::Prompt {
+                            draft: format!("About the frame {label}: "),
+                            label: format!("frame {label}"),
+                            context: format!(
+                                "The frame {label} as the game page inspects it (the session is Studio's, not Claude's; find it in Claude's own session by its name):\n{}",
+                                serde_json::to_string_pretty(&info).unwrap_or_default()
+                            ),
+                        }));
                     }
                 });
             });
