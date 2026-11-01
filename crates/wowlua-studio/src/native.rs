@@ -19,6 +19,19 @@ use wowlua_studio_app::system::{
     ShipEvent, Syntax, System, UiState, Workspace,
 };
 
+/// Git's own files the git page follows: `HEAD`, the index, the refs
+/// and a merge's state (M11).
+fn git_state_file(p: &Path) -> bool {
+    let s = p.to_string_lossy().replace('\\', "/");
+    let Some((_, inside)) = s.split_once("/.git/") else {
+        return false;
+    };
+    matches!(
+        inside,
+        "HEAD" | "index" | "MERGE_HEAD" | "ORIG_HEAD" | "FETCH_HEAD" | "packed-refs"
+    ) || inside.starts_with("refs/")
+}
+
 /// Folders the explorer and the watcher leave out: build output and the
 /// tools' own.
 const SKIPPED: &[&str] = &["dist", "target", "node_modules"];
@@ -46,7 +59,23 @@ pub struct NativeSystem {
     dev: RefCell<crate::ship::Dev>,
     /// Set to stop a GitHub sign-in under way (S062).
     github_stop: RefCell<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// Studio's tools for Claude while a conversation runs (S096), and the
+    /// questions waiting for the app's answer.
+    claude_link: RefCell<Option<crate::mcp_link::Link>>,
+    claude_waiting: Waiting,
+    claude_permissions: crate::claude_tools::Permissions,
+    /// What Claude changed in the conversation (S098).
+    claude_changes: crate::claude_changes::Shared,
+    /// The running conversation (S097).
+    claude_run: RefCell<Option<crate::claude_run::Conversation>>,
 }
+
+/// The questions of Studio's tools for Claude waiting for the app's answer.
+type Waiting = std::sync::Arc<
+    std::sync::Mutex<
+        std::collections::HashMap<u64, Sender<wowlua_studio_app::system::ClaudeReply>>,
+    >,
+>;
 
 impl NativeSystem {
     pub fn new(ctx: &egui::Context) -> Self {
@@ -69,6 +98,11 @@ impl NativeSystem {
             gamedata: std::sync::Arc::default(),
             dev: RefCell::default(),
             github_stop: RefCell::default(),
+            claude_link: RefCell::new(None),
+            claude_waiting: Waiting::default(),
+            claude_permissions: crate::claude_tools::Permissions::default(),
+            claude_changes: crate::claude_changes::Shared::default(),
+            claude_run: RefCell::new(None),
         }
     }
 
@@ -233,9 +267,11 @@ impl System for NativeSystem {
             let paths: Vec<PathBuf> = event
                 .paths
                 .into_iter()
-                // Git's own files stay out, but `HEAD`: a checkout (S049).
+                // Git's own files stay out, but `HEAD` (a checkout, S049)
+                // and what the git page follows: the index, the refs, a
+                // merge (M11).
                 .filter(|p| {
-                    p.ends_with(".git/HEAD")
+                    git_state_file(p)
                         || !p
                             .components()
                             .any(|c| skipped(&c.as_os_str().to_string_lossy()))
@@ -350,6 +386,15 @@ impl System for NativeSystem {
             command.arg(path);
         }
         if let Err(e) = command.spawn() {
+            crate::log::line(&format!("cannot open a new window: {e}"));
+        }
+    }
+
+    fn open_window_from_github(&self) {
+        let Ok(exe) = std::env::current_exe() else {
+            return;
+        };
+        if let Err(e) = Command::new(exe).arg(crate::FROM_GITHUB).spawn() {
             crate::log::line(&format!("cannot open a new window: {e}"));
         }
     }
@@ -580,9 +625,99 @@ impl System for NativeSystem {
             let rows = match what {
                 wowlua_studio_app::system::Find::Spell => data.search_spells(&flavor, &query),
                 wowlua_studio_app::system::Find::Item => data.search_items(&flavor, &query),
+                wowlua_studio_app::system::Find::Creature => data.search_creatures(&flavor, &query),
             };
             Event::Found(what, flavor, query, rows)
         });
+    }
+
+    fn github(&self, root: &Path, request: wowlua_studio_app::system::GithubRequest) {
+        let root = root.to_path_buf();
+        self.spawn(move || {
+            let event = crate::github::answer(&root, request, crate::settings::github_token());
+            Event::GithubApi(root, event)
+        });
+    }
+
+    fn git(&self, root: &Path, request: wowlua_studio_app::system::GitRequest) {
+        let root = root.to_path_buf();
+        self.spawn(move || {
+            let creds = crate::git::Credentials {
+                github_token: crate::settings::github_token(),
+            };
+            let event = crate::git::answer(&root, request, &creds);
+            Event::Git(root, event)
+        });
+    }
+
+    fn github_account(&self, request: wowlua_studio_app::system::AccountRequest) {
+        self.spawn(move || {
+            Event::Account(crate::github::account(
+                request,
+                crate::settings::github_token(),
+            ))
+        });
+    }
+
+    fn clone_repo(&self, repo: &str, branch: &str) {
+        let (repo, branch) = (repo.to_owned(), branch.to_owned());
+        let send = self.send.clone();
+        let ctx = self.ctx.clone();
+        std::thread::spawn(move || {
+            let creds = crate::git::Credentials {
+                github_token: crate::settings::github_token(),
+            };
+            let tell = |progress: Option<f32>, said: String| {
+                let _ = send.send(Event::Cloning {
+                    repo: repo.clone(),
+                    progress,
+                    said,
+                });
+                ctx.request_repaint();
+            };
+            let result = match crate::clones::dir() {
+                Some(dir) => crate::clones::clone_into(
+                    &dir,
+                    &format!("https://github.com/{repo}.git"),
+                    &repo,
+                    &branch,
+                    &creds,
+                    &tell,
+                ),
+                None => Err("Studio has no folder for its data, so nothing to clone into".into()),
+            };
+            let _ = send.send(Event::Cloned {
+                repo,
+                branch,
+                result,
+            });
+            ctx.request_repaint();
+        });
+    }
+
+    fn clones_dir(&self) -> Option<PathBuf> {
+        crate::clones::dir()
+    }
+
+    fn hold_clone(&self, root: &Path) {
+        if let Some(dir) = crate::clones::dir() {
+            crate::clones::hold_clone(&dir, root);
+        }
+    }
+
+    fn clone_losses(&self, root: &Path) -> Result<wowlua_studio_app::system::Losses, String> {
+        crate::clones::losses(root)
+    }
+
+    fn delete_clone(&self, root: &Path) -> Result<(), String> {
+        let dir = crate::clones::dir().ok_or("Studio has no folder for its data")?;
+        crate::clones::delete(&dir, root)
+    }
+
+    fn left_clones(&self) -> Vec<wowlua_studio_app::system::LeftClone> {
+        crate::clones::dir()
+            .map(|d| crate::clones::left(&d))
+            .unwrap_or_default()
     }
 
     fn binding_actions(&self, flavor: &str) -> Vec<(String, String)> {
@@ -603,6 +738,22 @@ impl System for NativeSystem {
 
     fn world_profiles(&self, root: &Path) -> Vec<wowlua_studio_app::system::WorldProfile> {
         crate::world::profiles(root)
+    }
+
+    fn default_profile(&self, flavor: &str) -> Option<String> {
+        wowlua_test::profile::default_for(flavor).map(str::to_owned)
+    }
+
+    fn built_in_profiles(&self, flavor: &str) -> Vec<(String, String)> {
+        wowlua_manifest::world::BUILT_IN
+            .iter()
+            .filter_map(|name| {
+                Some((
+                    (*name).to_owned(),
+                    wowlua_manifest::world::built_in(flavor, name)?,
+                ))
+            })
+            .collect()
     }
 
     fn check_world_profile(&self, text: &str) -> Vec<wowlua_studio_app::system::ProfileProblem> {
@@ -687,6 +838,170 @@ impl System for NativeSystem {
 
     fn claude_key(&self, key: Option<String>) {
         crate::settings::claude_key(key.as_deref());
+    }
+
+    fn claude_link(
+        &self,
+        root: &Path,
+        permissions: std::collections::BTreeMap<String, String>,
+    ) -> Result<wowlua_studio_app::system::ClaudeLink, String> {
+        use wowlua_studio_app::system::{ClaudeLink, ClaudeReply};
+        // The app's answers: each question waits on a channel of its own.
+        let waiting = self.claude_waiting.clone();
+        let send = std::sync::Mutex::new(self.send.clone());
+        let ctx = self.ctx.clone();
+        let next = std::sync::atomic::AtomicU64::new(1);
+        let ask: crate::claude_tools::AskApp = std::sync::Arc::new(move |event| {
+            let id = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let (tx, rx) = channel::<ClaudeReply>();
+            if let Ok(mut w) = waiting.lock() {
+                w.insert(id, tx);
+            }
+            if let Ok(send) = send.lock() {
+                let _ = send.send(Event::Claude { id, event });
+            }
+            ctx.request_repaint();
+            rx.recv_timeout(std::time::Duration::from_secs(3600))
+                .map_err(|_| "Studio did not answer".to_string())
+        });
+        let root = root.to_path_buf();
+        if let Ok(mut p) = self.claude_permissions.lock() {
+            *p = permissions;
+        }
+        let shared = self.claude_permissions.clone();
+        // (the conversation's changes: kept while it goes on, new for a new
+        // workspace)
+        if let Ok(mut c) = self.claude_changes.lock()
+            && c.root() != root.as_path()
+        {
+            *c = crate::claude_changes::Changes::new(&root);
+        }
+        let changes = self.claude_changes.clone();
+        // (a connection: Claude Code's; each its own tools)
+        let link = crate::mcp_link::Link::open(move || {
+            let mut tools = crate::claude_tools::StudioTools::new(
+                root.clone(),
+                shared.clone(),
+                ask.clone(),
+                changes.clone(),
+            );
+            Box::new(move |msg| tools.handle(msg))
+        })
+        .map_err(|e| format!("cannot open Studio's tools for Claude: {e}"))?;
+        let exe = std::env::current_exe().map_err(|e| format!("Studio's own path: {e}"))?;
+        let mcp_config = serde_json::json!({
+            "mcpServers": {
+                "wowlua-studio": {
+                    "type": "stdio",
+                    "command": exe,
+                    "args": ["mcp-bridge", link.socket, link.token],
+                }
+            }
+        })
+        .to_string();
+        *self.claude_link.borrow_mut() = Some(link);
+        Ok(ClaudeLink { mcp_config })
+    }
+
+    fn claude_permission(&self, group: &str, permission: &str) {
+        if let Ok(mut p) = self.claude_permissions.lock() {
+            p.insert(group.to_owned(), permission.to_owned());
+        }
+    }
+
+    fn claude_start(
+        &self,
+        root: &Path,
+        start: wowlua_studio_app::system::ClaudeStart,
+    ) -> Result<(), String> {
+        let send = std::sync::Mutex::new(self.send.clone());
+        let ctx = self.ctx.clone();
+        let conversation = crate::claude_run::Conversation::start(root, &start, move |event| {
+            if let Ok(send) = send.lock() {
+                let _ = send.send(Event::Conversation(event));
+            }
+            ctx.request_repaint();
+        })?;
+        *self.claude_run.borrow_mut() = Some(conversation);
+        Ok(())
+    }
+
+    fn claude_send(&self, text: &str) -> Result<(), String> {
+        match self.claude_run.borrow_mut().as_mut() {
+            Some(c) => c.send(text),
+            None => Err("no conversation runs".into()),
+        }
+    }
+
+    fn claude_stop(&self) {
+        if let Some(mut c) = self.claude_run.borrow_mut().take() {
+            c.stop();
+        }
+    }
+
+    fn claude_checkpoint(&self, label: &str) {
+        if let Ok(mut c) = self.claude_changes.lock() {
+            c.checkpoint(label);
+        }
+    }
+
+    fn claude_changes(&self) -> Option<wowlua_studio_app::system::ClaudeChanges> {
+        self.claude_changes.lock().ok().map(|c| c.view())
+    }
+
+    fn claude_undo(
+        &self,
+        path: &str,
+        hunk: &wowlua_studio_app::system::ClaudeHunk,
+    ) -> Result<(), String> {
+        self.claude_changes
+            .lock()
+            .map_err(|_| "busy".to_string())?
+            .undo(path, hunk)
+    }
+
+    fn claude_redo(&self, i: usize) -> Result<(), String> {
+        self.claude_changes
+            .lock()
+            .map_err(|_| "busy".to_string())?
+            .redo(i)
+    }
+
+    fn claude_back_to(&self, k: usize) -> Result<Vec<String>, String> {
+        self.claude_changes
+            .lock()
+            .map_err(|_| "busy".to_string())?
+            .back_to(k)
+    }
+
+    fn claude_link_close(&self) {
+        self.claude_stop();
+        if let Ok(mut c) = self.claude_changes.lock() {
+            *c = crate::claude_changes::Changes::default();
+        }
+        self.claude_link.borrow_mut().take();
+        // (questions still waiting get no answer: their tools say so)
+        if let Ok(mut w) = self.claude_waiting.lock() {
+            w.clear();
+        }
+    }
+
+    fn claude_reply(&self, id: u64, reply: wowlua_studio_app::system::ClaudeReply) {
+        let tx = self
+            .claude_waiting
+            .lock()
+            .ok()
+            .and_then(|mut w| w.remove(&id));
+        if let Some(tx) = tx {
+            let _ = tx.send(reply);
+        }
+    }
+
+    fn claude_sign_out(&self) {
+        self.spawn(|| {
+            crate::claude::sign_out();
+            Event::Settings(crate::settings::info())
+        });
     }
 
     fn deps_read(&self, dir: &Path) {
@@ -778,9 +1093,12 @@ impl System for NativeSystem {
         self.spawn(move || Event::Ship(ShipEvent::Tagged(crate::ship::tag_and_push(&root, &tag))));
     }
 
-    fn game_screen(&self) -> Option<wowlua_studio_app::system::GameScreen> {
+    fn game_screen(
+        &self,
+        view: wowlua_studio_app::system::ViewCamera,
+    ) -> Option<wowlua_studio_app::system::GameScreen> {
         let frames = self.game_frames.borrow().clone();
-        self.game_screen.borrow_mut().as_mut()?.show(&frames)
+        self.game_screen.borrow_mut().as_mut()?.show(&frames, view)
     }
 
     fn test_stop(&self) {
@@ -885,6 +1203,7 @@ fn workspace_of(projects: &[wowlua_driver::project::Project]) -> Workspace {
                     .map(|r| r.to_string_lossy().replace('\\', "/"))
                     .unwrap_or_default(),
                 dir: p.manifest.root.clone(),
+                flavors: p.manifest.flavors.clone(),
             }
         })
         .collect();
@@ -934,6 +1253,15 @@ fn raw_workspace(manifest: &Path, why: &str) -> Option<Workspace> {
             .map(|r| r.to_string_lossy().replace('\\', "/"))
             .unwrap_or_default(),
         dir: dir.to_path_buf(),
+        flavors: value
+            .get("flavors")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|f| f.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default(),
     };
     let mut members = vec![member_of(&root, &value)];
     let patterns = value

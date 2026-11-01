@@ -121,6 +121,7 @@ impl System for Fake {
             version: "1.0.0".into(),
             dir: path.join(rel),
             rel: rel.into(),
+            flavors: vec!["camelot".into()],
         };
         self.events
             .borrow_mut()

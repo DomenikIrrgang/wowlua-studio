@@ -46,7 +46,7 @@ pub fn set_font_size(size: f32) {
 }
 
 /// The code's type size: 13 px by default.
-fn font_size() -> f32 {
+pub(crate) fn font_size() -> f32 {
     f32::from_bits(FONT_BITS.load(std::sync::atomic::Ordering::Relaxed))
 }
 
@@ -111,6 +111,8 @@ pub enum Action {
     Fixes(Pos),
     /// Apply a quick fix.
     ApplyFix(Fix),
+    /// "Fix with Claude" at the place (S100).
+    AskClaude(Pos),
     /// A lens of Studio's was clicked.
     Lens(LensClick),
     /// The breakpoint column clicked on a line (from 0): set or remove its
@@ -118,6 +120,10 @@ pub enum Action {
     ToggleBreakpoint(usize),
     /// Right-clicked there: edit the line's breakpoint.
     EditBreakpoint(usize),
+    /// A line's git mark clicked (from 0): its hunk (M11).
+    GitMark(usize, Pos2),
+    /// The blame after a line clicked: its commit (M11).
+    Blame(usize),
     /// A wowlua.json tab (S063): its bar, and its form's place unless it
     /// shows as json. Studio draws them; the editor leaves them empty.
     Manifest {
@@ -171,6 +177,30 @@ pub struct Cx<'a> {
     pub stopped: Option<usize>,
     /// Values shown after lines at a stop (from 0): `name = value`, …
     pub inline: &'a [(usize, String)],
+    /// The lines changed since the last commit, and a merge's sides (M11).
+    pub git_marks: &'a [(usize, GitMark)],
+    /// Who last changed the cursor's line, faintly after it (M11).
+    pub blame: Option<(usize, &'a str)>,
+}
+
+/// A line's mark in the gutter's git column (M11).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GitMark {
+    Added,
+    Changed,
+    /// Lines removed before this one.
+    Removed,
+    /// A merge conflict's lines: mine, then theirs.
+    Mine,
+    Theirs,
+}
+
+/// A merge conflict's side taken by its lens (M11).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Take {
+    Mine,
+    Theirs,
+    Both,
 }
 
 /// A lens over a line: the language server's references, a note (a test's
@@ -210,6 +240,17 @@ pub enum LensClick {
     Debug { file: PathBuf, test: Option<String> },
     /// Profile a test file, or one test of it (S057).
     Profile { file: PathBuf, test: Option<String> },
+    /// Ask Claude why a test failed (S100).
+    AskWhyFailed { file: PathBuf, test: String },
+    /// Ask Claude to help with the merge conflict starting at `line`
+    /// (from 0, S100).
+    AskConflict { file: PathBuf, line: usize },
+    /// A merge conflict starting at `line` (from 0) resolved to a side.
+    Conflict {
+        file: PathBuf,
+        line: usize,
+        take: Take,
+    },
 }
 
 /// A line as it is drawn: tabs to the next stop of four. With it each
@@ -1432,6 +1473,31 @@ fn code(
                         unfold = Some(line);
                     }
                 }
+                // Who last changed the cursor's line, faintly (M11).
+                if let Some((_, text)) = cx.blame.filter(|b| b.0 == line && last_part)
+                    && !cx.inline.iter().any(|v| v.0 == line)
+                {
+                    let x = origin.x + laid.galley.size().x + 32.0;
+                    let r = ui.painter().text(
+                        Pos2::new(x, y + line_h() / 2.0),
+                        Align2::LEFT_CENTER,
+                        text,
+                        Face::Plex.at(11.5),
+                        p.ink_faint,
+                    );
+                    let resp = ui.interact(r, id.with(("blame", line)), Sense::click());
+                    if resp.hovered() {
+                        ui.painter()
+                            .hline(r.x_range(), r.bottom(), Stroke::new(1.0, p.ink_muted));
+                    }
+                    if resp
+                        .on_hover_text("who last changed this line: click for the commit")
+                        .on_hover_cursor(CursorIcon::PointingHand)
+                        .clicked()
+                    {
+                        actions.push(Action::Blame(line));
+                    }
+                }
                 // The stop's values after the line (`st-inval`).
                 if let Some((_, text)) = cx.inline.iter().find(|v| v.0 == line && last_part) {
                     let x = origin.x + laid.galley.size().x + 16.0;
@@ -1655,6 +1721,47 @@ fn code(
                 CornerRadius::ZERO,
                 color,
             );
+        }
+        // Git's column (M11): changed since the last commit, a merge's
+        // sides; a click shows the hunk.
+        if let Some(&(_, mark)) = cx.git_marks.iter().find(|m| m.0 == line) {
+            let x = gutter.right() - 15.0;
+            let top = cy - line_h() / 2.0;
+            let color = match mark {
+                GitMark::Added => p.success,
+                GitMark::Changed => p.warning,
+                GitMark::Removed => p.error,
+                GitMark::Mine => p.amber_ink,
+                GitMark::Theirs => p.note,
+            };
+            let hit = Rect::from_min_size(Pos2::new(x - 2.0, top), Vec2::new(7.0, line_h()));
+            if mark == GitMark::Removed {
+                painter.add(egui::Shape::convex_polygon(
+                    vec![
+                        Pos2::new(x, top - 4.0),
+                        Pos2::new(x + 5.0, top),
+                        Pos2::new(x, top + 4.0),
+                    ],
+                    color,
+                    Stroke::NONE,
+                ));
+            } else {
+                painter.rect_filled(
+                    Rect::from_min_size(Pos2::new(x, top), Vec2::new(3.0, line_h())),
+                    CornerRadius::ZERO,
+                    color,
+                );
+            }
+            if !matches!(mark, GitMark::Mine | GitMark::Theirs) {
+                let resp = ui.interact(hit, id.with(("git-mark", line)), Sense::click());
+                if resp
+                    .on_hover_text("changed since the last commit: click for the hunk")
+                    .on_hover_cursor(CursorIcon::PointingHand)
+                    .clicked()
+                {
+                    actions.push(Action::GitMark(line, hit.right_center()));
+                }
+            }
         }
         // The breakpoint column: a line's breakpoint, the stopped line's
         // arrow; a click sets or removes one, a right click edits it.
@@ -2215,7 +2322,12 @@ fn fixes_popup(
         |ui| {
             ui.set_width(420.0);
             ui.spacing_mut().item_spacing.y = 0.0;
-            for (i, fix) in fixes.iter().enumerate() {
+            // (the last row: fix with Claude, S100)
+            let titles = fixes
+                .iter()
+                .map(|f| f.title.as_str())
+                .chain(["fix with Claude"]);
+            for (i, title) in titles.enumerate() {
                 let (r, resp) = ui.allocate_exact_size(Vec2::new(420.0, 26.0), Sense::click());
                 if i == *selected {
                     ui.painter().rect_filled(r, CornerRadius::ZERO, p.bg_400);
@@ -2225,9 +2337,9 @@ fn fixes_popup(
                 ui.painter().with_clip_rect(r).text(
                     Pos2::new(r.left() + 10.0, r.center().y),
                     Align2::LEFT_CENTER,
-                    &fix.title,
+                    title,
                     Face::Plex.at(12.5),
-                    p.ink,
+                    if i == fixes.len() { p.amber_ink } else { p.ink },
                 );
                 if resp.clicked() {
                     picked = Some(i);
@@ -2238,7 +2350,10 @@ fn fixes_popup(
     if let Some(i) = picked {
         *selected = i;
         if let Some((fixes, i)) = tab.fixes.take() {
-            actions.push(Action::ApplyFix(fixes[i].clone()));
+            match fixes.get(i) {
+                Some(fix) => actions.push(Action::ApplyFix(fix.clone())),
+                None => actions.push(Action::AskClaude(tab.doc.selection.head)),
+            }
         }
     }
 }
@@ -2395,7 +2510,7 @@ fn accept(tab: &mut Tab) {
 }
 
 /// The design system's syntax colours (`tok-*`).
-fn style(syntax: Syntax, font: &FontId, p: &Palette) -> TextFormat {
+pub(crate) fn style(syntax: Syntax, font: &FontId, p: &Palette) -> TextFormat {
     let (color, face) = match syntax {
         Syntax::Keyword => (p.syn_keyword, None),
         Syntax::Type => (p.syn_type, None),
@@ -2478,19 +2593,21 @@ fn keyboard(ui: &Ui, tab: &mut Tab, mac: bool, page: usize, actions: &mut Vec<Ac
             } = &event
         {
             match key {
+                // (the fixes and "fix with Claude")
                 Key::ArrowDown => {
-                    *selected = (*selected + 1) % fixes.len().max(1);
+                    *selected = (*selected + 1) % (fixes.len() + 1);
                     continue;
                 }
                 Key::ArrowUp => {
-                    *selected = (*selected + fixes.len().max(1) - 1) % fixes.len().max(1);
+                    *selected = (*selected + fixes.len()) % (fixes.len() + 1);
                     continue;
                 }
                 Key::Enter => {
-                    if let Some((fixes, i)) = tab.fixes.take()
-                        && let Some(fix) = fixes.get(i)
-                    {
-                        actions.push(Action::ApplyFix(fix.clone()));
+                    if let Some((fixes, i)) = tab.fixes.take() {
+                        match fixes.get(i) {
+                            Some(fix) => actions.push(Action::ApplyFix(fix.clone())),
+                            None => actions.push(Action::AskClaude(tab.doc.selection.head)),
+                        }
                     }
                     continue;
                 }

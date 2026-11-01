@@ -52,7 +52,7 @@ pub fn icon_for(label: &str) -> Option<Icon> {
         "publish" | "push" | "upload" | "export" | "tag" => Icon::Publish,
         "update" | "upgrade" | "train" => Icon::Update,
         "commit" => Icon::Commit,
-        "branch" | "fork" => Icon::Git,
+        "branch" | "fork" | "switch" => Icon::Git,
         "merge" => Icon::PullRequest,
         "compare" | "diff" => Icon::Compare,
         "explain" | "why" => Icon::Explain,

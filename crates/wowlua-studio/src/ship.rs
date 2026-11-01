@@ -115,7 +115,7 @@ fn git(dir: &Path, args: &[&str]) -> Option<String> {
 }
 
 /// The session's diagnostics where they point, lints at their levels.
-fn diagnostics(session: &mut Session, root: &Path) -> (bool, Vec<ShipDiagnostic>) {
+pub(crate) fn diagnostics(session: &mut Session, root: &Path) -> (bool, Vec<ShipDiagnostic>) {
     let taken = session.take_diagnostics();
     let fail = taken.should_fail(false);
     let list = taken

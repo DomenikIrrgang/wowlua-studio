@@ -48,6 +48,11 @@ pub struct Config {
     pub debug_blizzard_ui: bool,
     /// Read from VS Code's `launch.json` (Studio writes its own).
     pub vscode: bool,
+    /// The workspace's addon to run (the title bar's package).
+    pub package: Option<PathBuf>,
+    /// Run without the debugger: no breakpoints, no stops (the title
+    /// bar's run, ctrl f5).
+    pub no_debug: bool,
 }
 
 impl Config {
@@ -78,6 +83,7 @@ impl Config {
                 .test
                 .as_ref()
                 .map(|t| (t.clone(), self.filters.clone())),
+            package: self.package.clone(),
             flavor: self.flavor.clone(),
             profile: self.profile.clone(),
             manual: self.manual,
@@ -137,6 +143,8 @@ impl Config {
             stop_on_entry: j["stopOnEntry"].as_bool().unwrap_or(false),
             debug_blizzard_ui: j["debugBlizzardUI"].as_bool().unwrap_or(false),
             vscode,
+            package: None,
+            no_debug: false,
         })
     }
 }
@@ -246,6 +254,14 @@ pub struct Kept {
     /// Recent sessions: the configuration, how it ended, when.
     pub recent: Vec<(String, String, u64)>,
     pub chosen: Option<String>,
+    /// What the title bar runs: the addon (its folder from the
+    /// workspace's root), the flavor, the world profile.
+    #[serde(default)]
+    pub run_package: Option<String>,
+    #[serde(default)]
+    pub run_flavor: Option<String>,
+    #[serde(default)]
+    pub run_profile: Option<String>,
     /// The call stack leaves out dispatch frames (events, scripts,
     /// OnUpdate, timers).
     #[serde(default)]
@@ -355,6 +371,8 @@ pub enum Action {
     SaveProfile(PathBuf, String),
     /// Write `.wowlua/launch.json` with these configurations.
     SaveConfigs(Vec<Config>),
+    /// Ask Claude to explain the stop (S100).
+    AskClaude,
 }
 
 impl DebugState {
@@ -373,6 +391,22 @@ impl DebugState {
 
     pub fn running(&self) -> bool {
         self.session.is_some()
+    }
+
+    /// Where a paused session stopped, shortly: `ThreatMeter:66`.
+    pub fn paused_at(&self) -> Option<String> {
+        self.stopped.as_ref()?;
+        let f = self.frames.first()?;
+        let name = f["source"]["name"]
+            .as_str()
+            .or(f["source"]["path"].as_str())?;
+        let stem = name
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or(name)
+            .trim_end_matches(".wowlua")
+            .trim_end_matches(".lua");
+        Some(format!("{stem}:{}", f["line"].as_u64().unwrap_or(1)))
     }
 
     /// A new session's state; the requests to ask before it runs (its
@@ -399,6 +433,11 @@ impl DebugState {
         self.errors = 0;
         self.console.clear();
         self.asked.clear();
+        // A run without the debugger: nothing stops it.
+        if self.config.as_ref().is_some_and(|c| c.no_debug) {
+            let id = self.id(Asked::Plain);
+            return vec![(id, GameRequest::SetStopOn(Vec::new()))];
+        }
         let mut setup = Vec::new();
         let files: Vec<PathBuf> = self.kept.lines.keys().cloned().collect();
         for file in files {
@@ -676,6 +715,27 @@ impl DebugState {
         let f = self.selected_frame()?;
         let path = frame_path(f, workspace)?;
         (path == file).then(|| f["line"].as_u64().unwrap_or(1).saturating_sub(1) as usize)
+    }
+
+    /// Where the session stopped, for Claude (S099): why, and the top
+    /// frames with their places.
+    pub fn stop_summary(&self) -> Option<String> {
+        let stop = self.stopped.as_ref()?;
+        let mut out = format!("stopped ({})", stop.reason);
+        if let Some(t) = &stop.text {
+            out.push_str(&format!(": {t}"));
+        }
+        for f in self.frames.iter().take(8) {
+            let place = match (f["source"].as_str(), f["line"].as_u64()) {
+                (Some(s), Some(l)) => format!(" at {s}:{l}"),
+                _ => String::new(),
+            };
+            out.push_str(&format!("\n  {}{place}", f["name"].as_str().unwrap_or("?")));
+        }
+        if let Some(d) = &stop.detail {
+            out.push_str(&format!("\n  detail: {d}"));
+        }
+        Some(out)
     }
 
     fn selected_frame(&self) -> Option<&Json> {
@@ -1098,8 +1158,10 @@ pub fn bar(ui: &mut Ui, state: &mut DebugState, system: &dyn System) -> Option<A
             });
         });
     });
-    if let Some(stop) = state.stopped.clone() {
-        banner(ui, &stop, p);
+    if let Some(stop) = state.stopped.clone()
+        && banner(ui, &stop, p)
+    {
+        action = Some(Action::AskClaude);
     }
     let (r, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), Sense::hover());
     ui.painter().rect_filled(r, CornerRadius::ZERO, p.line);
@@ -1122,8 +1184,10 @@ pub fn describe(c: &Config) -> String {
     parts.join(" · ")
 }
 
-/// The stop's banner: why, the details, a hint.
-fn banner(ui: &mut Ui, stop: &Stop, p: &Palette) {
+/// The stop's banner: why, the details, a hint; whether "explain this
+/// stop" was clicked (S100).
+fn banner(ui: &mut Ui, stop: &Stop, p: &Palette) -> bool {
+    let mut ask = false;
     let (kind, word) = match stop.reason.as_str() {
         "exception" => (CalloutKind::Error, "stopped on an error"),
         "breakpoint" => (CalloutKind::Warning, "breakpoint"),
@@ -1197,8 +1261,13 @@ fn banner(ui: &mut Ui, stop: &Stop, p: &Palette) {
             if let Some(h) = help {
                 forms::paragraph(ui, &format!("help: {h}"), 11.5, 17.0, p.ink_muted);
             }
+            if widgets::button(ui, ButtonKind::Tertiary, "explain this stop", true, None).clicked()
+            {
+                ask = true;
+            }
         });
     });
+    ask
 }
 
 // ----------------------------------------------------------- the call stack

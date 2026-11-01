@@ -127,8 +127,8 @@ impl Layout {
             ),
             Page::Game => (
                 vec![g(&[Frames, Units])],
-                vec![g(&[Game, World3d])],
-                vec![g(&[Events, Input, Screenshots])],
+                vec![g(&[Game])],
+                vec![g(&[Events, GameChat, Input, Screenshots])],
                 vec![g(&[Inspector, LiveWorld])],
             ),
             Page::Perf => (vec![], vec![g(&[Profiler])], vec![], vec![g(&[Function])]),
@@ -141,7 +141,7 @@ impl Layout {
             Page::Ship => (vec![g(&[BuildProfiles])], vec![g(&[Ship])], vec![], vec![]),
             Page::Claude => (
                 vec![g(&[Conversations])],
-                vec![g(&[Chat])],
+                vec![g(&[Chat, ClaudeChanges])],
                 vec![],
                 vec![g(&[Tools])],
             ),
@@ -160,7 +160,11 @@ impl Layout {
             main,
             bottom,
             right,
-            left_width: if page == Page::Tests { 330.0 } else { 220.0 },
+            left_width: match page {
+                Page::Tests => 330.0,
+                Page::Git | Page::Prs => 320.0,
+                _ => 220.0,
+            },
             right_width: 250.0,
             bottom_height: 170.0,
             floating: Vec::new(),
@@ -924,6 +928,19 @@ mod tests {
         l.remove(Panel::Terminal);
         assert_eq!(l.bottom[0].active, 1);
         assert_eq!(l.bottom[0].active_panel(), Panel::Output);
+    }
+
+    #[test]
+    fn a_layout_saved_with_the_3d_world_tab_loads_without_it() {
+        let mut old = Layout::preset(Page::Game);
+        old.main[0].tabs.push(Panel::World3d);
+        let text = serde_json::to_string(&old).unwrap();
+        assert!(text.contains("world3d"));
+        let mut l: Layout = serde_json::from_str(&text).unwrap();
+        l.remove(Panel::World3d);
+        assert!(!l.contains(Panel::World3d));
+        assert!(l.contains(Panel::Game));
+        assert!(!Layout::preset(Page::Game).contains(Panel::World3d));
     }
 
     #[test]
