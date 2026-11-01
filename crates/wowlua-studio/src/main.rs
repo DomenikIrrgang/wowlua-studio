@@ -1,0 +1,224 @@
+//! wowlua studio: the IDE for wowlua (spec/roadmap.md). The native host
+//! of the application (`wowlua-studio-app`): the window, the files in the
+//! system's folder for application data, the system (`native`), macOS's
+//! menu bar. `wowlua-studio <folder>` opens the folder (S031: a new window
+//! is Studio started again with it).
+
+mod art;
+mod bindings;
+mod claude;
+mod claude_changes;
+mod claude_run;
+mod claude_tools;
+/// The argument that opens a window on the start page's from-GitHub panel
+/// (M12).
+pub const FROM_GITHUB: &str = "--from-github";
+
+mod clones;
+mod deps;
+mod frame_stats;
+mod game;
+mod gamedata;
+mod git;
+mod github;
+mod log;
+mod lsp;
+mod mcp_link;
+#[cfg(target_os = "macos")]
+mod menu_bar;
+mod native;
+mod profiles;
+mod screenshot;
+mod settings;
+mod ship;
+mod store;
+mod terminal;
+mod tests;
+#[cfg(target_os = "macos")]
+mod traffic_lights;
+mod world;
+
+use eframe::egui;
+use frame_stats::FrameStats;
+use screenshot::Screenshot;
+use wowlua_studio_app::{Host, Platform, Studio};
+
+const PLATFORM: Platform = if cfg!(target_os = "macos") {
+    Platform::MacOs
+} else if cfg!(target_os = "windows") {
+    Platform::Windows
+} else {
+    Platform::Linux
+};
+
+fn main() -> eframe::Result {
+    // Claude Code's way to Studio's tools (S096): no window, only the
+    // bridge between its standard input and output and Studio's socket.
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("mcp-bridge") {
+        let (Some(socket), Some(token)) = (args.get(2), args.get(3)) else {
+            eprintln!("usage: wowlua-studio mcp-bridge <socket> <token>");
+            std::process::exit(2);
+        };
+        if let Err(e) = mcp_link::bridge(std::path::Path::new(socket), token) {
+            eprintln!("wowlua studio is not reachable: {e}");
+            std::process::exit(1);
+        }
+        std::process::exit(0);
+    }
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title("wowlua studio")
+        .with_inner_size([1440.0, 900.0])
+        .with_min_inner_size([800.0, 500.0]);
+    if let Some(icon) = app_icon() {
+        viewport = viewport.with_icon(icon);
+    }
+    viewport = if PLATFORM == Platform::MacOs {
+        // The traffic lights stay, over Studio's own title bar (S013).
+        viewport
+            .with_fullsize_content_view(true)
+            .with_title_shown(false)
+            .with_titlebar_shown(false)
+    } else {
+        // Studio draws its title bar and window buttons (the design's).
+        viewport.with_decorations(false)
+    };
+    let options = eframe::NativeOptions {
+        viewport,
+        ..Default::default()
+    };
+    eframe::run_native(
+        "wowlua studio",
+        options,
+        Box::new(|cc| {
+            Ok(Box::new(App::new(
+                &cc.egui_ctx,
+                cc.wgpu_render_state.clone(),
+            )))
+        }),
+    )
+}
+
+/// The app's icon (decision S020): the mark tile, in Apple's icon shape on
+/// macOS (`scripts/app-icon.py` makes both).
+fn app_icon() -> Option<egui::IconData> {
+    let bytes: &[u8] = if PLATFORM == Platform::MacOs {
+        include_bytes!("../assets/icon-macos.png")
+    } else {
+        include_bytes!("../assets/icon.png")
+    };
+    let mut reader = png::Decoder::new(std::io::Cursor::new(bytes))
+        .read_info()
+        .ok()?;
+    let mut rgba = vec![0; reader.output_buffer_size()?];
+    let info = reader.next_frame(&mut rgba).ok()?;
+    rgba.truncate(info.buffer_size());
+    Some(egui::IconData {
+        rgba,
+        width: info.width,
+        height: info.height,
+    })
+}
+
+struct App {
+    studio: Studio,
+    /// When the display's refresh rate was last read.
+    display_checked: Option<f64>,
+    stats: Option<FrameStats>,
+    screenshot: Option<Screenshot>,
+    #[cfg(target_os = "macos")]
+    menu_bar: menu_bar::MenuBar,
+}
+
+impl App {
+    fn new(ctx: &egui::Context, gpu: Option<eframe::egui_wgpu::RenderState>) -> Self {
+        let mut system = native::NativeSystem::new(ctx);
+        // The game's screen is drawn on eframe's device (S055).
+        if let Some(gpu) = gpu {
+            system.set_gpu(gpu);
+        }
+        let host = Host {
+            platform: PLATFORM,
+            wowlua_version: wowlua_driver::COMPILER_VERSION.to_owned(),
+            store: Box::new(store::FileStore::new()),
+            system: Box::new(system),
+        };
+        let mut studio = Studio::new(ctx, host);
+        match std::env::args_os().nth(1) {
+            Some(arg) if arg == FROM_GITHUB => studio.show_from_github(),
+            Some(folder) => {
+                let folder = std::path::PathBuf::from(folder);
+                studio.open(&std::path::absolute(&folder).unwrap_or(folder));
+            }
+            None => {}
+        }
+        let screenshot = Screenshot::from_env(&mut studio);
+        App {
+            #[cfg(target_os = "macos")]
+            menu_bar: menu_bar::MenuBar::new(ctx, &studio.entries()),
+            studio,
+            display_checked: None,
+            stats: FrameStats::from_env(),
+            screenshot,
+        }
+    }
+}
+
+impl eframe::App for App {
+    fn logic(&mut self, _ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        #[cfg(target_os = "macos")]
+        {
+            for command in self.menu_bar.poll() {
+                self.studio.queue(command);
+            }
+            if self.studio.take_menus_changed() {
+                self.menu_bar.rebuild(&self.studio.entries());
+            }
+            traffic_lights::place(_frame);
+        }
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        if let Some(cpu) = frame.info().cpu_usage {
+            self.studio.set_frame_time(cpu);
+        }
+        // (the window waits for the display, or not, as the settings say:
+        // S087)
+        let present = if self.studio.window_vsync() {
+            eframe::wgpu::PresentMode::AutoVsync
+        } else {
+            eframe::wgpu::PresentMode::AutoNoVsync
+        };
+        if let Some(mut config) = frame.wgpu_surface_config()
+            && config.present_mode != present
+        {
+            config.present_mode = present;
+            frame.set_wgpu_surface_config(config);
+        }
+        // (the refresh rate of the window's display, once a second: the
+        // game's vsync keeps to it, S087)
+        let now = ui.input(|i| i.time);
+        if self.display_checked.is_none_or(|t| now - t >= 1.0) {
+            self.display_checked = Some(now);
+            if let Some(mhz) = frame
+                .winit_window()
+                .and_then(|w| w.current_monitor())
+                .and_then(|m| m.refresh_rate_millihertz())
+            {
+                self.studio.set_display_rate(f64::from(mhz) / 1000.0);
+            }
+        }
+        let started = std::time::Instant::now();
+        self.studio.ui(ui);
+        if let Some(stats) = &mut self.stats {
+            stats.record(started.elapsed());
+        }
+        if let Some(shot) = &mut self.screenshot {
+            shot.step(ui.ctx(), &mut self.studio);
+        }
+    }
+
+    fn on_exit(&mut self) {
+        self.studio.save();
+    }
+}

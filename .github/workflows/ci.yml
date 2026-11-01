@@ -1,0 +1,69 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A newer push to a pull request's branch makes its older run moot; runs on
+# main always finish.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  # What is to run in the browser later builds for it now (decision S002).
+  wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo check --target wasm32-unknown-unknown -p wowlua-studio-ui -p wowlua-studio-app
+
+  # Studio runs on Windows, macOS and Linux (decision S002).
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo test --workspace
+      - run: cargo build --release
+      # The frame budget (decision S014), in an optimized build, one test at
+      # a time: tests side by side on the runner's few cores time each other.
+      - run: cargo test --release -p wowlua-studio-app --test frame_budget -- --nocapture --test-threads=1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wowlua-studio-${{ matrix.os }}
+          path: |
+            target/release/wowlua-studio
+            target/release/wowlua-studio.exe
+          if-no-files-found: error
