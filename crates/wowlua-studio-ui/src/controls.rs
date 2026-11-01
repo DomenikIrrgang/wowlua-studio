@@ -59,7 +59,10 @@ fn number_box(
         .margin(Margin::ZERO)
         .font(font)
         .text_color(p.ink)
-        .align(egui::Align2::RIGHT_CENTER)
+        // (in the middle, at the top of the row: the theme makes a text
+        // edit taller than the row, and centring it up and down would put
+        // the text under the row's middle)
+        .align(egui::Align2::CENTER_TOP)
         .desired_width(inner.width())
         .show(&mut child);
     let response = output.response.response;

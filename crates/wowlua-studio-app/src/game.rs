@@ -13,7 +13,10 @@ use wowlua_studio_ui::forms::{self, CalloutKind};
 use wowlua_studio_ui::widgets::{self, ButtonKind};
 use wowlua_studio_ui::{Face, Icon, Palette, icons, palette};
 
-use crate::system::{GameEvent, GameInput, GameRequest, System, Workspace};
+use crate::system::{
+    GameEvent, GameInput, GameRequest, GameScreen, System, ViewCamera, Workspace, WorldSeen,
+};
+use crate::world::json::Key as ProfileKey;
 
 /// A row, at the settings' density (S062).
 fn row_h() -> f32 {
@@ -28,6 +31,9 @@ pub enum Mode {
     /// Picks the frame drawn there for the inspector.
     #[default]
     Inspect,
+    /// Plays: the key bindings move the character, the mouse turns the
+    /// camera and targets (S079).
+    Play,
     Click,
     Hover,
     Drag,
@@ -35,8 +41,9 @@ pub enum Mode {
     Key,
 }
 
-const MODES: [(Mode, &str); 6] = [
+const MODES: [(Mode, &str); 7] = [
     (Mode::Inspect, "inspect"),
+    (Mode::Play, "play"),
     (Mode::Click, "click"),
     (Mode::Hover, "hover"),
     (Mode::Drag, "drag"),
@@ -243,6 +250,7 @@ enum Asked {
     Chat,
     Advance,
     Settings,
+    WorldPoint,
     Input(usize),
     Shot(PathBuf),
 }
@@ -328,6 +336,8 @@ pub struct GameState {
     asked: HashMap<u64, Asked>,
     /// When each kind of polling last asked (seconds).
     polled: HashMap<&'static str, f64>,
+    /// Input changed the game since the frame tree was read (S086).
+    tree_stale: bool,
     // The frames.
     tree: Option<Json>,
     tree_generation: u64,
@@ -343,6 +353,12 @@ pub struct GameState {
     files: HashMap<String, Option<PathBuf>>,
     // The units.
     units: Vec<Json>,
+    /// How the 3D world is seen (S088): the game's camera or Studio's.
+    pub camera: ViewCamera,
+    /// The session stopped in the debugger: the world holds still (S088).
+    pub paused: bool,
+    /// The overlays over the world: ranges, sight, info (S088).
+    pub overlays: [bool; 3],
     // The events and input.
     events: VecDeque<EventRow>,
     given: Vec<Given>,
@@ -360,13 +376,50 @@ pub struct GameState {
     pub full: Option<(u32, u32)>,
     /// Lines the screenshot harness types into the chat once it runs.
     pub chat_later: Vec<String>,
+    /// A unit being placed in the game view (S080): the world page's ask,
+    /// and the places clicked so far.
+    pub placing: Option<(crate::world::Placing, Vec<[f64; 3]>)>,
+    /// A placing done: for the app to write into its profile.
+    pub placed: Option<(crate::world::Placing, Vec<[f64; 3]>)>,
+    /// The places still asked for a drawn path (S089): it is placed when
+    /// the last comes.
+    placing_left: usize,
+    /// The world as last drawn (S088): Studio's camera's points are asked
+    /// for as it sees them.
+    seen: Option<WorldSeen>,
+    /// A unit dragged on the world profile page's view (S089).
+    view_drag: Option<ViewDrag>,
+    /// A key the screenshot harness holds in play mode once the game runs,
+    /// for so many seconds; and until when it is held.
+    pub hold_later: Option<(String, f64)>,
+    held_until: Option<(String, f64)>,
     /// The session's clock is manual (the debugger's): a chat line moves
     /// it a frame, for the server's answer to come.
     pub manual: bool,
     started_at: Option<f64>,
-    /// The 3D world behind the UI (M13); the UI draws over black without
-    /// it.
+    /// The keys held down in play mode, as WoW names each (its up goes
+    /// by the same name).
+    held: std::collections::HashMap<Key, String>,
+    /// The mouse button held down in play mode (true: the right one),
+    /// pressed on the screen (S084).
+    play_held: Option<bool>,
+    /// The 3D world behind the UI (M13, S078); the UI draws over black
+    /// without it.
     pub world: bool,
+    /// What the session was told of the world last (none: nothing yet).
+    world_sent: Option<bool>,
+    /// Whether the session was told the game is in the foreground (S085).
+    foreground_sent: Option<bool>,
+    /// The display's refresh rate (the window's monitor, S087), and the
+    /// one the session was told.
+    pub display_hz: Option<f64>,
+    display_sent: Option<f64>,
+    /// Play mode runs the session's clock in real time over a manual one
+    /// (S079): whether it does now.
+    clock_run: bool,
+    /// The session reads the installation's game data: the world can be
+    /// shown (Settings › game screen › answer from the installation's data).
+    pub world_ready: bool,
     drag_from: Option<Pos2>,
     hovered_at: Option<(i32, i32)>,
     /// The game's settings as the toolbar shows them.
@@ -392,6 +445,8 @@ pub enum Action {
     BreakOn(Vec<String>),
     /// The game screen over the whole display (S077).
     FullScreen,
+    /// Ask Claude about the inspected frame (S100).
+    AskClaude(crate::claude::Prompt),
 }
 
 impl GameState {
@@ -409,6 +464,7 @@ impl GameState {
             self.full,
         );
         let next = self.next_session;
+        let (world, world_ready) = (self.world, self.world_ready);
         *self = GameState {
             next_session: next,
             session: Some(next),
@@ -423,6 +479,10 @@ impl GameState {
             full: keep.7,
             shots: std::mem::take(&mut self.shots),
             chat_later: std::mem::take(&mut self.chat_later),
+            placing: self.placing.take(),
+            hold_later: self.hold_later.take(),
+            world,
+            world_ready,
             ..GameState::default()
         };
         next
@@ -446,6 +506,9 @@ impl GameState {
                 installation,
             } => {
                 self.status = None;
+                // (a new session is told the window's state again)
+                self.foreground_sent = None;
+                self.display_sent = None;
                 self.started = Some(Started {
                     addon,
                     flavor,
@@ -454,6 +517,7 @@ impl GameState {
             }
             GameEvent::Output { .. } => {}
             GameEvent::Ended { error } => {
+                self.paused = false;
                 self.session = None;
                 self.status = None;
                 self.started = None;
@@ -465,11 +529,11 @@ impl GameState {
                 };
                 self.answer(asked, result, now);
             }
-            // (the debugger's: the screen draws what the stop shows)
-            GameEvent::Stopped { .. }
-            | GameEvent::Continued
-            | GameEvent::Breakpoint(_)
-            | GameEvent::Reloaded => {}
+            // (the debugger's: the screen draws what the stop shows, the
+            // world holding still meanwhile, S088)
+            GameEvent::Stopped { .. } => self.paused = true,
+            GameEvent::Continued | GameEvent::Reloaded => self.paused = false,
+            GameEvent::Breakpoint(_) => {}
         }
     }
 
@@ -491,6 +555,35 @@ impl GameState {
                 }
             }
             (Asked::Units, Ok(Json::Array(list))) => self.units = list,
+            (Asked::WorldPoint, Ok(at)) => {
+                let point = (|| Some([at["y"].as_f64()?, at["x"].as_f64()?, at["z"].as_f64()?]))();
+                match (point, self.placing.as_mut()) {
+                    (Some(p), Some((placing, points))) => {
+                        points.push(p);
+                        if !placing.path {
+                            self.placing_left = 0;
+                            self.placed = self.placing.take();
+                        }
+                    }
+                    (None, Some(_)) => {
+                        self.toast = Some(("no ground there: click the world".into(), now));
+                    }
+                    _ => {}
+                }
+                // (a drawn path: placed with its last point, S089)
+                if self.placing_left > 0 {
+                    self.placing_left -= 1;
+                    if self.placing_left == 0
+                        && let Some((placing, points)) = self.placing.take()
+                    {
+                        if points.len() >= 2 {
+                            self.placed = Some((placing, points));
+                        } else {
+                            self.toast = Some(("draw a longer path over the ground".into(), now));
+                        }
+                    }
+                }
+            }
             (Asked::Chat, Ok(data)) => {
                 for line in data["lines"].as_array().into_iter().flatten() {
                     if self.chat.len() == CHAT_KEPT {
@@ -514,7 +607,7 @@ impl GameState {
                 if let Some(g) = self.given.get_mut(i) {
                     g.result = Some(r.map(|_| ()));
                 }
-                self.polled.remove("tree");
+                self.tree_stale = true;
             }
             (Asked::Target | Asked::Settings, Ok(_)) => {
                 self.polled.remove("tree");
@@ -541,6 +634,38 @@ impl GameState {
     /// Whether a request of this kind waits for its answer.
     fn waiting(&self, kind: &Asked) -> bool {
         self.asked.values().any(|a| a == kind)
+    }
+
+    /// Studio's camera as it saw the world, for the places under points
+    /// (wowlua T547); none for the game's.
+    fn host_camera(&self) -> Option<crate::system::HostCamera> {
+        let w = self.seen.as_ref().filter(|_| self.viewing())?;
+        Some((w.eye, w.look, w.up, w.fov))
+    }
+
+    /// The places under points of the screen asked for `placing` (S089):
+    /// a place, or a path's points, placed as their answers come.
+    pub fn place_at(
+        &mut self,
+        system: &dyn System,
+        placing: crate::world::Placing,
+        points: &[(f64, f64)],
+    ) {
+        let camera = self.host_camera();
+        self.placing_left = if placing.path { points.len() } else { 0 };
+        self.placing = Some((placing, Vec::new()));
+        for &(x, y) in points {
+            self.ask(
+                system,
+                Asked::WorldPoint,
+                GameRequest::WorldPoint { x, y, camera },
+            );
+        }
+    }
+
+    /// Whether Studio's own camera sees the world (S088).
+    pub fn viewing(&self) -> bool {
+        self.world && self.camera != ViewCamera::Follow
     }
 
     /// Asks again, every `every` seconds, what a shown panel shows.
@@ -597,7 +722,61 @@ impl GameState {
 
     /// The screenshot harness's chat lines, once the game ran a while
     /// (its login told).
-    pub fn send_later(&mut self, system: &dyn System, now: f64) {
+    pub fn send_later(&mut self, system: &dyn System, now: f64, focused: bool) {
+        // (the game in the foreground while Studio's window is: its frame
+        // rate the game's settings', in the background `maxFPSBk`, S085)
+        if self.running() && self.foreground_sent != Some(focused) {
+            self.ask(
+                system,
+                Asked::Settings,
+                GameRequest::SetForeground { on: focused },
+            );
+            self.foreground_sent = Some(focused);
+        }
+        // (the display's rate: the game's vsync keeps to it, S087)
+        if self.running()
+            && let Some(hz) = self.display_hz
+            && self.display_sent != Some(hz)
+        {
+            self.ask(system, Asked::Settings, GameRequest::SetDisplayRate { hz });
+            self.display_sent = Some(hz);
+        }
+        // (the world as the checkbox has it, each session told once a
+        // change; S078)
+        if !self.world_ready {
+            self.world = false;
+        }
+        if self.running() && self.world_sent != Some(self.world) {
+            let on = self.world;
+            self.ask(system, Asked::Settings, GameRequest::ShowWorld { on });
+            self.world_sent = Some(on);
+        }
+        // (play mode on a manual clock: time runs while playing, and the
+        // clock is manual again after, S079)
+        let run = self.mode == Mode::Play && self.manual;
+        if self.running() && run != self.clock_run {
+            self.ask(
+                system,
+                Asked::Settings,
+                GameRequest::SetClock { manual: !run },
+            );
+            self.clock_run = run;
+        }
+        if let Some((key, until)) = self.held_until.clone()
+            && now >= until
+        {
+            self.play(system, GameInput::KeyUp(key));
+            self.held_until = None;
+        }
+        if self.running()
+            && self.hold_later.is_some()
+            && now - *self.started_at.get_or_insert(now) >= 8.0
+            && let Some((key, seconds)) = self.hold_later.take()
+        {
+            self.mode = Mode::Play;
+            self.play(system, GameInput::KeyDown(key.clone()));
+            self.held_until = Some((key, now + seconds));
+        }
         if self.chat_later.is_empty() || !self.running() {
             return;
         }
@@ -647,6 +826,11 @@ impl GameState {
             self.size = size;
             self.apply_settings(system);
         }
+    }
+
+    /// Play mode's input: many a second, so not in the input panel's list.
+    fn play(&mut self, system: &dyn System, input: GameInput) {
+        self.ask(system, Asked::Settings, GameRequest::Input(input));
     }
 
     fn give(&mut self, system: &dyn System, kind: &'static str, text: String, input: GameInput) {
@@ -815,6 +999,41 @@ pub fn screen(
                 .request_repaint_after(std::time::Duration::from_millis(500));
         }
     }
+    // A unit being placed (S080): what to click, and done for a path.
+    if let Some((placing, points)) = &state.placing {
+        let (label, path, n) = (placing.label.clone(), placing.path, points.len());
+        let mut done = false;
+        let mut cancel = false;
+        forms::padded(ui, 12, 6, |ui| {
+            forms::callout(ui, CalloutKind::Note, |ui| {
+                ui.horizontal(|ui| {
+                    let text = match (path, state.running()) {
+                        (_, false) => format!("start the game to place {label}"),
+                        (false, true) => format!("click where {label} stands"),
+                        (true, true) => format!("click {label}'s waypoints, in order · {n} so far"),
+                    };
+                    forms::paragraph(ui, &text, 12.0, 18.0, p.ink);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if widgets::button(ui, ButtonKind::Tertiary, "cancel", true, None).clicked()
+                        {
+                            cancel = true;
+                        }
+                        if path
+                            && widgets::button(ui, ButtonKind::Primary, "done", n >= 2, None)
+                                .clicked()
+                        {
+                            done = true;
+                        }
+                    });
+                });
+            });
+        });
+        if cancel {
+            state.placing = None;
+        } else if done {
+            state.placed = state.placing.take();
+        }
+    }
     if let Some(s) = &state.started
         && s.installation.is_none()
     {
@@ -832,7 +1051,7 @@ pub fn screen(
             });
         });
     }
-    let Some(screen) = system.game_screen().filter(|_| state.running()) else {
+    let Some(screen) = system.game_screen(state.camera).filter(|_| state.running()) else {
         // No session, or one starting.
         let name = workspace.name.clone();
         forms::padded(ui, 24, 24, |ui| {
@@ -878,6 +1097,31 @@ pub fn screen(
         });
         return action;
     };
+    // (paused in the debugger: the world as it stopped, seen from any
+    // camera, S088)
+    if state.paused && state.world {
+        forms::padded(ui, 12, 6, |ui| {
+            forms::callout(ui, CalloutKind::Note, |ui| {
+                forms::paragraph(
+                    ui,
+                    "paused · the world holds still: units, casts and the camera stay as they \
+                     were. Orbit or look from above to see around; continue and it goes on.",
+                    12.0,
+                    18.0,
+                    p.ink,
+                );
+            });
+        });
+    }
+    state.seen.clone_from(&screen.world);
+    // (the units' sight and facing for the overlays, S088)
+    if state.world
+        && (state.overlays[1] || state.overlays[2])
+        && state.poll(now, "units", 0.5)
+        && !state.waiting(&Asked::Units)
+    {
+        state.ask(system, Asked::Units, GameRequest::Units);
+    }
     let size = Vec2::new(screen.size[0] as f32, screen.size[1] as f32);
     let zoom = ZOOMS[state.zoom].1;
     let avail = ui.available_size();
@@ -904,6 +1148,7 @@ pub fn screen(
                 Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
                 egui::Color32::WHITE,
             );
+            overlays(ui, state, &screen, rect);
             pointer(ui, state, system, &response, rect, scale);
             outline(ui, state, rect, scale, p);
         });
@@ -926,15 +1171,11 @@ fn toolbar(ui: &mut Ui, state: &mut GameState, system: &dyn System, p: &Palette)
             if let Some(i) = widgets::seg(ui, "game-mode", &labels, at, false) {
                 state.mode = MODES[i].0;
             }
-            // The 3D world behind the UI: a toggle of the screen (M13,
-            // not built yet: the UI draws over black).
-            ui.add_enabled_ui(false, |ui| {
-                forms::checkbox(ui, &mut state.world, "3D world", None);
-            })
-            .response
-            .on_disabled_hover_text(
-                "the 3D world behind the UI comes with M13; until then the UI draws over black",
-            );
+            // The 3D world behind the UI: a toggle of the screen (S076,
+            // S078), with the installation's game data; how it is seen
+            // and what is drawn over it (S088).
+            world_checkbox(ui, state);
+            view_controls(ui, state, true);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add_enabled_ui(state.running(), |ui| {
                     if widgets::button(ui, ButtonKind::Tertiary, "screenshot", true, None).clicked()
@@ -1031,6 +1272,26 @@ fn pointer(
         let v = (pos - rect.min) / scale;
         (f64::from(v.x.floor()), f64::from(v.y.floor()))
     };
+    // (Studio's view of the world, S088: a drag moves it, the wheel zooms
+    // it; a click still goes to the game)
+    if state.viewing() && view_input(ui, state, response) {
+        return;
+    }
+    // (placing a unit: a click is a place of the world, S080)
+    if state.placing.is_some() {
+        if response.clicked()
+            && let Some(pos) = response.interact_pointer_pos()
+        {
+            let (x, y) = at(pos);
+            let camera = state.host_camera();
+            state.ask(
+                system,
+                Asked::WorldPoint,
+                GameRequest::WorldPoint { x, y, camera },
+            );
+        }
+        return;
+    }
     match state.mode {
         Mode::Inspect => {
             if response.clicked()
@@ -1039,6 +1300,66 @@ fn pointer(
                 let (x, y) = at(pos);
                 state.ask(system, Asked::Pick, GameRequest::Pick { x, y });
             }
+        }
+        Mode::Play => {
+            // (the mouse as the game takes it, S084: where it is, its
+            // buttons and wheel; the game decides what the frame or the
+            // world there does: hover, click, drag, the camera)
+            let (pos, moved, scroll) = ui.input(|i| {
+                (
+                    i.pointer.latest_pos(),
+                    i.pointer.delta() != egui::Vec2::ZERO,
+                    i.smooth_scroll_delta().y,
+                )
+            });
+            if let Some(pos) = pos {
+                let inside = response.rect.contains(pos);
+                let (x, y) = at(pos);
+                if moved && (inside || state.play_held.is_some()) {
+                    state.play(system, GameInput::MouseMove { x, y });
+                }
+                for (button, right) in [
+                    (egui::PointerButton::Primary, false),
+                    (egui::PointerButton::Secondary, true),
+                ] {
+                    let (pressed, released) = ui.input(|i| {
+                        (
+                            i.pointer.button_pressed(button),
+                            i.pointer.button_released(button),
+                        )
+                    });
+                    // (Studio's view: a drag is the view's, a click the
+                    // game's, pressed and let go as it ends; S088)
+                    if state.viewing() {
+                        let clicked = if right {
+                            response.secondary_clicked()
+                        } else {
+                            response.clicked()
+                        };
+                        if clicked {
+                            state.play(system, GameInput::MouseDown { x, y, right });
+                            state.play(system, GameInput::MouseUp { x, y, right });
+                            response.request_focus();
+                        }
+                        continue;
+                    }
+                    if pressed && inside && state.play_held.is_none() {
+                        state.play_held = Some(right);
+                        state.play(system, GameInput::MouseDown { x, y, right });
+                        response.request_focus();
+                    }
+                    if released && state.play_held == Some(right) {
+                        state.play_held = None;
+                        state.play(system, GameInput::MouseUp { x, y, right });
+                    }
+                }
+                if inside && scroll != 0.0 && !state.viewing() {
+                    // (a notch, about 50 points)
+                    let delta = f64::from(scroll) / 50.0;
+                    state.play(system, GameInput::Wheel { x, y, delta });
+                }
+            }
+            keys(ui, state, system, response);
         }
         Mode::Click => {
             for (clicked, right) in [
@@ -1092,47 +1413,75 @@ fn pointer(
                 );
             }
         }
-        Mode::Type | Mode::Key => {
-            if response.clicked() {
-                response.request_focus();
-            }
-            if response.has_focus() {
-                let events = ui.input(|i| i.events.clone());
-                for e in events {
-                    match (state.mode, e) {
-                        (Mode::Type, egui::Event::Text(t)) => {
-                            state.give(system, "type", t.clone(), GameInput::Type(t));
-                        }
-                        (
-                            Mode::Key,
-                            egui::Event::Key {
-                                key,
-                                pressed: true,
-                                modifiers,
-                                ..
-                            },
-                        ) => {
-                            if let Some(name) = wow_key(key, modifiers) {
-                                state.give(system, "key", name.clone(), GameInput::Key(name));
-                            }
-                        }
-                        _ => {}
+        Mode::Type | Mode::Key => keys(ui, state, system, response),
+    }
+}
+
+/// The keyboard on the screen while it has the focus (a click gives it):
+/// text typed, keys pressed, or in play mode keys held.
+fn keys(ui: &mut Ui, state: &mut GameState, system: &dyn System, response: &egui::Response) {
+    if response.clicked() {
+        response.request_focus();
+    }
+    if response.has_focus() {
+        let events = ui.input(|i| i.events.clone());
+        for e in events {
+            match (state.mode, e) {
+                (Mode::Type, egui::Event::Text(t)) => {
+                    state.give(system, "type", t.clone(), GameInput::Type(t));
+                }
+                // (play: text into the focused edit box, S084)
+                (Mode::Play, egui::Event::Text(t)) => {
+                    state.play(system, GameInput::Text(t));
+                }
+                (
+                    Mode::Key,
+                    egui::Event::Key {
+                        key,
+                        pressed: true,
+                        modifiers,
+                        ..
+                    },
+                ) => {
+                    if let Some(name) = wow_key(key, modifiers) {
+                        state.give(system, "key", name.clone(), GameInput::Key(name));
                     }
                 }
-                // (keys stay the client's while the screen has the focus)
-                ui.memory_mut(|m| {
-                    m.set_focus_lock_filter(
-                        response.id,
-                        egui::EventFilter {
-                            tab: true,
-                            horizontal_arrows: true,
-                            vertical_arrows: true,
-                            escape: true,
-                        },
-                    );
-                });
+                // (play: held down until let go, by the same name)
+                (
+                    Mode::Play,
+                    egui::Event::Key {
+                        key,
+                        pressed,
+                        repeat: false,
+                        modifiers,
+                        ..
+                    },
+                ) => {
+                    if pressed {
+                        if let Some(name) = wow_key(key, modifiers) {
+                            state.held.insert(key, name.clone());
+                            state.play(system, GameInput::KeyDown(name));
+                        }
+                    } else if let Some(name) = state.held.remove(&key) {
+                        state.play(system, GameInput::KeyUp(name));
+                    }
+                }
+                _ => {}
             }
         }
+        // (keys stay the client's while the screen has the focus)
+        ui.memory_mut(|m| {
+            m.set_focus_lock_filter(
+                response.id,
+                egui::EventFilter {
+                    tab: true,
+                    horizontal_arrows: true,
+                    vertical_arrows: true,
+                    escape: true,
+                },
+            );
+        });
     }
 }
 
@@ -1230,10 +1579,14 @@ pub fn frames(ui: &mut Ui, state: &mut GameState, system: &dyn System) {
         empty(ui, "No session: the frame tree is the running client's.", p);
         return;
     }
-    // Read when shown, then again after input, a target, the game's
-    // settings, `hidden` or the refresh button: a large UI's whole tree
-    // read on a timer cost its frames (SuuUI's: 200 ms each).
-    if state.poll(now, "tree", f64::INFINITY) && !state.waiting(&Asked::Tree) {
+    // Read when shown, then again after a target, the game's settings,
+    // `hidden` or the refresh button, and after input at most once a
+    // second: a large UI's whole tree read on a timer cost its frames
+    // (SuuUI's: 200 ms each), and while playing every mouse move is input
+    // (S086).
+    let every = if state.tree_stale { 1.0 } else { f64::INFINITY };
+    if state.poll(now, "tree", every) && !state.waiting(&Asked::Tree) {
+        state.tree_stale = false;
         let hidden = state.hidden;
         state.ask(system, Asked::Tree, GameRequest::FrameTree { hidden });
     }
@@ -1666,6 +2019,22 @@ pub fn inspector(
                     {
                         shoot(state, system, Some(id));
                     }
+                    if widgets::button(ui, ButtonKind::Tertiary, "ask Claude about it", true, None)
+                        .clicked()
+                    {
+                        let label = info["name"]
+                            .as_str()
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| format!("#{id}"));
+                        action = Some(Action::AskClaude(crate::claude::Prompt {
+                            draft: format!("About the frame {label}: "),
+                            label: format!("frame {label}"),
+                            context: format!(
+                                "The frame {label} as the game page inspects it (the session is Studio's, not Claude's; find it in Claude's own session by its name):\n{}",
+                                serde_json::to_string_pretty(&info).unwrap_or_default()
+                            ),
+                        }));
+                    }
                 });
             });
         });
@@ -1849,6 +2218,366 @@ pub fn input(ui: &mut Ui, state: &mut GameState) {
         });
 }
 
+/// The game screen's "3D world" checkbox (S078): the zone behind the UI,
+/// with the installation's game data; without, why not.
+fn world_checkbox(ui: &mut Ui, state: &mut GameState) {
+    let ready = state.world_ready;
+    let r = ui
+        .add_enabled_ui(ready, |ui| {
+            forms::checkbox(ui, &mut state.world, "3D world", None);
+        })
+        .response;
+    if !ready {
+        r.on_disabled_hover_text(
+            "the 3D world reads your installation's game data: turn on Settings › game screen › answer from the installation's data",
+        );
+    }
+}
+
+/// A unit dragged on the world profile page's view (S089): which (its
+/// profile's key, name and movement), drawing a path (shift) or moving
+/// it, and the points of the screen the drag passed.
+#[derive(Clone, Debug, PartialEq)]
+struct ViewDrag {
+    unit: ProfileKey,
+    label: String,
+    movement: Option<Json>,
+    path: bool,
+    points: Vec<Pos2>,
+}
+
+/// The world on the world profile page's live panel (S089): the game's
+/// screen, the profile's units marked on it; drag a unit to move it,
+/// shift-drag from it to draw its path: the profile follows.
+pub fn profile_view(
+    ui: &mut Ui,
+    state: &mut GameState,
+    system: &dyn System,
+    profile: &str,
+    units: &[crate::world::ProfileUnit],
+) {
+    let p = palette(ui.ctx());
+    let now = ui.input(|i| i.time);
+    ui.horizontal(|ui| {
+        world_checkbox(ui, state);
+        view_controls(ui, state, false);
+    });
+    let hint = if state.world {
+        "Drag a unit to move it, shift-drag from it to draw its path; the profile follows. Unchecked, \
+         the screen is your UI on black."
+    } else {
+        "Your UI only, on black. Check 3D world to see the zone behind it and place units in it."
+    };
+    forms::paragraph(ui, hint, 11.0, 16.0, p.ink_faint);
+    let Some(screen) = system.game_screen(state.camera).filter(|_| state.running()) else {
+        return;
+    };
+    state.seen.clone_from(&screen.world);
+    if state.world && state.poll(now, "units", 1.0) && !state.waiting(&Asked::Units) {
+        state.ask(system, Asked::Units, GameRequest::Units);
+    }
+    let size = Vec2::new(screen.size[0] as f32, screen.size[1] as f32);
+    let width = ui.available_width();
+    let scale = width / size.x;
+    let (rect, response) = ui.allocate_exact_size(size * scale, Sense::click_and_drag());
+    ui.painter().image(
+        screen.texture,
+        rect,
+        Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+        egui::Color32::WHITE,
+    );
+    let Some(w) = screen.world.as_ref().filter(|_| state.world) else {
+        return;
+    };
+    // (the profile's units as the session has them, by name)
+    let name_of = |id: usize| {
+        state
+            .units
+            .iter()
+            .find(|u| u["id"].as_u64() == Some(id as u64))
+            .and_then(|u| u["name"].as_str())
+            .map(str::to_owned)
+    };
+    let to = |at: [f64; 3]| {
+        crate::view::project(w, size.x, size.y, at)
+            .map(|s| rect.min + Vec2::new(s[0], s[1]) * scale)
+    };
+    let amber = egui::Color32::from_rgb(255, 190, 80);
+    let marks: Vec<(Pos2, &crate::world::ProfileUnit)> = w
+        .units
+        .iter()
+        .filter(|u| u.id != 0)
+        .filter_map(|u| {
+            let name = name_of(u.id)?;
+            let unit = units.iter().find(|(_, n, _)| *n == name)?;
+            Some((to([u.at[0], u.at[1], u.at[2] + 1.0])?, unit))
+        })
+        .collect();
+    let painter = ui.painter_at(rect);
+    for (at, (_, name, _)) in &marks {
+        painter.circle_stroke(*at, 7.0, egui::Stroke::new(1.5, amber));
+        painter.text(
+            *at + Vec2::new(0.0, -10.0),
+            egui::Align2::CENTER_BOTTOM,
+            name,
+            Face::Plex.at(11.0),
+            amber,
+        );
+    }
+    // A drag from a unit moves it or, with shift, draws its path.
+    if response.drag_started()
+        && let Some(from) = response.interact_pointer_pos()
+        && let Some((_, (key, name, movement))) = marks
+            .iter()
+            .filter(|(at, _)| at.distance(from) <= 16.0)
+            .min_by(|a, b| a.0.distance(from).total_cmp(&b.0.distance(from)))
+    {
+        state.view_drag = Some(ViewDrag {
+            unit: key.clone(),
+            label: name.clone(),
+            movement: movement.clone(),
+            path: ui.input(|i| i.modifiers.shift),
+            points: vec![from],
+        });
+    }
+    if let (Some(drag), Some(pos)) = (state.view_drag.as_mut(), response.interact_pointer_pos())
+        && response.dragged()
+    {
+        let far = drag
+            .points
+            .last()
+            .is_none_or(|last| last.distance(pos) >= 24.0);
+        if drag.path && far {
+            drag.points.push(pos);
+        }
+        let mut line = drag.points.clone();
+        line.push(pos);
+        painter.add(egui::Shape::line(line, egui::Stroke::new(2.0, amber)));
+        painter.circle_filled(pos, 4.0, amber);
+    }
+    if response.drag_stopped()
+        && let Some(mut drag) = state.view_drag.take()
+    {
+        if let Some(end) = response.interact_pointer_pos() {
+            drag.points.push(end);
+        }
+        let game = |q: &Pos2| {
+            let v = (*q - rect.min) / scale;
+            (f64::from(v.x.floor()), f64::from(v.y.floor()))
+        };
+        let points: Vec<(f64, f64)> = if drag.path {
+            drag.points.iter().map(game).collect()
+        } else {
+            drag.points.last().map(game).into_iter().collect()
+        };
+        let placing = crate::world::Placing {
+            profile: profile.to_owned(),
+            unit: drag.unit,
+            label: drag.label,
+            path: drag.path,
+            movement: drag.movement,
+        };
+        state.place_at(system, placing, &points);
+    }
+}
+
+/// The cameras the world is seen from, and the overlays over it (S088).
+const CAMERAS: [&str; 3] = ["follow you", "orbit", "from above"];
+const OVERLAYS: [(&str, &str); 3] = [
+    ("ranges", "rings around you at 5, 10 and 40 yd"),
+    (
+        "sight",
+        "lines to the units, red where the zone blocks sight",
+    ),
+    ("info", "distance and facing under each unit"),
+];
+/// The rings' radii (yards).
+const RINGS: [f64; 3] = [5.0, 10.0, 40.0];
+
+/// How the 3D world is seen and, with `overlays`, what is drawn over it
+/// (S088): shown while the world is on.
+fn view_controls(ui: &mut Ui, state: &mut GameState, overlays: bool) {
+    if !state.world {
+        return;
+    }
+    let at = match state.camera {
+        ViewCamera::Follow => 0,
+        ViewCamera::Orbit { .. } => 1,
+        ViewCamera::Above { .. } => 2,
+    };
+    if let Some(i) = widgets::seg(ui, "game-camera", &CAMERAS, at, false) {
+        state.camera = match i {
+            1 => ViewCamera::Orbit {
+                yaw: std::f64::consts::PI,
+                pitch: 0.45,
+                distance: 18.0,
+            },
+            2 => ViewCamera::Above { height: 60.0 },
+            _ => ViewCamera::Follow,
+        };
+    }
+    if overlays && let Some(i) = widgets::toggles(ui, "game-overlays", &OVERLAYS, &state.overlays) {
+        state.overlays[i] = !state.overlays[i];
+    }
+}
+
+/// A drag and the wheel on the screen move Studio's view of the world
+/// (S088): whether they did.
+fn view_input(ui: &Ui, state: &mut GameState, response: &egui::Response) -> bool {
+    let scroll = if response.hovered() {
+        ui.input(|i| i.smooth_scroll_delta().y)
+    } else {
+        0.0
+    };
+    let dragging = response.dragged();
+    let drag = response.drag_delta();
+    let zoom = |v: f64, min: f64, max: f64| (v * (1.0 - f64::from(scroll) * 0.002)).clamp(min, max);
+    match &mut state.camera {
+        ViewCamera::Orbit {
+            yaw,
+            pitch,
+            distance,
+        } => {
+            if dragging {
+                *yaw -= f64::from(drag.x) * 0.01;
+                *pitch = (*pitch + f64::from(drag.y) * 0.01).clamp(0.05, 1.5);
+            }
+            *distance = zoom(*distance, 2.0, 300.0);
+        }
+        ViewCamera::Above { height } => *height = zoom(*height, 5.0, 800.0),
+        ViewCamera::Follow => return false,
+    }
+    let moved = dragging || scroll != 0.0;
+    if moved {
+        ui.ctx().request_repaint();
+    }
+    moved
+}
+
+/// The overlays over the world (S088): rings around you, lines to the
+/// units (red where the zone blocks sight), each unit's distance and
+/// facing under it; placed as the world was drawn.
+fn overlays(ui: &Ui, state: &mut GameState, screen: &GameScreen, rect: Rect) {
+    let Some(w) = screen.world.as_ref().filter(|_| state.world) else {
+        return;
+    };
+    if !state.overlays.iter().any(|on| *on) {
+        return;
+    }
+    let Some(me) = w.units.iter().find(|u| u.id == 0) else {
+        return;
+    };
+    let (sw, sh) = (screen.size[0] as f32, screen.size[1] as f32);
+    let to = |p: [f64; 3]| {
+        crate::view::project(w, sw, sh, p).map(|s| {
+            Pos2::new(
+                rect.left() + s[0] / sw * rect.width(),
+                rect.top() + s[1] / sh * rect.height(),
+            )
+        })
+    };
+    let painter = ui.painter_at(rect);
+    let amber = egui::Color32::from_rgba_unmultiplied(255, 190, 80, 200);
+    let red = egui::Color32::from_rgba_unmultiplied(255, 110, 100, 220);
+    let font = Face::Plex.at(11.0);
+    if state.overlays[0] {
+        for r in RINGS {
+            let points: Vec<Option<Pos2>> = (0..=64)
+                .map(|k| {
+                    let a = f64::from(k) / 64.0 * std::f64::consts::TAU;
+                    to([
+                        me.at[0] + r * a.cos(),
+                        me.at[1] + r * a.sin(),
+                        me.at[2] + 0.1,
+                    ])
+                })
+                .collect();
+            for pair in points.windows(2) {
+                if let [Some(a), Some(b)] = pair {
+                    painter.line_segment([*a, *b], egui::Stroke::new(1.5, amber));
+                }
+            }
+            // (its label at its southern edge, toward the camera of follow)
+            if let Some(at) = to([me.at[0] - r, me.at[1], me.at[2] + 0.1]) {
+                painter.text(
+                    at,
+                    egui::Align2::CENTER_TOP,
+                    format!("{r:.0} yd"),
+                    font.clone(),
+                    amber,
+                );
+            }
+        }
+    }
+    let row = |id: usize| {
+        state
+            .units
+            .iter()
+            .find(|u| u["id"].as_u64() == Some(id as u64))
+    };
+    for u in w.units.iter().filter(|u| u.id != 0) {
+        let sight = row(u.id).and_then(|r| r["sight"].as_bool()).unwrap_or(true);
+        if state.overlays[1]
+            && let (Some(a), Some(b)) = (
+                to([me.at[0], me.at[1], me.at[2] + 1.0]),
+                to([u.at[0], u.at[1], u.at[2] + 1.0]),
+            )
+        {
+            let color = if sight { amber } else { red };
+            painter.line_segment([a, b], egui::Stroke::new(1.5, color));
+            if !sight {
+                painter.text(
+                    a + (b - a) / 2.0,
+                    egui::Align2::CENTER_BOTTOM,
+                    "no sight",
+                    font.clone(),
+                    red,
+                );
+            }
+        }
+        if state.overlays[2]
+            && let Some(at) = to(u.at)
+        {
+            let dx = (u.at[0] - me.at[0], u.at[1] - me.at[1]);
+            let distance = dx.0.hypot(dx.1);
+            let turn = |from: f64, to: f64| {
+                let d = (to - from + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU)
+                    - std::f64::consts::PI;
+                d.abs()
+            };
+            // (facing as the game measures it: 0 north, turning west)
+            let toward_me = (-dx.1).atan2(-dx.0);
+            let from_me = dx.1.atan2(dx.0);
+            let mut text = format!("{distance:.0} yd");
+            if turn(u.facing, toward_me) < std::f64::consts::FRAC_PI_4 {
+                text.push_str(" · faces you");
+            } else if turn(me.facing, from_me) > std::f64::consts::FRAC_PI_2 {
+                text.push_str(" · behind you");
+            }
+            if !sight {
+                text.push_str(" · no sight");
+            }
+            let galley = ui
+                .painter()
+                .layout_no_wrap(text, font.clone(), egui::Color32::WHITE);
+            let box_rect = Rect::from_center_size(
+                at + Vec2::new(0.0, 4.0 + galley.size().y / 2.0),
+                galley.size() + Vec2::new(8.0, 2.0),
+            );
+            painter.rect_filled(
+                box_rect,
+                CornerRadius::same(2),
+                egui::Color32::from_black_alpha(170),
+            );
+            painter.galley(
+                box_rect.min + Vec2::new(4.0, 1.0),
+                galley,
+                egui::Color32::WHITE,
+            );
+        }
+    }
+}
+
 /// The game's chat (the chat panel, S077): its chat windows' lines in
 /// their colours, a filter, a line to type a message or a /command in.
 pub fn chat(ui: &mut Ui, state: &mut GameState, system: &dyn System) {
@@ -1985,7 +2714,7 @@ pub fn full_screen(ui: &mut Ui, state: &mut GameState, system: &dyn System) -> b
     ui.painter()
         .rect_filled(area, CornerRadius::ZERO, egui::Color32::BLACK);
     let mut leave = false;
-    if let Some(screen) = system.game_screen().filter(|_| state.running()) {
+    if let Some(screen) = system.game_screen(state.camera).filter(|_| state.running()) {
         let size = Vec2::new(screen.size[0] as f32, screen.size[1] as f32);
         let scale = (area.width() / size.x)
             .min(area.height() / size.y)
@@ -2002,6 +2731,7 @@ pub fn full_screen(ui: &mut Ui, state: &mut GameState, system: &dyn System) -> b
             Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
             egui::Color32::WHITE,
         );
+        overlays(ui, state, &screen, rect);
         pointer(ui, state, system, &response, rect, scale);
     }
     // The bar: dragged by its ground, it stays where it is left.
@@ -2035,9 +2765,8 @@ pub fn full_screen(ui: &mut Ui, state: &mut GameState, system: &dyn System) -> b
                         if let Some(i) = widgets::seg(ui, "game-full-mode", &labels, at, false) {
                             state.mode = MODES[i].0;
                         }
-                        ui.add_enabled_ui(false, |ui| {
-                            forms::checkbox(ui, &mut state.world, "3D world", None);
-                        });
+                        world_checkbox(ui, state);
+                        view_controls(ui, state, false);
                         ui.add_enabled_ui(state.running(), |ui| {
                             if widgets::icon_button(ui, Icon::Snapshot, "screenshot", false)
                                 .clicked()
@@ -2282,6 +3011,60 @@ mod unit {
 #[cfg(test)]
 mod chat_tests {
     use super::*;
+
+    fn placing(path: bool) -> crate::world::Placing {
+        crate::world::Placing {
+            profile: "wolves".into(),
+            unit: crate::world::json::Key::Index(0),
+            label: "Young Wolf".into(),
+            path,
+            movement: None,
+        }
+    }
+
+    /// Placing a unit (S080): a place is its first point; a path's points
+    /// gather until done; no ground there leaves it as it was.
+    #[test]
+    fn a_unit_is_placed_by_the_points_clicked() {
+        let mut state = GameState {
+            placing: Some((placing(false), Vec::new())),
+            ..GameState::default()
+        };
+        state.answer(Asked::WorldPoint, Ok(Json::Null), 0.0);
+        assert!(state.placing.is_some() && state.placed.is_none());
+        let point = serde_json::json!({ "y": 1.0, "x": 2.0, "z": 3.0 });
+        state.answer(Asked::WorldPoint, Ok(point), 0.0);
+        let (p, points) = state.placed.take().expect("placed");
+        assert_eq!((p.path, points), (false, vec![[1.0, 2.0, 3.0]]));
+        assert!(state.placing.is_none());
+        state.placing = Some((placing(true), Vec::new()));
+        for i in 0..3 {
+            let v = f64::from(i);
+            let point = serde_json::json!({ "y": v, "x": v, "z": 0.0 });
+            state.answer(Asked::WorldPoint, Ok(point), 0.0);
+        }
+        assert!(state.placed.is_none());
+        assert_eq!(state.placing.as_ref().map(|(_, p)| p.len()), Some(3));
+    }
+
+    /// A path drawn on the world profile page (S089): its points asked for
+    /// at once, placed when the last answer comes.
+    #[test]
+    fn a_drawn_path_is_placed_with_its_last_point() {
+        let mut state = GameState {
+            placing: Some((placing(true), Vec::new())),
+            placing_left: 3,
+            ..GameState::default()
+        };
+        for i in 0..3 {
+            assert!(state.placed.is_none());
+            let v = f64::from(i);
+            let point = serde_json::json!({ "y": v, "x": v, "z": 0.0 });
+            state.answer(Asked::WorldPoint, Ok(point), 0.0);
+        }
+        let (p, points) = state.placed.take().expect("placed");
+        assert!(p.path && points.len() == 3 && state.placing.is_none());
+    }
 
     #[test]
     fn the_chat_box_s_own_commands_are_chat() {

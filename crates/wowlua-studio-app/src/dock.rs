@@ -141,7 +141,7 @@ impl Layout {
             Page::Ship => (vec![g(&[BuildProfiles])], vec![g(&[Ship])], vec![], vec![]),
             Page::Claude => (
                 vec![g(&[Conversations])],
-                vec![g(&[Chat])],
+                vec![g(&[Chat, ClaudeChanges])],
                 vec![],
                 vec![g(&[Tools])],
             ),

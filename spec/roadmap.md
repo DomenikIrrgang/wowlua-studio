@@ -437,7 +437,7 @@ lose asked first, then the clone deleted; clones left by a window that quit
 cleaned up or offered; a read-only repository's fork. Not yet: checked by
 hand on macOS only.
 
-## M13: The 3D world (planned)
+## M13: The 3D world
 
 Artboards: game, world profiles (S076).
 
@@ -454,12 +454,88 @@ Artboards: game, world profiles (S076).
 Needs new work in wowlua: unit positions, movement and actions in the
 engine, world profiles and the test API; a world renderer with the
 zone's terrain, buildings, doodads and models from the installation.
-Built so far: the game screen's toggle (disabled until the world is).
+Built (S076 to S089, wowlua T515 to T547): the game screen's toggle shows
+the world behind the UI: the zone's terrain, buildings, trees and props and
+the units as their models, solid, from the installation, drawn as the
+game's settings say (frame rate, vsync, render scale); playing moves your
+character with its poses, the mouse turns the camera, clicks target and
+talk; units walk, patrol and act; names and nameplates over them; the
+world seen from the game's camera, from Studio's orbit or from above, with
+overlays of ranges, sight and unit info; the world while the debugger is
+paused; the world profile page's units placed and their paths drawn, in the
+game view and on the page's own view. Not yet: the cameras, overlays and
+the profile page's view checked by hand on macOS.
 
-## M14: Claude (planned, last)
+## M14: Claude
 
 Building AddOns with Claude inside Studio, through Studio's tools, every
 change approved.
+
+Artboards: claude, claude's changes, ask claude from any page, M14 open
+questions (all answered, S090 to S094).
+
+How it works (S090): Studio runs the Claude Code the user installed and
+signed in to, on their Claude plan; Studio never signs in to Claude nor
+keeps a sign-in. The native host starts `claude -p` with JSON in and out
+(`--input-format stream-json --output-format stream-json
+--include-partial-messages`), its own tools off (`--disallowedTools`),
+Studio's tools given over MCP (`--mcp-config`), the model and effort
+chosen (`--model`, `--effort`); a conversation goes on with `--resume`.
+`claude auth status` tells whether it is signed in. The flags are checked
+against Claude Code's reference when built. Native only: the browser build
+has no Claude.
+
+The plan, in this order:
+
+1. **Claude Code found and signed in** (host): where `claude` is (the
+   PATH, or a setting), its version, `claude auth status`; the claude
+   page's states: not installed (where to get it), not signed in ("sign in
+   through Claude Code" runs `claude auth login`, which opens the browser),
+   ready. A conversation's process, its JSON stream read on a thread of
+   the host, events for the app (system::System gains Claude's part).
+2. **Studio's tools over MCP** (host): wowlua's tools as `wowlua mcp`
+   has them (wowlua T549: sessions, screenshots, the frame tree, input,
+   time, the debugger, the profiler, inspect, pick, units, events,
+   save_world, set_screen; check, fmt, build, test with coverage), served
+   in process (`wowlua_debug::mcp::Server` with Studio's launcher), on
+   Claude's own windowless session; and Studio's own: the workspace's
+   files (read; edit and create, each asking, S091) and git (S094). How
+   Claude Code reaches them (Studio's binary as a stdio bridge, or a local
+   HTTP endpoint with a token) is to be decided when built.
+3. **The conversation** (the claude page): messages as they stream, each
+   tool call as a row (what it read, ran or changed), an edit's diff with
+   allow, "allow edits in this conversation" and deny; the tools and
+   permissions panel (allow, ask, never per tool group; answers last for
+   the conversation, S091); the screenshot of a game call with "open the
+   session" (the game page shows Claude's session, S092).
+4. **Changes and checkpoints** (the claude's changes board, S091): Studio
+   keeps a file before Claude's first edit after each of your messages;
+   the conversation's changed files, per-hunk undo and redo, going back
+   to a checkpoint (only Claude's changes; your own stay), undo all,
+   commit these changes.
+5. **What Claude knows** (S092): wowlua's docs and the stdlib's
+   reference, the addon's CLAUDE.md, `wowlua.json`, the open file and its
+   problems; `@` chips for files, worlds, tests, the stop, a recording.
+6. **Asked from the other pages** (S093): fix with Claude (the editor's
+   quick fixes and menu), why it fails (tests), explain this stop
+   (debugger), make it faster (profiler), ask about this frame (the game's
+   frame picker), fix the failing check and help with a conflict (git and
+   GitHub).
+7. **Model, usage, conversations** (S092): the model and effort picker
+   (the newest model by default), the plan's usage per conversation as
+   Claude Code reports it, "paused: usage limit" until it resets; the
+   conversations of a workspace in Studio's data, listed, one running at a
+   time.
+
+Needs new work in wowlua: the rest of wowlua's tools in `wowlua mcp`
+(T549, done).
+Built so far: step 1, Claude Code found and signed in, and the settings
+(S095); step 2, Studio's tools over MCP through a stdio bridge in
+Studio's own binary (S096); step 3, the conversation (S097); step 4,
+changes and checkpoints (S098); step 5, what Claude knows (S099); step
+6, asking Claude from the other pages (S100); step 7, the model and
+effort per conversation, and the kept conversations (S101). Checked by
+hand on macOS (2026-11-01); not yet on Windows and Linux.
 
 ## Checked by hand on Windows and Linux
 
@@ -511,17 +587,29 @@ and tests it on Windows and Linux (S058). On each, with SuuUI's workspace:
     and see the start page offer the clone; open a repository you can't
     push to and fork it.
 
+13. **M13**: turn the 3D world on and walk into a building and a fence
+    (they stop you); orbit and look from above; turn on the overlays; pause
+    at a breakpoint and look around; on the world profile page drag a unit
+    and shift-drag its path.
+14. **M14**: with Claude Code installed, the claude page finds it (signed
+    in, or "sign in through Claude Code" in the terminal); ask Claude to
+    read a file and change it: the question about the edit, allow, the
+    change in "claude's changes", undo its hunk, go back to the checkpoint;
+    "fix with Claude" on a problem in the editor; "ask Claude why" on a
+    failed test; a new conversation and the first one opened again from
+    the claude panel. On Windows the bridge's socket is a Unix socket
+    (Windows 10 and later).
+
 ## Open questions
 
 Asked when their milestone starts; nothing here is decided yet.
 
 - Installers and code signing per system (first release).
-- Whether "sign in with Claude" is possible for a third-party app (M14).
 
 ## Design changes owed
 
 Where Studio was decided to differ from the canvas, or the canvas is
-missing a part; the canvas is updated to match. On 2026-10-30 the settings board got the git section (fetch every) and the editor's blame row, the git board the changes' stage all and the staged files' unstage all (S070). None are owed now: on 2026-10-30 the start board got a clone's progress ("from GitHub, cloning") and the from-GitHub board the closing dialog's "discard them and close" (S075).
+missing a part; the canvas is updated to match. On 2026-10-30 the settings board got the git section (fetch every) and the editor's blame row, the git board the changes' stage all and the staged files' unstage all (S070). None are owed now: on 2026-10-30 the start board got a clone's progress ("from GitHub, cloning") and the from-GitHub board the closing dialog's "discard them and close" (S075). On 2026-11-01 the settings board's claude section got Claude Code, the model, the effort, the tool groups' permissions and the saved key's removal (S095); the claude boards lost their planned marks, the conversation's footer got the model and effort and the cost, and the claude's changes board is the tab beside the conversation (S097 to S101).
 
 Brought up to date on 2026-10-27: the panels board's presets
 for every page (S017), the palette's prompt (S018), the menus (S019), the

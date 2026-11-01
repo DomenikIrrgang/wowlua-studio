@@ -122,6 +122,14 @@ pub fn conflict_lenses(path: &Path, list: &[Conflict]) -> Vec<Lens> {
         }
         out.push(Lens {
             line: c.start,
+            title: "ask Claude".to_owned(),
+            act: LensAct::Click(LensClick::AskConflict {
+                file: path.to_path_buf(),
+                line: c.start,
+            }),
+        });
+        out.push(Lens {
+            line: c.start,
             title: format!("conflict {} of {}", i + 1, list.len()),
             act: LensAct::Note(Tone::Muted),
         });
@@ -451,8 +459,9 @@ mod tests {
             }]
         );
         let lenses = conflict_lenses(Path::new("a.wowlua"), &found);
-        assert_eq!(lenses.len(), 4);
-        assert_eq!(lenses[3].title, "conflict 1 of 1");
+        assert_eq!(lenses.len(), 5);
+        assert_eq!(lenses[3].title, "ask Claude");
+        assert_eq!(lenses[4].title, "conflict 1 of 1");
         resolve(&mut doc, 1, Take::Both);
         assert_eq!(doc.text(), "x\nmine\ntheirs\ny\n");
         let mut doc = Document::new(PathBuf::from("a.wowlua"), text);
