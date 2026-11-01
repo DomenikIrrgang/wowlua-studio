@@ -20,6 +20,8 @@ pub enum Command {
     FollowPresets(bool),
     /// Whether the status bar shows the frame stats (S041).
     FrameStats(bool),
+    /// The game screen over the whole display, or back (S077).
+    GameFullScreen,
     /// Opens a folder from the system's picker (S025: in this window or a
     /// new one, when this one has a workspace).
     OpenFolder,
@@ -361,6 +363,16 @@ pub fn entries(
             page.label(),
             Some(Menu::Go),
             None,
+        );
+    }
+    if workspace {
+        add(
+            Command::GameFullScreen,
+            "view",
+            "game: full screen",
+            "the game alone, as in the game",
+            Some(Menu::View),
+            Some(KeyboardShortcut::new(Modifiers::ALT, Key::Enter)),
         );
     }
     add(

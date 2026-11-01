@@ -11,8 +11,10 @@ use wowlua_studio_ui::forms::{self, CalloutKind};
 use wowlua_studio_ui::widgets::{self, BadgeKind, ButtonKind};
 use wowlua_studio_ui::{Face, Palette, palette};
 
-use crate::state::Settings;
-use crate::system::{GithubSignIn, Installation, SettingsInfo, System, UpdateCheck, Workspace};
+use crate::state::{CLAUDE_EFFORT_DEFAULT, CLAUDE_PERMISSIONS, CLAUDE_TOOLS, Settings};
+use crate::system::{
+    ClaudeCode, GithubSignIn, Installation, SettingsInfo, System, UpdateCheck, Workspace,
+};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Section {
@@ -77,6 +79,8 @@ pub enum Action {
     /// Reset every page's layout to its preset.
     ResetLayouts,
     OpenLog,
+    /// Runs Claude Code's sign-in in the terminal: this line (S095).
+    ClaudeSignIn(String),
 }
 
 #[derive(Default)]
@@ -89,7 +93,6 @@ pub struct SettingsState {
     updates: Option<UpdateCheck>,
     checking_updates: bool,
     github: Option<GithubSignIn>,
-    claude_key: String,
     /// The wowlua built into Studio (the host's).
     pub wowlua_version: String,
     /// The command whose keys are being recorded (S062).
@@ -117,6 +120,24 @@ impl SettingsState {
 
     /// The page was opened: what it shows of this computer is read again.
     pub fn opened(&mut self) {
+        self.asked = false;
+    }
+
+    /// Claude Code as last read (the claude page's too).
+    pub fn claude(&self) -> Option<&ClaudeCode> {
+        self.info.as_ref().map(|i| &i.claude)
+    }
+
+    /// Reads this computer's information once (the claude page).
+    pub fn read(&mut self, system: &dyn System) {
+        if !self.asked {
+            self.asked = true;
+            system.settings_info();
+        }
+    }
+
+    /// Reads it again at the next [`read`](Self::read).
+    pub fn read_again(&mut self) {
         self.asked = false;
     }
 }
@@ -154,8 +175,11 @@ enum Kind {
     Number(fn(&Settings) -> f64, fn(&mut Settings, f64), Num),
     /// A value of this computer and its button.
     Action(Act),
-    /// A key to save, never shown again.
+    /// The Claude API key kept before M14: shown only while one is kept,
+    /// to remove it (S095).
     Secret,
+    /// A Claude tool group's permission, by its key in [`CLAUDE_TOOLS`].
+    Permission(&'static str),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -166,6 +190,7 @@ enum Act {
     CheckCache,
     ArtCache,
     Github,
+    ClaudeCode,
     Drafts,
     Version,
     Log,
@@ -180,6 +205,23 @@ struct Row {
 }
 
 fn rows() -> Vec<Row> {
+    let mut rows = setting_rows();
+    // Claude's tool groups after its other settings (S095).
+    let at = rows
+        .iter()
+        .rposition(|r| r.section == Section::Claude)
+        .map_or(rows.len(), |i| i + 1);
+    let groups = CLAUDE_TOOLS.iter().map(|(key, label, desc, _)| Row {
+        section: Section::Claude,
+        label,
+        desc,
+        kind: Kind::Permission(key),
+    });
+    rows.splice(at..at, groups);
+    rows
+}
+
+fn setting_rows() -> Vec<Row> {
     use Kind::*;
     use Section::*;
     let row = |section, label, desc, kind| Row {
@@ -229,6 +271,12 @@ fn rows() -> Vec<Row> {
                 |s| s.density.clone(),
                 |s, v| s.density = v.into(),
             ),
+        ),
+        row(
+            Appearance,
+            "window vsync",
+            "Studio's window waits for your display before it shows a frame, as the game does with vsync. Off, it shows every frame at once: the frame rate unlimited, with some tearing.",
+            Flag(|s| s.window_vsync, |s, v| s.window_vsync = v),
         ),
         row(
             Appearance,
@@ -537,35 +585,42 @@ fn rows() -> Vec<Row> {
         ),
         row(
             Claude,
-            "api key",
-            "Your Anthropic API key, kept in the OS credential store; Studio never shows it again.",
-            Secret,
+            "Claude Code",
+            "Studio runs the Claude Code you installed, on your Claude plan; you sign in through it, and Studio never sees or keeps the sign-in.",
+            Action(Act::ClaudeCode),
         ),
         row(
             Claude,
-            "approvals",
-            "What Claude may do without asking.",
+            "model",
+            "A conversation's model at its start (Claude Code's aliases); fable is the newest.",
             Choice(
-                &[
-                    "ask every time",
-                    "edits ask, the rest runs",
-                    "only reading runs",
-                ],
-                |s| s.claude_approvals.clone(),
-                |s, v| s.claude_approvals = v.into(),
+                &["fable", "opus", "sonnet", "haiku"],
+                |s| s.claude_model.clone(),
+                |s, v| s.claude_model = v.into(),
             ),
         ),
         row(
             Claude,
-            "debug and game tools",
-            "Start sessions, screenshots, clicks, world changes, breakpoints (wowlua mcp).",
-            Flag(|s| s.claude_tools, |s, v| s.claude_tools = v),
+            "effort",
+            "How hard Claude thinks at a conversation's start; the levels depend on the model.",
+            Choice(
+                &[
+                    CLAUDE_EFFORT_DEFAULT,
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh",
+                    "max",
+                ],
+                |s| s.claude_effort.clone(),
+                |s, v| s.claude_effort = v.into(),
+            ),
         ),
         row(
             Claude,
-            "run commands",
-            "wowlua test, check, build; never publish without asking.",
-            Flag(|s| s.claude_shell, |s, v| s.claude_shell = v),
+            "saved API key",
+            "A key Studio kept before it ran Claude Code; Studio no longer uses it.",
+            Secret,
         ),
         row(
             Layouts,
@@ -701,6 +756,29 @@ fn act_value(
             }),
             "clear",
         ),
+        // (not read yet: running Claude Code to ask takes a moment)
+        Act::ClaudeCode if state.info.is_none() => ("looking for Claude Code…".into(), ""),
+        Act::ClaudeCode => {
+            let c = &info.claude;
+            match (&c.path, &c.account) {
+                (None, _) => (
+                    "not found: install it from claude.com/claude-code".into(),
+                    "check again",
+                ),
+                (Some(_), None) => (
+                    format!("{} · not signed in", crate::claude::found(c)),
+                    "sign in",
+                ),
+                (Some(_), Some(_)) => (
+                    format!(
+                        "{} · {}",
+                        crate::claude::found(c),
+                        crate::claude::signed_in(c)
+                    ),
+                    "sign out",
+                ),
+            }
+        }
         Act::Github => match (&state.github, &info.github) {
             (Some(GithubSignIn::Code { .. }), _) => ("waiting for GitHub…".into(), "cancel"),
             (_, Some(login)) => (format!("signed in as {login}"), "sign out"),
@@ -787,7 +865,7 @@ pub fn studio(
                             forms::callout(ui, CalloutKind::Plain, |ui| {
                                 ui.horizontal_wrapped(|ui| {
                                     widgets::badge(ui, "M14", BadgeKind::Planned);
-                                    forms::paragraph(ui, "Claude in Studio is the last part to build. Your key and these settings are kept now; they take effect when it is.", 12.5, 19.0, p.ink);
+                                    forms::paragraph(ui, "Claude in Studio is being built (M14): Claude Code is found and signed in here now; the permissions, model and effort take effect when the conversations come.", 12.5, 19.0, p.ink);
                                 });
                             });
                         }
@@ -847,8 +925,10 @@ pub fn studio(
                     ui.add_space(10.0);
                 }
                 let all = rows();
+                let key_kept = state.info.as_ref().is_some_and(|i| i.claude_key);
                 let shown: Vec<&Row> = all
                     .iter()
+                    .filter(|r| key_kept || !matches!(r.kind, Kind::Secret))
                     .filter(|r| {
                         if query.is_empty() {
                             r.section == section
@@ -998,34 +1078,33 @@ fn row(
                     }
                 }
                 Kind::Secret => {
-                    let saved = state.info.as_ref().is_some_and(|i| i.claude_key);
                     ui.horizontal(|ui| {
-                        if saved {
-                            caption(ui, "a key is saved", p);
-                            if widgets::button(ui, ButtonKind::Secondary, "remove", true, None)
-                                .clicked()
-                            {
-                                system.claude_key(None);
-                                state.asked = false;
-                            }
-                        } else {
-                            ui.add(
-                                egui::TextEdit::singleline(&mut state.claude_key)
-                                    .password(true)
-                                    .desired_width(control - 80.0)
-                                    .font(Face::Plex.at(12.0))
-                                    .hint_text("sk-ant-…"),
-                            );
-                            if widgets::button(ui, ButtonKind::Secondary, "save", true, None)
-                                .clicked()
-                                && !state.claude_key.trim().is_empty()
-                            {
-                                system.claude_key(Some(state.claude_key.trim().to_owned()));
-                                state.claude_key.clear();
-                                state.asked = false;
-                            }
+                        caption(ui, "a key is saved", p);
+                        if widgets::button(
+                            ui,
+                            ButtonKind::Secondary,
+                            "remove saved key",
+                            true,
+                            None,
+                        )
+                        .clicked()
+                        {
+                            system.claude_key(None);
+                            state.asked = false;
                         }
                     });
+                }
+                Kind::Permission(key) => {
+                    let now = settings.claude_permission(key);
+                    let at = CLAUDE_PERMISSIONS
+                        .iter()
+                        .position(|o| *o == now)
+                        .unwrap_or(1);
+                    let id = format!("set-{}", r.label);
+                    if let Some(i) = widgets::seg(ui, &id, CLAUDE_PERMISSIONS, at, true) {
+                        settings.set_claude_permission(key, CLAUDE_PERMISSIONS[i]);
+                        action = Some(Action::Changed);
+                    }
                 }
                 Kind::Action(act) => {
                     let (value, button) = act_value(*act, state, installation);
@@ -1083,6 +1162,19 @@ fn row(
                                     }
                                     _ => system.github_sign_in(true),
                                 },
+                                Act::ClaudeCode => {
+                                    let c = state.info.as_ref().map(|i| i.claude.clone());
+                                    match c {
+                                        Some(c) if c.path.is_some() && c.account.is_none() => {
+                                            action = Some(Action::ClaudeSignIn(c.sign_in));
+                                        }
+                                        Some(c) if c.account.is_some() => {
+                                            system.claude_sign_out();
+                                            state.asked = false;
+                                        }
+                                        _ => state.asked = false,
+                                    }
+                                }
                                 Act::Version => {
                                     state.checking_updates = true;
                                     state.updates = None;
@@ -1185,6 +1277,21 @@ mod tests {
                 _ => {}
             }
         }
+        // Claude's tool groups: their defaults, a change kept, a default not.
+        for (key, _, _, default) in CLAUDE_TOOLS {
+            assert_eq!(s.claude_permission(key), *default, "{key}");
+        }
+        s.set_claude_permission("git.push", "allow");
+        assert_eq!(s.claude_permission("git.push"), "allow");
+        s.set_claude_permission("git.push", "ask");
+        assert!(s.claude_permissions.is_empty(), "the default is not kept");
+        assert!(
+            rows()
+                .iter()
+                .filter(|r| matches!(r.kind, Kind::Permission(_)))
+                .count()
+                == CLAUDE_TOOLS.len()
+        );
         let size = rows()
             .into_iter()
             .find(|r| r.label == "interface size")

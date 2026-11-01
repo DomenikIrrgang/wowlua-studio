@@ -128,7 +128,7 @@ impl Layout {
             Page::Game => (
                 vec![g(&[Frames, Units])],
                 vec![g(&[Game])],
-                vec![g(&[Events, Input, Screenshots])],
+                vec![g(&[Events, GameChat, Input, Screenshots])],
                 vec![g(&[Inspector, LiveWorld])],
             ),
             Page::Perf => (vec![], vec![g(&[Profiler])], vec![], vec![g(&[Function])]),
@@ -141,7 +141,7 @@ impl Layout {
             Page::Ship => (vec![g(&[BuildProfiles])], vec![g(&[Ship])], vec![], vec![]),
             Page::Claude => (
                 vec![g(&[Conversations])],
-                vec![g(&[Chat])],
+                vec![g(&[Chat, ClaudeChanges])],
                 vec![],
                 vec![g(&[Tools])],
             ),

@@ -5,6 +5,7 @@
 //! the browser too (S002).
 
 pub mod chrome;
+pub mod claude;
 pub mod commands;
 pub mod coverage;
 pub mod debug;
@@ -35,6 +36,7 @@ pub mod state;
 pub mod system;
 pub mod terminal;
 pub mod tests;
+pub mod view;
 pub mod world;
 
 use std::collections::{HashMap, VecDeque};
@@ -120,6 +122,17 @@ pub struct Studio {
     schemas: std::collections::HashMap<editor::json::Schema, serde_json::Value>,
     /// The terminal panel's shell (S043).
     terminal: terminal::TerminalState,
+    /// Since when Claude Code's sign-in runs in the terminal (S095), and
+    /// when its status was last read.
+    claude_wait: Option<f64>,
+    claude_read: f64,
+    /// The conversation with Claude (S097), what Studio's tools ask in it
+    /// (S096).
+    claude: claude::Conversation,
+    /// The workspace's kept conversations (S101).
+    claude_kept: Vec<claude::Kept>,
+    /// Claude's test run: its question's id, the run, its files so far.
+    claude_test: Option<(u64, u64, Vec<system::TestFile>)>,
     /// The problems panel shows the editor's file only.
     problems_this_file: bool,
     /// The tests page (S052).
@@ -153,7 +166,7 @@ pub struct Studio {
     /// The workspace's world profiles (`tests/profiles/*.json`), by name.
     profiles: Vec<String>,
     /// The world profiles of the title bar's addon, by its folder.
-    run_profiles: Option<(PathBuf, Vec<String>)>,
+    run_profiles: Option<(PathBuf, String, Vec<String>)>,
     /// Background jobs (S044); the checks running, by package.
     jobs: jobs::Jobs,
     checks: std::collections::HashMap<PathBuf, u64>,
@@ -177,6 +190,8 @@ pub struct Studio {
     forking: bool,
     /// The screenshot harness closes the folder once it opened.
     harness_close: bool,
+    /// The screenshot harness goes full screen once the game runs.
+    harness_full: bool,
     /// Closing the window was answered: it closes.
     quitting: bool,
     /// When Git's `HEAD` changed: files changing with it changed by a
@@ -291,6 +306,11 @@ impl Studio {
             search: search::SearchState::default(),
             schemas: std::collections::HashMap::new(),
             terminal: terminal::TerminalState::default(),
+            claude_wait: None,
+            claude_read: 0.0,
+            claude: claude::Conversation::default(),
+            claude_kept: Vec::new(),
+            claude_test: None,
             problems_this_file: false,
             tests: tests::TestsState::default(),
             game: game::GameState::default(),
@@ -321,6 +341,7 @@ impl Studio {
             forked: None,
             forking: false,
             harness_close: false,
+            harness_full: false,
             quitting: false,
             head_changed: None,
             queued: Vec::new(),
@@ -353,6 +374,35 @@ impl Studio {
     /// The last frame's time, building and drawing it, for the frame stats.
     pub fn set_frame_time(&mut self, seconds: f32) {
         self.frame_cpu = Some(seconds);
+    }
+
+    /// The world seen from a camera (`follow`, `orbit`, `above`; S088):
+    /// the screenshot harness's.
+    pub fn game_camera(&mut self, name: &str) {
+        self.game.camera = match name {
+            "orbit" => system::ViewCamera::Orbit {
+                yaw: std::f64::consts::PI,
+                pitch: 0.45,
+                distance: 18.0,
+            },
+            "above" => system::ViewCamera::Above { height: 60.0 },
+            _ => system::ViewCamera::Follow,
+        };
+    }
+
+    /// Every overlay over the world on (S088): the screenshot harness's.
+    pub fn game_overlays(&mut self) {
+        self.game.overlays = [true; 3];
+    }
+
+    /// Whether the window waits for the display (the settings', S087).
+    pub fn window_vsync(&self) -> bool {
+        self.settings.window_vsync
+    }
+
+    /// The refresh rate of the display the window is on (S087).
+    pub fn set_display_rate(&mut self, hz: f64) {
+        self.game.display_hz = Some(hz);
     }
 
     pub fn platform(&self) -> Platform {
@@ -505,6 +555,113 @@ impl Studio {
         self.quitting = true;
     }
 
+    /// The game screen over the whole display, or back (S077): the
+    /// window full screen and the game's window as large as the display;
+    /// back, both as they were.
+    fn game_full_screen(&mut self, ctx: &Context) {
+        if self.game.full.is_some() {
+            self.game.leave_full(&*self.host.system);
+            ctx.send_viewport_cmd(ViewportCommand::Fullscreen(false));
+            return;
+        }
+        if self.workspace.is_none() {
+            return;
+        }
+        let ppp = ctx.pixels_per_point();
+        let display = ctx
+            .input(|i| i.viewport().monitor_size)
+            .unwrap_or_else(|| ctx.content_rect().size());
+        let display = (
+            (display.x * ppp).round() as u32,
+            (display.y * ppp).round() as u32,
+        );
+        self.game.enter_full(&*self.host.system, display);
+        ctx.send_viewport_cmd(ViewportCommand::Fullscreen(true));
+        self.queue(Command::ShowPage(Page::Game));
+    }
+
+    /// Types a line into the game's chat once it runs (the screenshot
+    /// harness's `chatsend:`).
+    pub fn game_chat_later(&mut self, line: &str) {
+        self.game.chat_later.push(line.to_owned());
+    }
+
+    /// A unit placed in the game view (S080): the world page's ask goes to
+    /// the game page; the places clicked come back to the profile, as its
+    /// `world` (a place) or its patrol's `path`.
+    fn placing_between_pages(&mut self) {
+        if self
+            .world
+            .placing
+            .as_ref()
+            .is_some_and(|p| !p.profile.is_empty())
+            && let Some(p) = self.world.placing.take()
+        {
+            self.game.placing = Some((p, Vec::new()));
+            self.queue(Command::ShowPage(Page::Game));
+        }
+        let Some((p, points)) = self.game.placed.take() else {
+            return;
+        };
+        let round = |v: f64| (v * 100.0).round() / 100.0;
+        let place = |a: &[f64; 3]| serde_json::json!({ "y": round(a[0]), "x": round(a[1]), "z": round(a[2]) });
+        let units = world::json::Key::Name("units".into());
+        let change = if p.path {
+            let mut m = p
+                .movement
+                .clone()
+                .filter(serde_json::Value::is_object)
+                .unwrap_or_else(|| serde_json::json!({}));
+            m["kind"] = serde_json::json!("patrol");
+            m["path"] = serde_json::Value::Array(points.iter().map(place).collect());
+            world::Change {
+                path: vec![
+                    units,
+                    p.unit.clone(),
+                    world::json::Key::Name("movement".into()),
+                ],
+                value: Some(m),
+                typing: false,
+            }
+        } else {
+            let Some(at) = points.first() else {
+                return;
+            };
+            world::Change {
+                path: vec![
+                    units,
+                    p.unit.clone(),
+                    world::json::Key::Name("world".into()),
+                ],
+                value: Some(place(at)),
+                typing: false,
+            }
+        };
+        self.world.selected = Some(p.profile.clone());
+        self.world.pending.push(change);
+        self.queue(Command::ShowPage(Page::World));
+    }
+
+    /// A key held in play mode once the game runs (the screenshot
+    /// harness's `hold:KEY:SECONDS`).
+    pub fn hold_later(&mut self, key: &str, seconds: f64) {
+        self.game.hold_later = Some((key.to_owned(), seconds));
+    }
+
+    /// The game screen's 3D world on, with the installation's game data
+    /// (the screenshot harness's `world`).
+    pub fn world_on(&mut self) {
+        self.settings.installation_data = true;
+        self.game.world_ready = true;
+        self.game.world = true;
+    }
+
+    /// Full screen once the game runs (the screenshot harness's
+    /// `fullscreen`).
+    pub fn full_screen_later(&mut self) {
+        self.harness_full = true;
+    }
+
     /// The start page's from-GitHub panel (a window opened for it).
     pub fn show_from_github(&mut self) {
         self.start.panel = start::Panel::Github;
@@ -551,6 +708,7 @@ impl Studio {
     pub fn ui(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
         self.events(&ctx);
+        self.claude_wait(&ctx);
         self.git.tick(
             &*self.host.system,
             self.settings.git_fetch_minutes,
@@ -751,6 +909,31 @@ impl Studio {
         let dropped = ctx.input(|i| i.raw.dropped_files.first().map(|f| f.path().to_path_buf()));
         if let Some(path) = dropped.filter(|_| self.host.platform != Platform::Web) {
             self.open_or_ask(path);
+        }
+
+        self.game.manual = self.debug.config.as_ref().is_some_and(|c| c.manual);
+        self.placing_between_pages();
+        self.game.world_ready = self.settings.installation_data;
+        self.game.send_later(
+            &*self.host.system,
+            ctx.input(|i| i.time),
+            ctx.input(|i| i.viewport().focused.unwrap_or(true)),
+        );
+        if self.harness_full && self.game.running() && system_screen(self) {
+            self.harness_full = false;
+            commands.push(Command::GameFullScreen);
+        }
+        // The game screen alone over the whole display (S077): its bar,
+        // and alt enter or the bar's button back.
+        if self.game.full.is_some() && self.workspace.is_some() {
+            if game::full_screen(ui, &mut self.game, &*self.host.system) {
+                commands.push(Command::GameFullScreen);
+            }
+            for command in commands {
+                self.run(&ctx, command);
+            }
+            self.save_when_due(&ctx);
+            return;
         }
 
         let full = ui.max_rect();
@@ -963,6 +1146,10 @@ impl Studio {
         let wowlua_version = self.host.wowlua_version.clone();
         let studio_settings = &mut self.settings;
         let mut settings_action = None;
+        let mut claude_action = None;
+        let claude_waiting = self.claude_wait.is_some();
+        let conversation = &mut self.claude;
+        let claude_kept = &self.claude_kept;
         let installation = self.start.installation();
         let on_world = self.layout_page == Page::World;
         let on_debug = self.layout_page == Page::Debug;
@@ -1159,6 +1346,7 @@ impl Studio {
             }
             Panel::Events => game::events(ui, game_state, system),
             Panel::Input => game::input(ui, game_state),
+            Panel::GameChat => game::chat(ui, game_state, system),
             Panel::Screenshots => game::screenshots(ui, game_state, system),
             Panel::CallStack => {
                 if let Some(a) =
@@ -1176,7 +1364,9 @@ impl Studio {
             Panel::Watch => debug::watch(ui, debug_state, system),
             Panel::Console => debug::console(ui, debug_state, system),
             Panel::LiveWorld if on_world => {
-                if let Some(a) = world::live(ui, world_state, debug_state, workspace, system) {
+                if let Some(a) =
+                    world::live(ui, world_state, debug_state, game_state, workspace, system)
+                {
                     world_action = Some(a);
                 }
             }
@@ -1292,6 +1482,23 @@ impl Studio {
                     git_action = Some(a);
                 }
             }
+            Panel::Chat => {
+                claude_action =
+                    claude::chat(ui, settings_page, system, claude_waiting, conversation);
+            }
+            Panel::Tools => claude::tools(ui, conversation, studio_settings, system),
+            Panel::Conversations => {
+                if let Some(a) =
+                    claude::conversations(ui, claude_kept, conversation.id, conversation.busy)
+                {
+                    claude_action = Some(a);
+                }
+            }
+            Panel::ClaudeChanges => {
+                if let Some(a) = claude::changes(ui, conversation, system) {
+                    claude_action = Some(a);
+                }
+            }
             _ => dock::placeholder(ui, panel),
         };
         let changed = dock::show(ui, area, layout, &mut self.dock, &mut content);
@@ -1343,6 +1550,9 @@ impl Studio {
         if let Some(a) = settings_action {
             self.settings_action(a, ctx);
         }
+        if let Some(a) = claude_action {
+            self.claude_action(a, ctx);
+        }
         if let Some(a) = manifest_action {
             match a {
                 manifest::Action::Save(path) => {
@@ -1377,7 +1587,7 @@ impl Studio {
             self.show_place(&place, ctx);
         }
         if self.debug.running()
-            && let Some(s) = self.host.system.game_screen()
+            && let Some(s) = self.host.system.game_screen(self.game.camera)
         {
             self.debug.clock = (s.time, s.frames);
         }
@@ -1406,6 +1616,8 @@ impl Studio {
             Some(game::Action::BreakOn(names)) => {
                 self.debug.add_functions(&*self.host.system, names);
             }
+            Some(game::Action::FullScreen) => self.queue(Command::GameFullScreen),
+            Some(game::Action::AskClaude(p)) => self.ask_claude(p),
             None => {}
         }
         match tests_action {
@@ -1428,6 +1640,7 @@ impl Studio {
             Some(tests::Action::ShowCoverage) => {
                 self.queue(Command::ShowPanel(Panel::Coverage, dock::Dock::Main));
             }
+            Some(tests::Action::AskWhy(file, test)) => self.ask_why_failed(&file, &test),
             None => {}
         }
         if let Some(l) = go_to {
@@ -1583,6 +1796,44 @@ impl Studio {
                 }
             }
             A::ApplyFix(fix) => self.apply_edits(fix.edits, ctx),
+            A::AskClaude(at) => {
+                let Some(w) = &self.workspace else {
+                    return;
+                };
+                let rel = doc
+                    .path
+                    .strip_prefix(&w.root)
+                    .unwrap_or(&doc.path)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                let problems: Vec<String> = self
+                    .lsp
+                    .diagnostics
+                    .get(&doc.path)
+                    .into_iter()
+                    .flatten()
+                    .filter(|d| d.start.line <= at.line && at.line <= d.end.line)
+                    .map(|d| format!("{} {}", d.code.as_deref().unwrap_or(""), d.message))
+                    .collect();
+                let from = at.line.saturating_sub(10);
+                let to = (at.line + 10).min(doc.line_count().saturating_sub(1));
+                let code: Vec<String> = (from..=to)
+                    .map(|l| format!("{:>5}  {}", l + 1, doc.line(l)))
+                    .collect();
+                let first = problems.first().cloned().unwrap_or_default();
+                self.ask_claude(claude::Prompt {
+                    draft: format!("Fix the problem at {rel}:{}: {}", at.line + 1, first.trim()),
+                    label: format!("{rel}:{}", at.line + 1),
+                    context: format!(
+                        "{rel}, lines {} to {}:\n{}\nIts problems on line {}:\n{}",
+                        from + 1,
+                        to + 1,
+                        code.join("\n"),
+                        at.line + 1,
+                        problems.join("\n")
+                    ),
+                });
+            }
             A::Lens(click) => self.lens_clicked(click, ctx),
         }
     }
@@ -2009,12 +2260,9 @@ impl Studio {
                 }
             }
             R::Fixes { path, fixes } => {
+                // (a problem without a quick fix still offers Claude, S100)
                 if let Some(i) = find(&self.editors, &path) {
-                    if fixes.is_empty() {
-                        self.notify(Notification::new(Kind::Note, "No quick fix here", ""), ctx);
-                    } else {
-                        self.editors.tabs[i].fixes = Some((fixes, 0));
-                    }
+                    self.editors.tabs[i].fixes = Some((fixes, 0));
                 }
             }
         }
@@ -2165,6 +2413,7 @@ impl Studio {
             }
             github::page::Action::SignIn => self.settings_show("github"),
             github::page::Action::ShowGit => self.run(ctx, Command::ShowPage(Page::Git)),
+            github::page::Action::AskClaude(p) => self.ask_claude(p),
         }
     }
 
@@ -2405,7 +2654,22 @@ impl Studio {
                         self.host.system.open(&w.root);
                     }
                 }
-                Event::Tests { run, event } => self.test_event(run, event, ctx),
+                Event::Tests { run, event } => {
+                    self.claude_test_event(run, &event);
+                    self.test_event(run, event, ctx)
+                }
+                Event::Claude { id, event } => self.claude_event(id, event, ctx),
+                Event::Conversation(event) => {
+                    let ended = matches!(
+                        event,
+                        system::ConversationEvent::TurnDone { .. }
+                            | system::ConversationEvent::Ended(_)
+                    );
+                    self.claude.event(event);
+                    if ended {
+                        self.keep_claude();
+                    }
+                }
                 Event::Game { session, event } => {
                     let now = ctx.input(|i| i.time);
                     let profiling = matches!(&event, system::GameEvent::Reply { id, .. } if *id >= profiler::IDS);
@@ -2642,6 +2906,11 @@ impl Studio {
         {
             self.tests.restore(kept);
         }
+        // The kept conversations with Claude (S101).
+        self.claude_kept = self
+            .kept_claude()
+            .remove(&workspace.root.to_string_lossy().into_owned())
+            .unwrap_or_default();
         // The debugger's breakpoints, watches and history (S056).
         self.debug = debug::DebugState::default();
         let kept = self
@@ -2747,6 +3016,7 @@ impl Studio {
                 self.debug.add_functions(&*self.host.system, vec![name]);
                 self.keep_debug();
             }
+            profiler::Action::AskClaude(p) => self.ask_claude(p),
         }
     }
 
@@ -2780,10 +3050,16 @@ impl Studio {
             .position(|f| Some(f) == self.debug.kept.run_flavor.as_ref())
             .or_else(|| flavors.iter().position(|f| f.1))
             .unwrap_or(0);
-        // (the addon's world profiles, read when it changes)
+        // (the addon's world profiles, then wowlua's built-in ones it has
+        // none of the name of (S083), read when it or the flavor changes)
         let dir = member.map_or_else(|| w.root.clone(), |m| m.dir.clone());
-        if self.run_profiles.as_ref().is_none_or(|(d, _)| *d != dir) {
-            let list = self
+        let flavor_id = ids.get(flavor).cloned().unwrap_or_default();
+        if self
+            .run_profiles
+            .as_ref()
+            .is_none_or(|(d, f, _)| *d != dir || *f != flavor_id)
+        {
+            let mut list: Vec<String> = self
                 .host
                 .system
                 .list(&dir.join("tests").join("profiles"))
@@ -2791,12 +3067,17 @@ impl Studio {
                 .filter(|e| !e.is_dir && e.name.ends_with(".json"))
                 .map(|e| e.name.trim_end_matches(".json").to_owned())
                 .collect();
-            self.run_profiles = Some((dir.clone(), list));
+            for (name, _) in self.host.system.built_in_profiles(&flavor_id) {
+                if !list.contains(&name) {
+                    list.push(name);
+                }
+            }
+            self.run_profiles = Some((dir.clone(), flavor_id, list));
         }
         let names = self
             .run_profiles
             .as_ref()
-            .map(|(_, l)| l.clone())
+            .map(|(_, _, l)| l.clone())
             .unwrap_or_default();
         let mut profiles = vec!["world: none".to_owned()];
         profiles.extend(names.iter().map(|n| format!("world: {n}")));
@@ -2926,7 +3207,14 @@ impl Studio {
         self.queue(Command::ShowPage(Page::World));
         self.world.selected = Some(profile.to_owned());
         if let Some(part) = part {
-            self.world.part = part.to_owned();
+            // (`units/2`: the units part, its third unit picked)
+            match part.split_once('/') {
+                Some((p, n)) => {
+                    self.world.part = p.to_owned();
+                    self.world.unit = n.parse().ok();
+                }
+                None => self.world.part = part.to_owned(),
+            }
         }
         self.world.json_view = json;
     }
@@ -3000,8 +3288,418 @@ impl Studio {
     }
 
     /// What the settings page asks (S062).
+    /// Runs Claude Code's sign-in in the terminal (S095): Studio reads
+    /// Claude Code's status until it is signed in.
+    fn claude_sign_in(&mut self, line: &str, ctx: &Context) {
+        self.terminal.run(line);
+        self.queue(Command::ShowPanel(Panel::Terminal, dock::Dock::Bottom));
+        self.claude_wait = Some(ctx.input(|i| i.time));
+    }
+
+    /// The claude page's actions (S095, S097).
+    fn claude_action(&mut self, action: claude::Action, ctx: &Context) {
+        let system = &*self.host.system;
+        match action {
+            claude::Action::SignIn(line) => self.claude_sign_in(&line, ctx),
+            claude::Action::Send(text) => {
+                let Some(w) = &self.workspace else {
+                    return;
+                };
+                self.claude.entries.push(claude::Entry::You(text.clone()));
+                self.claude.busy = true;
+                // (with what Studio shows, and when the files went back to
+                // a checkpoint, S098, S099)
+                let mut context = self.claude_context(&w.root);
+                if let Some(n) = self.claude.notice.take() {
+                    context.push(n);
+                }
+                let text = if context.is_empty() {
+                    text
+                } else {
+                    format!(
+                        "<studio-context>\n{}\n</studio-context>\n\n{text}",
+                        context.join("\n\n")
+                    )
+                };
+                let label: String = self
+                    .claude
+                    .entries
+                    .iter()
+                    .rev()
+                    .find_map(|e| match e {
+                        claude::Entry::You(t) => Some(t.clone()),
+                        _ => None,
+                    })
+                    .unwrap_or_default();
+                if self.claude.running {
+                    system.claude_checkpoint(&label);
+                    if let Err(e) = system.claude_send(&text) {
+                        self.claude.busy = false;
+                        self.claude.entries.push(claude::Entry::Note(e));
+                    }
+                    return;
+                }
+                // Claude Code starts (again: with the session to go on
+                // with), Studio's tools open for it.
+                self.claude.begin(&self.settings, system.now());
+                let path = self.settings_page.claude().and_then(|c| c.path.clone());
+                let start = path
+                    .ok_or_else(|| "Claude Code is not found".to_string())
+                    .and_then(|claude| {
+                        let link = system.claude_link(&w.root, self.claude.permissions.clone())?;
+                        system.claude_checkpoint(&label);
+                        Ok(system::ClaudeStart {
+                            claude,
+                            mcp_config: link.mcp_config,
+                            model: self
+                                .claude
+                                .model_choice
+                                .clone()
+                                .unwrap_or_else(|| self.settings.claude_model.clone()),
+                            effort: self
+                                .claude
+                                .effort_choice
+                                .clone()
+                                .filter(|e| e != state::CLAUDE_EFFORT_DEFAULT),
+                            resume: self.claude.session.clone(),
+                            prompt: text,
+                            system: self.claude_system(&w.root),
+                        })
+                    });
+                match start.and_then(|s| system.claude_start(&w.root, s)) {
+                    Ok(()) => self.claude.running = true,
+                    Err(e) => {
+                        self.claude.busy = false;
+                        self.claude.entries.push(claude::Entry::Note(e));
+                    }
+                }
+            }
+            claude::Action::Stop => {
+                system.claude_stop();
+                self.claude.running = false;
+                self.claude.busy = false;
+                self.claude.entries.push(claude::Entry::Note(
+                    "stopped; the next message goes on".into(),
+                ));
+            }
+            claude::Action::Commit(paths) => {
+                if let Some(w) = &self.workspace {
+                    system.git(&w.root, system::GitRequest::Stage(paths));
+                    self.queue(Command::ShowPage(Page::Git));
+                }
+            }
+            claude::Action::New => {
+                self.keep_claude();
+                let system = &*self.host.system;
+                for id in self.claude.open_asks() {
+                    system.claude_reply(id, system::ClaudeReply::Allowed(false));
+                }
+                system.claude_link_close();
+                self.claude = claude::Conversation::default();
+            }
+            claude::Action::Open(id) => {
+                if self.claude.busy {
+                    return;
+                }
+                self.keep_claude();
+                let system = &*self.host.system;
+                for open in self.claude.open_asks() {
+                    system.claude_reply(open, system::ClaudeReply::Allowed(false));
+                }
+                system.claude_link_close();
+                if let Some(k) = self.claude_kept.iter().find(|k| k.id == id).cloned() {
+                    self.claude = claude::Conversation::from_kept(k);
+                    self.claude.entries.push(claude::Entry::Note(
+                        "Opened again: the next message goes on with Claude's session. Its earlier checkpoints are gone.".into(),
+                    ));
+                }
+            }
+            claude::Action::Forget(id) => {
+                self.claude_kept.retain(|k| k.id != id);
+                self.save_claude();
+            }
+        }
+        ctx.request_repaint();
+    }
+
+    /// The kept conversations of every workspace (S101).
+    fn kept_claude(&self) -> std::collections::BTreeMap<String, Vec<claude::Kept>> {
+        self.host
+            .store
+            .load("claude.json")
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_default()
+    }
+
+    /// The current conversation kept with the workspace's others.
+    fn keep_claude(&mut self) {
+        if let Some(k) = self.claude.kept(self.host.system.now()) {
+            self.claude_kept.retain(|o| o.id != k.id);
+            self.claude_kept.push(k);
+            // (the newest 30)
+            self.claude_kept.sort_by_key(|k| std::cmp::Reverse(k.at));
+            self.claude_kept.truncate(30);
+            self.save_claude();
+        }
+    }
+
+    fn save_claude(&self) {
+        let Some(w) = &self.workspace else {
+            return;
+        };
+        let mut all = self.kept_claude();
+        let key = w.root.to_string_lossy().into_owned();
+        all.remove(&key);
+        while all.len() >= 10 {
+            let Some(first) = all.keys().next().cloned() else {
+                break;
+            };
+            all.remove(&first);
+        }
+        all.insert(key, self.claude_kept.clone());
+        if let Ok(text) = serde_json::to_string(&all) {
+            self.host.store.save("claude.json", &text);
+        }
+    }
+
+    /// Ask Claude why a test failed (S100): its failure, its stack and what
+    /// it printed.
+    fn ask_why_failed(&mut self, file: &std::path::Path, test: &str) {
+        let Some(w) = &self.workspace else {
+            return;
+        };
+        let rel = file
+            .strip_prefix(&w.root)
+            .unwrap_or(file)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let mut context = format!("The test \"{test}\" in {rel} failed.");
+        if let Some(f) = self.tests.results.get(file) {
+            for t in f.tests.iter().filter(|t| t.name == test) {
+                if let system::TestOutcome::Fail { message, stack } = &t.outcome {
+                    context.push_str(&format!("\n{message}\n{stack}"));
+                }
+            }
+            if !f.printed.is_empty() {
+                let n = f.printed.chars().count();
+                let tail: String = f.printed.chars().skip(n.saturating_sub(4000)).collect();
+                context.push_str(&format!("\nWhat the test file printed:\n{tail}"));
+            }
+        }
+        self.ask_claude(claude::Prompt {
+            draft: format!(
+                "Why does the test \"{test}\" in {rel} fail? Find the cause and fix it."
+            ),
+            label: format!("\"{test}\" failed"),
+            context,
+        });
+    }
+
+    /// "Ask Claude" from another page (S100): the claude page opens with
+    /// the message to send and what the user looks at attached.
+    fn ask_claude(&mut self, p: claude::Prompt) {
+        if self.claude.draft.trim().is_empty() {
+            self.claude.draft = p.draft;
+        } else {
+            self.claude.draft = format!("{}\n\n{}", self.claude.draft.trim_end(), p.draft);
+        }
+        let chip = claude::Chip::Text {
+            label: p.label,
+            text: p.context,
+        };
+        if !self.claude.chips.contains(&chip) {
+            self.claude.chips.push(chip);
+        }
+        self.queue(Command::ShowPage(Page::Claude));
+    }
+
+    /// What Claude knows from the start (S099): Studio and the workspace,
+    /// the addon's notes (CLAUDE.md) and its manifest.
+    fn claude_system(&self, root: &std::path::Path) -> String {
+        let system = &*self.host.system;
+        let mut s = format!(
+            "You work in wowlua Studio, the IDE for wowlua (a typed language compiled to Lua for World of Warcraft addons), on the workspace at {}. You have only Studio's tools: the workspace's files, git, and wowlua's (check, fmt, build, test; the emulated game client with its debugger and profiler). Read wowlua's docs with wowlua_docs and the standard library with wowlua_reference rather than guessing at the language or its APIs. Some tools ask the user first; when one is denied, ask what to do instead. A message may begin with a <studio-context> block: what the user is looking at in Studio.",
+            root.display()
+        );
+        let cap = |t: String, n: usize| -> String {
+            if t.len() <= n {
+                t
+            } else {
+                let mut end = n;
+                while !t.is_char_boundary(end) {
+                    end -= 1;
+                }
+                format!("{}\n… (cut; read the file for the rest)", &t[..end])
+            }
+        };
+        if let Ok(notes) = system.read_file(&root.join("CLAUDE.md")) {
+            s.push_str(&format!(
+                "\n\nThe addon's notes for you (CLAUDE.md):\n{}",
+                cap(notes, 40_000)
+            ));
+        }
+        if let Ok(manifest) = system.read_file(&root.join("wowlua.json")) {
+            s.push_str(&format!(
+                "\n\nThe workspace's wowlua.json:\n{}",
+                cap(manifest, 20_000)
+            ));
+        }
+        s
+    }
+
+    /// What goes with a message (S099): the open file with its caret and
+    /// problems, and the chips' context.
+    fn claude_context(&self, root: &std::path::Path) -> Vec<String> {
+        let mut out = Vec::new();
+        let tab = self.editors.active();
+        if let Some(tab) = tab
+            && let Ok(rel) = tab.doc.path.strip_prefix(root)
+        {
+            let rel = rel.to_string_lossy().replace('\\', "/");
+            let line = tab.doc.selection.head.line + 1;
+            let mut s = format!("The open file is {rel}, the caret on line {line}.");
+            let problems: Vec<String> = self
+                .lsp
+                .diagnostics
+                .get(&tab.doc.path)
+                .into_iter()
+                .flatten()
+                .take(20)
+                .map(|d| {
+                    let kind = if d.severity == 1 { "error" } else { "warning" };
+                    let code = d.code.as_deref().unwrap_or("");
+                    format!("line {}: {kind} {code}: {}", d.start.line + 1, d.message)
+                })
+                .collect();
+            if !problems.is_empty() {
+                s.push_str(&format!(" Its problems:\n{}", problems.join("\n")));
+            }
+            out.push(s);
+        }
+        for chip in &self.claude.chips {
+            match chip {
+                claude::Chip::OpenFile => {
+                    if let Some(tab) = tab {
+                        let text = tab.doc.text();
+                        let text = if text.len() > 60_000 {
+                            "(too long: read it with read_file)".to_string()
+                        } else {
+                            text
+                        };
+                        out.push(format!("The open file's text:\n{text}"));
+                    }
+                }
+                claude::Chip::FailingTests => {
+                    let failed: Vec<String> = self
+                        .tests
+                        .results
+                        .values()
+                        .filter(|f| f.failed())
+                        .flat_map(|f| {
+                            let mut lines = Vec::new();
+                            if let Some(e) = &f.error {
+                                lines.push(format!("{}: {e}", f.file));
+                            }
+                            for t in &f.tests {
+                                if let system::TestOutcome::Fail { message, .. } = &t.outcome {
+                                    lines.push(format!("{} — {}: {message}", f.file, t.name));
+                                }
+                            }
+                            lines
+                        })
+                        .take(30)
+                        .collect();
+                    out.push(if failed.is_empty() {
+                        "No test failed in the last run.".into()
+                    } else {
+                        format!("The failing tests:\n{}", failed.join("\n"))
+                    });
+                }
+                claude::Chip::Stop => {
+                    out.push(match self.debug.stop_summary() {
+                        Some(s) => format!("The debugger {s}"),
+                        None => "The debugger is not stopped.".into(),
+                    });
+                }
+                claude::Chip::Text { label, text } => out.push(format!("{label}:\n{text}")),
+            }
+        }
+        out
+    }
+
+    /// What Studio's tools for Claude need (S096): the user's answer, or a
+    /// run of the tests page.
+    fn claude_event(&mut self, id: u64, event: system::ClaudeEvent, ctx: &Context) {
+        match event {
+            system::ClaudeEvent::Ask { group, what, .. } => {
+                self.claude.ask(id, group, what);
+            }
+            system::ClaudeEvent::Test { request } => {
+                if self.tests.running.is_some() || self.workspace.is_none() {
+                    self.host.system.claude_reply(
+                        id,
+                        system::ClaudeReply::Failed("a test run is going in Studio already".into()),
+                    );
+                    return;
+                }
+                let run = self.tests.peek_run();
+                self.start_tests(request, ctx);
+                self.claude_test = Some((id, run, Vec::new()));
+            }
+        }
+        ctx.request_repaint();
+    }
+
+    /// Claude's test run's files, and its end answered.
+    fn claude_test_event(&mut self, run: u64, event: &system::TestEvent) {
+        let Some((id, mine, files)) = &mut self.claude_test else {
+            return;
+        };
+        if *mine != run {
+            return;
+        }
+        match event {
+            system::TestEvent::File(f) => files.push(f.clone()),
+            system::TestEvent::Done(done) => {
+                let (id, files) = (*id, std::mem::take(files));
+                self.claude_test = None;
+                self.host.system.claude_reply(
+                    id,
+                    system::ClaudeReply::Tests {
+                        files,
+                        done: done.clone(),
+                    },
+                );
+            }
+            _ => {}
+        }
+    }
+
+    /// While a sign-in runs: Claude Code's status every 3 s, until it is
+    /// signed in, for 10 minutes at most.
+    fn claude_wait(&mut self, ctx: &Context) {
+        let Some(since) = self.claude_wait else {
+            return;
+        };
+        let now = ctx.input(|i| i.time);
+        let signed_in = self
+            .settings_page
+            .claude()
+            .is_some_and(|c| c.account.is_some());
+        if signed_in || now - since > 600.0 {
+            self.claude_wait = None;
+            return;
+        }
+        if now - self.claude_read >= 3.0 {
+            self.claude_read = now;
+            self.host.system.settings_info();
+        }
+        ctx.request_repaint_after(std::time::Duration::from_secs(1));
+    }
+
     fn settings_action(&mut self, action: settings::Action, ctx: &Context) {
         match action {
+            settings::Action::ClaudeSignIn(line) => self.claude_sign_in(&line, ctx),
             settings::Action::Changed => {
                 self.apply_settings(ctx);
                 self.touch(ctx);
@@ -3290,7 +3988,8 @@ impl Studio {
                     .first()
                     .map_or("addon".to_owned(), |m| m.name.clone());
                 let mut config = debug::Config::addon(&format!("{addon} · {name}"));
-                config.profile = Some(name);
+                // (a built-in one, S081: the session names no profile)
+                config.profile = (!name.starts_with("default · ")).then_some(name);
                 self.queue(Command::ShowPage(Page::Debug));
                 self.start_session(config);
             }
@@ -3318,6 +4017,18 @@ impl Studio {
             }
             debug::Action::SaveProfile(path, text) => {
                 let _ = self.host.system.write_file(&path, &text);
+            }
+            debug::Action::AskClaude => {
+                if let Some(stop) = self.debug.stop_summary() {
+                    self.ask_claude(claude::Prompt {
+                        draft: "Explain why the debugger stopped here, and what to do about it."
+                            .into(),
+                        label: "the debugger's stop".into(),
+                        context: format!(
+                            "The debugger (Studio's session, not Claude's own) {stop}"
+                        ),
+                    });
+                }
             }
             debug::Action::SaveConfigs(list) => {
                 if let Some(w) = &self.workspace {
@@ -3474,6 +4185,35 @@ impl Studio {
             }
             C::Debug { file, test } => self.debug_test(&file, test.as_deref()),
             C::Profile { file, test } => self.profile_test(&file, test.as_deref(), ctx),
+            C::AskWhyFailed { file, test } => self.ask_why_failed(&file, &test),
+            C::AskConflict { file, line } => {
+                if let Some(i) = self.editors.find(&file) {
+                    let doc = &self.editors.tabs[i].doc;
+                    if let Some(c) = git::editor::conflicts(doc)
+                        .into_iter()
+                        .find(|c| c.start == line)
+                    {
+                        let rel = file
+                            .strip_prefix(&w.root)
+                            .unwrap_or(&file)
+                            .to_string_lossy()
+                            .replace('\\', "/");
+                        let from = c.start.saturating_sub(10);
+                        let to = (c.end + 10).min(doc.line_count().saturating_sub(1));
+                        let text: Vec<String> = (from..=to)
+                            .map(|l| format!("{:>5}  {}", l + 1, doc.line(l)))
+                            .collect();
+                        self.ask_claude(claude::Prompt {
+                            draft: format!(
+                                "Help me resolve the merge conflict in {rel} at line {}: keep what both sides mean.",
+                                c.start + 1
+                            ),
+                            label: format!("conflict in {rel}:{}", c.start + 1),
+                            context: format!("{rel}, lines {} to {}:\n{}", from + 1, to + 1, text.join("\n")),
+                        });
+                    }
+                }
+            }
             C::Conflict { file, line, take } => {
                 if let Some(i) = self.editors.find(&file) {
                     git::editor::resolve(&mut self.editors.tabs[i].doc, line, take);
@@ -3692,6 +4432,7 @@ impl Studio {
                 self.menus_changed = true;
                 self.touch(ctx);
             }
+            Command::GameFullScreen => self.game_full_screen(ctx),
             Command::FrameStats(on) => {
                 self.settings.frame_stats = on;
                 self.menus_changed = true;
@@ -4466,4 +5207,9 @@ struct RunChoices {
     profiles: Vec<String>,
     profile: usize,
     state: chrome::RunState,
+}
+
+/// Whether the game draws its screen yet (the screenshot harness waits).
+fn system_screen(studio: &Studio) -> bool {
+    studio.host.system.game_screen(studio.game.camera).is_some()
 }

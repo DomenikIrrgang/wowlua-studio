@@ -38,6 +38,8 @@ pub enum Panel {
     Ship,
     Settings,
     Chat,
+    /// What Claude changed in the conversation (S098).
+    ClaudeChanges,
     // Bottom
     Problems,
     Output,
@@ -45,6 +47,9 @@ pub enum Panel {
     Console,
     Events,
     Input,
+    /// The game's chat: what its chat windows show, and a line to type
+    /// in (S077).
+    GameChat,
     Screenshots,
     // Right
     Variables,
@@ -87,12 +92,14 @@ impl Panel {
             Panel::Ship => "ship",
             Panel::Settings => "settings",
             Panel::Chat => "conversation",
+            Panel::ClaudeChanges => "claude's changes",
             Panel::Problems => "problems",
             Panel::Output => "output",
             Panel::Terminal => "terminal",
             Panel::Console => "console",
             Panel::Events => "events",
             Panel::Input => "input",
+            Panel::GameChat => "chat",
             Panel::Screenshots => "screenshots",
             Panel::Variables => "variables",
             Panel::Watch => "watch",
@@ -119,6 +126,7 @@ impl Panel {
             | Panel::Game
             | Panel::Events
             | Panel::Input
+            | Panel::GameChat
             | Panel::Screenshots
             | Panel::Inspector => "M5",
             Panel::CallStack
@@ -133,7 +141,7 @@ impl Panel {
             Panel::Changes | Panel::History | Panel::Diff => "M11",
             Panel::PullRequests | Panel::PullRequest => "M12",
             Panel::World3d => "M13",
-            Panel::Conversations | Panel::Chat | Panel::Tools => "M14",
+            Panel::Conversations | Panel::Chat | Panel::ClaudeChanges | Panel::Tools => "M14",
         }
     }
 }

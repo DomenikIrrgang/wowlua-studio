@@ -771,6 +771,8 @@ pub enum Action {
     Open(String, u32),
     /// A function breakpoint (by definition, `src/x.wowlua:12`).
     BreakOn(String),
+    /// Ask Claude to make the function faster (S100).
+    AskClaude(crate::claude::Prompt),
 }
 
 impl ProfilerState {
@@ -2383,6 +2385,29 @@ pub fn function(ui: &mut Ui, state: &mut ProfilerState, p: &Palette) -> Option<A
                         && let Some(file) = &k.file
                     {
                         action = Some(Action::BreakOn(format!("{file}:{}", k.line)));
+                    }
+                    if widgets::button(ui, ButtonKind::Tertiary, "make it faster", true, None).clicked() {
+                        let place = k
+                            .file
+                            .as_ref()
+                            .map(|f| format!(" at {f}:{}", k.line))
+                            .unwrap_or_default();
+                        action = Some(Action::AskClaude(crate::claude::Prompt {
+                            draft: format!(
+                                "Make {} faster: find what costs most in it, change it, and profile it again to compare.",
+                                k.name
+                            ),
+                            label: format!("profile of {}", k.name),
+                            context: format!(
+                                "The profile of {}{place} ({}): {} calls, {} instructions, {} bytes, {} ns in all, itself and what it calls.",
+                                k.name,
+                                m.name,
+                                f.calls,
+                                f.total[0],
+                                f.total[1],
+                                f.total[2]
+                            ),
+                        }));
                     }
                 });
             });

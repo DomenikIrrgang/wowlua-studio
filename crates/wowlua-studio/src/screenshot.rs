@@ -156,6 +156,31 @@ impl Screenshot {
                 studio.close_later();
                 continue;
             }
+            if let Some(line) = step.strip_prefix("chatsend:") {
+                studio.game_chat_later(line);
+                continue;
+            }
+            if step == "fullscreen" {
+                studio.full_screen_later();
+                continue;
+            }
+            if step == "world" {
+                studio.world_on();
+                continue;
+            }
+            if let Some(name) = step.strip_prefix("camera:") {
+                studio.game_camera(name);
+                continue;
+            }
+            if step == "overlays" {
+                studio.game_overlays();
+                continue;
+            }
+            if let Some(rest) = step.strip_prefix("hold:") {
+                let (key, secs) = rest.split_once(':').unwrap_or((rest, "1"));
+                studio.hold_later(key, secs.parse().unwrap_or(1.0));
+                continue;
+            }
             if let Some(rest) = step.strip_prefix("github:") {
                 studio.github_show(rest);
                 continue;
@@ -234,6 +259,14 @@ impl Screenshot {
                 None if step == "coverage" => Some(Command::ShowPanel(
                     wowlua_studio_app::panels::Panel::Coverage,
                     wowlua_studio_app::dock::Dock::Main,
+                )),
+                None if step == "gameinput" => Some(Command::ShowPanel(
+                    wowlua_studio_app::panels::Panel::Input,
+                    wowlua_studio_app::dock::Dock::Bottom,
+                )),
+                None if step == "gamechat" => Some(Command::ShowPanel(
+                    wowlua_studio_app::panels::Panel::GameChat,
+                    wowlua_studio_app::dock::Dock::Bottom,
                 )),
                 None if step == "terminal" => Some(Command::ShowPanel(
                     wowlua_studio_app::panels::Panel::Terminal,
