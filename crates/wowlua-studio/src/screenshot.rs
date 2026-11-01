@@ -13,7 +13,9 @@
 //! `manifest:<section>[@json]` (the workspace's wowlua.json in its tab),
 //! `git:<branches|commit|new|switch:<branch>|discard>` (the git page's
 //! parts, once the repository is read), `github:<run|failed|pull|new>`
-//! (the pull requests page's, once GitHub answered).
+//! (the pull requests page's, once GitHub answered), `fromgithub[:<owner/
+//! name or link>]` (the start page's from-GitHub panel, a repository looked
+//! up), `clone:<owner/name>@<branch>`, `close` (the folder, once open).
 
 use std::{
     path::PathBuf,
@@ -141,6 +143,44 @@ impl Screenshot {
                 studio.world_live_later(profile, edits);
                 continue;
             }
+            if let Some(rest) = step.strip_prefix("fromgithub") {
+                studio.harness_from_github(rest.trim_start_matches(':'));
+                continue;
+            }
+            if let Some(rest) = step.strip_prefix("clone:") {
+                let (repo, branch) = rest.split_once('@').unwrap_or((rest, "main"));
+                studio.start_clone(repo, branch);
+                continue;
+            }
+            if step == "close" {
+                studio.close_later();
+                continue;
+            }
+            if let Some(line) = step.strip_prefix("chatsend:") {
+                studio.game_chat_later(line);
+                continue;
+            }
+            if step == "fullscreen" {
+                studio.full_screen_later();
+                continue;
+            }
+            if step == "world" {
+                studio.world_on();
+                continue;
+            }
+            if let Some(name) = step.strip_prefix("camera:") {
+                studio.game_camera(name);
+                continue;
+            }
+            if step == "overlays" {
+                studio.game_overlays();
+                continue;
+            }
+            if let Some(rest) = step.strip_prefix("hold:") {
+                let (key, secs) = rest.split_once(':').unwrap_or((rest, "1"));
+                studio.hold_later(key, secs.parse().unwrap_or(1.0));
+                continue;
+            }
             if let Some(rest) = step.strip_prefix("github:") {
                 studio.github_show(rest);
                 continue;
@@ -220,6 +260,14 @@ impl Screenshot {
                     wowlua_studio_app::panels::Panel::Coverage,
                     wowlua_studio_app::dock::Dock::Main,
                 )),
+                None if step == "gameinput" => Some(Command::ShowPanel(
+                    wowlua_studio_app::panels::Panel::Input,
+                    wowlua_studio_app::dock::Dock::Bottom,
+                )),
+                None if step == "gamechat" => Some(Command::ShowPanel(
+                    wowlua_studio_app::panels::Panel::GameChat,
+                    wowlua_studio_app::dock::Dock::Bottom,
+                )),
                 None if step == "terminal" => Some(Command::ShowPanel(
                     wowlua_studio_app::panels::Panel::Terminal,
                     wowlua_studio_app::dock::Dock::Bottom,
@@ -242,7 +290,7 @@ impl Screenshot {
         })
     }
 
-    pub fn step(&mut self, ctx: &egui::Context) {
+    pub fn step(&mut self, ctx: &egui::Context, studio: &mut Studio) {
         self.frame += 1;
         ctx.request_repaint();
         // Opening a folder takes a moment: the shot waits for it.
@@ -259,6 +307,7 @@ impl Screenshot {
             if let Err(e) = save_png(&self.path, &image) {
                 eprintln!("wowlua studio: could not save {}: {e}", self.path.display());
             }
+            studio.quit_as_is();
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
     }

@@ -126,6 +126,8 @@ pub enum Action {
     /// Profile a test (S057).
     Profile(PathBuf, Option<String>),
     ShowCoverage,
+    /// Ask Claude why a test failed (S100).
+    AskWhy(PathBuf, String),
 }
 
 /// A test's state in the explorer.
@@ -162,6 +164,11 @@ impl TestsState {
     pub fn next_run(&mut self) -> u64 {
         self.next += 1;
         self.next
+    }
+
+    /// The number the next run will get.
+    pub fn peek_run(&self) -> u64 {
+        self.next + 1
     }
 
     /// A test run's news; the run's end when it ended.
@@ -474,6 +481,14 @@ pub fn lenses(state: &TestsState, workspace: &Workspace, path: &Path) -> Vec<Len
                     "show failure",
                     line,
                     LensClick::Failure {
+                        file: file.clone(),
+                        test: failed.name.clone(),
+                    },
+                ));
+                out.push(click(
+                    "ask Claude why",
+                    line,
+                    LensClick::AskWhyFailed {
                         file: file.clone(),
                         test: failed.name.clone(),
                     },
@@ -1801,6 +1816,9 @@ fn failure_view(
         if button(ui, ButtonKind::Primary, "debug this test", true, None).clicked() {
             action = Some(Action::Debug(file.to_path_buf(), Some(name.to_owned())));
         }
+        if button(ui, ButtonKind::Secondary, "ask Claude why", true, None).clicked() {
+            action = Some(Action::AskWhy(file.to_path_buf(), name.to_owned()));
+        }
         if button(ui, ButtonKind::Secondary, "run it again", idle, None).clicked() {
             action = Some(Action::Run(request_for(&package, file, Some(name), state)));
         }
@@ -2181,6 +2199,7 @@ mod unit {
                 line(2, "profile"),
                 line(5, "failed at line 7"),
                 line(5, "show failure"),
+                line(5, "ask Claude why"),
                 line(5, "run test"),
                 line(5, "debug"),
                 line(5, "profile"),

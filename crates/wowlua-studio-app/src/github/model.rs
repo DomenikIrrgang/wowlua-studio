@@ -10,6 +10,50 @@ pub struct Repo {
     pub name: String,
 }
 
+/// A repository the start page lists to open from GitHub (M12).
+#[derive(Clone, Debug, PartialEq)]
+pub struct RepoInfo {
+    /// `owner/name`.
+    pub full: String,
+    pub description: String,
+    pub default_branch: String,
+    pub private: bool,
+    /// Whether the signed-in user can push to it.
+    pub push: bool,
+    /// When it was last pushed to, Unix seconds.
+    pub pushed: i64,
+}
+
+/// The repository typed into the start page: `owner/name`, or a link to it
+/// on github.com, with the branch when the link names one
+/// (`…/tree/<branch>`).
+pub fn typed_repo(typed: &str) -> Option<(String, Option<String>)> {
+    let t = typed.trim().trim_end_matches('/');
+    let rest = t
+        .strip_prefix("https://github.com/")
+        .or_else(|| t.strip_prefix("http://github.com/"))
+        .or_else(|| t.strip_prefix("github.com/"))
+        .unwrap_or(t);
+    let mut parts = rest.splitn(4, '/');
+    let owner = parts.next()?.trim();
+    let name = parts.next()?.trim().trim_end_matches(".git");
+    let ok = |s: &str| {
+        !s.is_empty()
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    };
+    if !ok(owner) || !ok(name) {
+        return None;
+    }
+    let branch = match (parts.next(), parts.next()) {
+        (Some("tree"), Some(b)) if !b.is_empty() => Some(b.to_owned()),
+        (None, _) => None,
+        _ if t == rest => return None,
+        _ => None,
+    };
+    Some((format!("{owner}/{name}"), branch))
+}
+
 impl Repo {
     pub fn full(&self) -> String {
         format!("{}/{}", self.owner, self.name)
@@ -264,8 +308,11 @@ pub struct Annotation {
 /// Why GitHub couldn't answer, as far as Studio can tell.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GithubError {
-    /// Not signed in, or the token no longer works.
+    /// Not signed in: no token kept.
     SignedOut,
+    /// A token is kept, but GitHub doesn't take it (`401`: revoked or
+    /// expired).
+    NotAccepted,
     /// The repository or the thing asked for isn't visible to the user.
     NotFound,
     /// Refused: the user may not do this (`422`, `403`, `405`), and why.
@@ -277,6 +324,9 @@ impl std::fmt::Display for GithubError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             GithubError::SignedOut => f.write_str("not signed in to GitHub"),
+            GithubError::NotAccepted => {
+                f.write_str("GitHub didn't accept the saved sign-in: sign in again")
+            }
             GithubError::NotFound => f.write_str("GitHub has no such thing for this account"),
             GithubError::Refused(why) | GithubError::Other(why) => f.write_str(why),
         }
@@ -286,6 +336,31 @@ impl std::fmt::Display for GithubError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_typed_repository_is_owner_and_name_or_a_link() {
+        let r = |s: &str| typed_repo(s);
+        assert_eq!(
+            r("DomenikIrrgang/suuui"),
+            Some(("DomenikIrrgang/suuui".into(), None))
+        );
+        assert_eq!(
+            r(" https://github.com/cont1nuity/ForeverLFG/ "),
+            Some(("cont1nuity/ForeverLFG".into(), None))
+        );
+        assert_eq!(
+            r("https://github.com/o/r/tree/feat/threat-raid"),
+            Some(("o/r".into(), Some("feat/threat-raid".into())))
+        );
+        assert_eq!(r("github.com/o/r.git"), Some(("o/r".into(), None)));
+        assert_eq!(
+            r("https://github.com/o/r/pulls"),
+            Some(("o/r".into(), None))
+        );
+        assert_eq!(r("suuui"), None);
+        assert_eq!(r("o/r/extra"), None);
+        assert_eq!(r("o/r s"), None);
+    }
 
     #[test]
     fn a_remote_names_its_github_repository() {

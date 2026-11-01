@@ -181,6 +181,22 @@ pub enum Event {
     /// GitHub's answer (M12): the workspace's root asked about, and what
     /// came back.
     GithubApi(PathBuf, GithubEvent),
+    /// GitHub's answer about the signed-in user's repositories (M12, →
+    /// [`System::github_account`]).
+    Account(AccountEvent),
+    /// A clone under way (→ [`System::clone_repo`]): its share done, when
+    /// git says, and git's words.
+    Cloning {
+        repo: String,
+        progress: Option<f32>,
+        said: String,
+    },
+    /// A clone done: the folder it is in, or why not.
+    Cloned {
+        repo: String,
+        branch: String,
+        result: Result<PathBuf, String>,
+    },
     /// What an ID picker's search found (→ [`System::find`]): what, the
     /// flavor, the query, the rows.
     Found(Find, String, String, Vec<SpellRow>),
@@ -198,6 +214,14 @@ pub enum Event {
     Deps(DepsEvent),
     /// The settings page's facts of this computer (S062).
     Settings(SettingsInfo),
+    /// Studio's tools for Claude ask (S096): answered with
+    /// [`System::claude_reply`].
+    Claude {
+        id: u64,
+        event: ClaudeEvent,
+    },
+    /// The running conversation's news (S097).
+    Conversation(ConversationEvent),
     Updates(UpdateCheck),
     Github(GithubSignIn),
 }
@@ -217,11 +241,27 @@ pub enum GameRequest {
         x: f64,
         y: f64,
     },
+    /// The place of the world under a point of the screen (wowlua T529),
+    /// as the game's camera sees it or Studio's (its eye, look, up and
+    /// field of view across: wowlua T547, S089).
+    WorldPoint {
+        x: f64,
+        y: f64,
+        camera: Option<HostCamera>,
+    },
     Units,
     /// The player targets a unit by its index in the units' list.
     Target(Option<usize>),
     /// The events told since the last read.
     Events,
+    /// The chat windows' lines from line `since` on (wowlua T514).
+    ChatLines {
+        since: u64,
+    },
+    /// The 3D world behind the UI on or off (wowlua T527).
+    ShowWorld {
+        on: bool,
+    },
     /// The game's settings: the window's size and the UI scale (none:
     /// "Use UI Scale" off).
     SetScreen {
@@ -271,6 +311,17 @@ pub enum GameRequest {
     },
     SetClock {
         manual: bool,
+    },
+    /// The game in the foreground (Studio's window the user works in) or
+    /// the background: its frame rate `maxFPS`'s or `maxFPSBk`'s (S085;
+    /// wowlua T537).
+    SetForeground {
+        on: bool,
+    },
+    /// The display's refresh rate: the game keeps to it with `vsync` on
+    /// (S087; wowlua T544).
+    SetDisplayRate {
+        hz: f64,
     },
     /// Stepping into Blizzard's UI code from now on (wowlua T496).
     SetDebugBlizzardUi {
@@ -368,8 +419,57 @@ pub enum GameInput {
     Type(String),
     /// A key or binding by WoW's name (`ESCAPE`, `SHIFT-1`).
     Key(String),
+    /// A key held down, and let go (play mode, S079; wowlua T516).
+    KeyDown(String),
+    KeyUp(String),
+    /// The mouse dragged over the world (wowlua T528): the camera turns;
+    /// `turn` (the right button), the player with it.
+    Look {
+        dx: f64,
+        dy: f64,
+        turn: bool,
+    },
+    /// The mouse wheel over the world: the camera zooms out `steps` yards.
+    Zoom(f64),
+    /// A click on the world: the frame there clicked, else the unit
+    /// there targeted; the right button talks to it (wowlua T530).
+    ClickWorld {
+        x: f64,
+        y: f64,
+        right: bool,
+    },
+    /// Playing (S084; wowlua T535): the mouse moved to a point, a button
+    /// pressed and let go there, the wheel turned (`delta` 1 a notch up),
+    /// text typed; the game decides what the frame or the world there does.
+    MouseMove {
+        x: f64,
+        y: f64,
+    },
+    MouseDown {
+        x: f64,
+        y: f64,
+        right: bool,
+    },
+    MouseUp {
+        x: f64,
+        y: f64,
+        right: bool,
+    },
+    Wheel {
+        x: f64,
+        y: f64,
+        delta: f64,
+    },
+    Text(String),
     /// A slash command (`/wl`).
     Slash(String),
+    /// A chat message as the player sends it (`SAY`, `PARTY`, a
+    /// `WHISPER` to `target`; wowlua T514).
+    Chat {
+        text: String,
+        chat_type: String,
+        target: Option<String>,
+    },
 }
 
 /// What a game session tells.
@@ -413,7 +513,7 @@ pub enum GameEvent {
 
 /// The game's screen as last drawn: its texture and size in pixels, and
 /// how many scenes were drawn (a new one: changed).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct GameScreen {
     pub texture: egui::TextureId,
     pub size: [u32; 2],
@@ -422,6 +522,52 @@ pub struct GameScreen {
     /// drawn.
     pub time: f64,
     pub frames: u64,
+    /// The 3D world as it was drawn, while it is on (S088).
+    pub world: Option<WorldSeen>,
+}
+
+/// Studio's camera as it saw the world, for the place under a point
+/// (wowlua T547): its eye, the way it looks and its up (north, west, up
+/// yards), its field of view across (radians).
+pub type HostCamera = ([f64; 3], [f64; 3], [f64; 3], f64);
+
+/// How Studio looks at the 3D world (S088): the game's own camera, or a
+/// camera of Studio's that circles the character (radians around from
+/// north and up from level, yards away) or looks straight down on it,
+/// north up (yards above). Studio's camera leaves the game's alone.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum ViewCamera {
+    #[default]
+    Follow,
+    Orbit {
+        yaw: f64,
+        pitch: f64,
+        distance: f64,
+    },
+    Above {
+        height: f64,
+    },
+}
+
+/// The 3D world as drawn (S088): the camera it was seen from (north, west,
+/// up yards; the field of view across, radians) and its units.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct WorldSeen {
+    pub eye: [f64; 3],
+    pub look: [f64; 3],
+    pub up: [f64; 3],
+    pub fov: f64,
+    pub far: f64,
+    pub units: Vec<SeenUnit>,
+}
+
+/// A unit of the world as drawn: which (its index; the player 0), where it
+/// stands and where it faces.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SeenUnit {
+    pub id: usize,
+    pub at: [f64; 3],
+    pub facing: f64,
 }
 
 /// A test run (the tests page, S052): which tests (`path::name` filters,
@@ -591,6 +737,8 @@ pub enum Art {
     Spell(u32),
     /// An item's icon, by item ID.
     Item(u32),
+    /// A creature display's model, drawn as a model frame draws it (S082).
+    Model(u32),
 }
 
 /// A spell of the client's tables: its ID, name, icon and description.
@@ -688,13 +836,76 @@ pub enum GithubRequest {
         failed_only: bool,
     },
     Cancel(u64),
+    /// A fork of the repository as the signed-in user, with the branch
+    /// checked out pushed to it (a read-only repository's commits kept).
+    Fork,
+}
+
+/// What Studio asks GitHub about the signed-in user's repositories (M12,
+/// → [`Event::Account`]).
+#[derive(Clone, Debug, PartialEq)]
+pub enum AccountRequest {
+    /// Yours and the ones you can push to, recently pushed first.
+    Repos,
+    /// A repository by its `owner/name`.
+    Lookup(String),
+    /// A repository's branches.
+    Branches(String),
+}
+
+/// What GitHub answered (→ [`System::github_account`]).
+#[derive(Clone, Debug, PartialEq)]
+pub enum AccountEvent {
+    Repos(Result<Vec<crate::github::model::RepoInfo>, crate::github::model::GithubError>),
+    Lookup {
+        repo: String,
+        result: Result<crate::github::model::RepoInfo, crate::github::model::GithubError>,
+    },
+    Branches {
+        repo: String,
+        result: Result<Vec<String>, crate::github::model::GithubError>,
+    },
+}
+
+/// What deleting a clone of Studio's would lose (M12): what isn't on
+/// GitHub.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Losses {
+    /// Files changed and not committed, untracked ones too.
+    pub changed: Vec<String>,
+    /// Commits on no remote: the short hash and the subject.
+    pub unpushed: Vec<(String, String)>,
+    pub stashes: usize,
+}
+
+impl Losses {
+    pub fn is_empty(&self) -> bool {
+        self.changed.is_empty() && self.unpushed.is_empty() && self.stashes == 0
+    }
+}
+
+/// A clone left in Studio's data by a window that quit while it was open,
+/// with something to lose.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LeftClone {
+    pub path: PathBuf,
+    /// `owner/name`.
+    pub repo: String,
+    pub branch: Option<String>,
+    pub losses: Losses,
 }
 
 /// What GitHub answered (→ [`System::github`]).
 #[derive(Clone, Debug, PartialEq)]
 pub enum GithubEvent {
-    /// The repository, its default branch, the signed-in login.
-    Repo(Result<(crate::github::model::Repo, String, String), crate::github::model::GithubError>),
+    /// The repository, its default branch, the signed-in login, whether
+    /// they can push to it.
+    Repo(
+        Result<
+            (crate::github::model::Repo, String, String, bool),
+            crate::github::model::GithubError,
+        >,
+    ),
     Pulls(Result<Vec<crate::github::model::PullSummary>, crate::github::model::GithubError>),
     Pull {
         number: u64,
@@ -874,6 +1085,9 @@ pub enum GitEvent {
 pub enum Find {
     Spell,
     Item,
+    /// A creature the installation knows (wowlua T531): a row's `icon` is
+    /// its display, its `text` its type and classification.
+    Creature,
 }
 
 impl Find {
@@ -882,6 +1096,7 @@ impl Find {
         match self {
             Find::Spell => "spell",
             Find::Item => "item",
+            Find::Creature => "creature",
         }
     }
 }
@@ -1228,8 +1443,164 @@ pub struct SettingsInfo {
     pub log: Option<PathBuf>,
     /// Signed in to GitHub as.
     pub github: Option<String>,
-    /// A Claude API key is saved.
+    /// A Claude API key is saved (from before M14: Studio no longer uses
+    /// it, and the settings offer to remove it, S095).
     pub claude_key: bool,
+    /// Claude Code as Studio found it (S090, S095).
+    pub claude: ClaudeCode,
+}
+
+/// What Studio's tools for Claude need from the app (S096).
+#[derive(Clone, Debug, PartialEq)]
+pub enum ClaudeEvent {
+    /// A tool whose group asks first: what it would do.
+    Ask {
+        group: String,
+        tool: String,
+        what: String,
+    },
+    /// Claude's `test`: a run of the tests page, its results back.
+    Test { request: TestRequest },
+}
+
+/// The app's answer to a [`ClaudeEvent`].
+#[derive(Clone, Debug, PartialEq)]
+pub enum ClaudeReply {
+    /// The user's answer to an [`ClaudeEvent::Ask`].
+    Allowed(bool),
+    Tests {
+        files: Vec<TestFile>,
+        done: TestDone,
+    },
+    /// It could not be done (a test run is going already).
+    Failed(String),
+}
+
+/// What Claude changed in the conversation (S098): each file against how
+/// it was before, the checkpoints, the hunks undone (to redo).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ClaudeChanges {
+    pub files: Vec<ClaudeFile>,
+    pub checkpoints: Vec<ClaudeCheckpoint>,
+    /// Each undone hunk with its file.
+    pub undone: Vec<(String, ClaudeHunk)>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ClaudeFile {
+    /// In the workspace.
+    pub path: String,
+    pub added: usize,
+    pub removed: usize,
+    /// Claude made it; deleted it.
+    pub created: bool,
+    pub deleted: bool,
+    pub hunks: Vec<ClaudeHunk>,
+}
+
+/// Lines removed and added: where they are (1-based) before and now.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ClaudeHunk {
+    pub old_start: usize,
+    pub old: Vec<String>,
+    pub new_start: usize,
+    pub new: Vec<String>,
+}
+
+/// Before one of the user's messages: the message, and the files Claude
+/// changed after it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ClaudeCheckpoint {
+    pub label: String,
+    pub files: usize,
+}
+
+/// How a conversation with Claude starts (S097): Claude Code, the link to
+/// Studio's tools, the model and effort, the session to go on with, the
+/// first message.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ClaudeStart {
+    pub claude: PathBuf,
+    pub mcp_config: String,
+    pub model: String,
+    /// None: Claude Code's own.
+    pub effort: Option<String>,
+    pub resume: Option<String>,
+    pub prompt: String,
+    /// What Claude knows from the start (S099): Studio, the workspace, the
+    /// addon's notes and manifest.
+    pub system: String,
+}
+
+/// What a conversation with Claude tells as it goes (S097).
+#[derive(Clone, Debug, PartialEq)]
+pub enum ConversationEvent {
+    /// Claude Code runs: its session (to go on with) and model.
+    Started { session: String, model: String },
+    /// Claude's text as it streams.
+    TextDelta(String),
+    /// A whole text of Claude's.
+    Text(String),
+    /// Claude calls a tool (its input as JSON).
+    ToolUse {
+        id: String,
+        name: String,
+        input: String,
+    },
+    /// The tool's answer (`image`: it held one).
+    ToolResult {
+        id: String,
+        text: String,
+        error: bool,
+        image: bool,
+    },
+    /// The turn ended: the conversation's cost so far (an estimate), its
+    /// error, the calls Claude Code denied.
+    TurnDone {
+        cost: f64,
+        error: Option<String>,
+        denied: usize,
+    },
+    /// The plan's limit: reached until `resets_at` (seconds since the
+    /// epoch), and how much is used.
+    Limit {
+        rejected: bool,
+        resets_at: Option<u64>,
+        utilization: Option<f64>,
+    },
+    /// Claude Code ended (what it said last when it failed).
+    Ended(Option<String>),
+}
+
+/// Where Claude Code reaches Studio's tools while a conversation runs
+/// (S096): the `--mcp-config` JSON that starts the bridge.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ClaudeLink {
+    pub mcp_config: String,
+}
+
+/// Claude Code as Studio found it (S090, S095): the program, its version
+/// and whom it is signed in as.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ClaudeCode {
+    /// The program Studio runs; none: not found.
+    pub path: Option<PathBuf>,
+    /// `2.1.314`.
+    pub version: Option<String>,
+    /// Signed in (`claude auth status`); none: signed out.
+    pub account: Option<ClaudeAccount>,
+    /// The line the terminal runs to sign in (`claude auth login`, the
+    /// program's path quoted for the terminal's shell).
+    pub sign_in: String,
+    /// Why Claude Code could not be asked.
+    pub problem: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ClaudeAccount {
+    pub email: String,
+    /// The plan (`max`, `pro`, …), else how it signed in.
+    pub plan: String,
 }
 
 /// Studio's releases (`check for updates`).
@@ -1682,6 +2053,8 @@ pub trait System {
     fn adopt(&self, request: Adopt);
     /// Opens `path` in a new window (S031), or an empty one.
     fn open_window(&self, path: Option<&Path>);
+    /// A new window showing the start page's from-GitHub panel (M12).
+    fn open_window_from_github(&self) {}
     /// The `### New` lines of wowlua's changelog for the version built in.
     fn whats_new(&self) -> Vec<String>;
     /// The Git branch checked out in `dir`.
@@ -1819,6 +2192,16 @@ pub trait System {
     fn world_profiles(&self, _root: &Path) -> Vec<WorldProfile> {
         Vec::new()
     }
+    /// The world a test or session starts in that names no profile: the
+    /// flavor's fresh character as wowlua recorded it (S081), its text.
+    fn default_profile(&self, _flavor: &str) -> Option<String> {
+        None
+    }
+    /// The world profiles wowlua has built in for a flavor (wowlua T533),
+    /// by name, with their text: a package names one as its own.
+    fn built_in_profiles(&self, _flavor: &str) -> Vec<(String, String)> {
+        Vec::new()
+    }
     /// A world profile's problems (E4400, E4401), from its text as edited.
     fn check_world_profile(&self, _text: &str) -> Vec<ProfileProblem> {
         Vec::new()
@@ -1848,8 +2231,9 @@ pub trait System {
     ) -> Result<Vec<(String, serde_json::Value)>, String> {
         Err("no SavedVariables here".into())
     }
-    /// The running session's screen, drawn on the UI's GPU device.
-    fn game_screen(&self) -> Option<GameScreen> {
+    /// The running session's screen, drawn on the UI's GPU device, its 3D
+    /// world from `view` (S088).
+    fn game_screen(&self, _view: ViewCamera) -> Option<GameScreen> {
         None
     }
     /// What the ship page shows of the package (→ [`ShipEvent::Read`]).
@@ -1867,6 +2251,33 @@ pub trait System {
     /// A question for the GitHub repository `root`'s remote names (M12, →
     /// [`Event::GithubApi`]).
     fn github(&self, _root: &Path, _request: GithubRequest) {}
+    /// A question about the signed-in user's repositories (M12, →
+    /// [`Event::Account`]).
+    fn github_account(&self, _request: AccountRequest) {}
+    /// Clones `owner/name` at `branch` into Studio's data (M12, →
+    /// [`Event::Cloning`], [`Event::Cloned`]).
+    fn clone_repo(&self, _repo: &str, _branch: &str) {}
+    /// The folder Studio's clones are in: a workspace under it is a
+    /// repository opened from GitHub, deleted when it closes.
+    fn clones_dir(&self) -> Option<PathBuf> {
+        None
+    }
+    /// Marks a clone as open in this window, so no other window takes it
+    /// for one left behind.
+    fn hold_clone(&self, _root: &Path) {}
+    /// What deleting the clone would lose.
+    fn clone_losses(&self, _root: &Path) -> Result<Losses, String> {
+        Ok(Losses::default())
+    }
+    /// Deletes a clone (only under [`System::clones_dir`]).
+    fn delete_clone(&self, _root: &Path) -> Result<(), String> {
+        Ok(())
+    }
+    /// The clones no window has open: those with nothing to lose are
+    /// deleted, the others listed.
+    fn left_clones(&self) -> Vec<LeftClone> {
+        Vec::new()
+    }
     /// The CVars the flavor's client has, with their defaults (wowlua's
     /// recorded ones); none where wowlua has none.
     fn cvars(&self, _flavor: &str) -> Vec<CVarInfo> {
@@ -1905,7 +2316,55 @@ pub trait System {
     /// out (`false`).
     fn github_sign_in(&self, _on: bool) {}
     /// Saves the Claude API key, or removes it.
+    /// Removes the Claude API key kept before M14 (none: removes it).
     fn claude_key(&self, _key: Option<String>) {}
+    /// Signs Claude Code out (`claude auth logout`), then reads the
+    /// settings' information again (S095).
+    fn claude_sign_out(&self) {}
+    /// Opens Studio's tools for Claude on the workspace at `root`, with
+    /// each tool group's permission (S096); the link closes when another
+    /// opens or [`claude_link_close`](Self::claude_link_close).
+    fn claude_link(
+        &self,
+        _root: &Path,
+        _permissions: BTreeMap<String, String>,
+    ) -> Result<ClaudeLink, String> {
+        Err("Claude runs in Studio's desktop app only".into())
+    }
+    fn claude_link_close(&self) {}
+    /// A tool group's permission from now on, in the running conversation
+    /// (S097: "allow edits in this conversation", the tools panel).
+    fn claude_permission(&self, _group: &str, _permission: &str) {}
+    /// Starts Claude Code in the workspace at `root` (S097).
+    fn claude_start(&self, _root: &Path, _start: ClaudeStart) -> Result<(), String> {
+        Err("Claude runs in Studio's desktop app only".into())
+    }
+    /// The user's next message in the running conversation.
+    fn claude_send(&self, _text: &str) -> Result<(), String> {
+        Err("no conversation runs".into())
+    }
+    /// Ends Claude Code; the conversation goes on with `resume`.
+    fn claude_stop(&self) {}
+    /// A checkpoint before the user's message `label` (S098).
+    fn claude_checkpoint(&self, _label: &str) {}
+    /// What Claude changed in the conversation.
+    fn claude_changes(&self) -> Option<ClaudeChanges> {
+        None
+    }
+    fn claude_undo(&self, _path: &str, _hunk: &ClaudeHunk) -> Result<(), String> {
+        Err("no conversation".into())
+    }
+    /// Redoes the `i`th hunk undone.
+    fn claude_redo(&self, _i: usize) -> Result<(), String> {
+        Err("no conversation".into())
+    }
+    /// Back to checkpoint `k` (0: the conversation's start): the files the
+    /// user changed after Claude are kept, and named.
+    fn claude_back_to(&self, _k: usize) -> Result<Vec<String>, String> {
+        Err("no conversation".into())
+    }
+    /// The app's answer to [`Event::Claude`] `id`.
+    fn claude_reply(&self, _id: u64, _reply: ClaudeReply) {}
     /// The package's dependencies (→ [`DepsEvent::Read`]).
     fn deps_read(&self, _dir: &Path) {}
     /// Newer versions of them (→ [`DepsEvent::Outdated`]): the network.

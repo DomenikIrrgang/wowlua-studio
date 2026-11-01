@@ -20,17 +20,17 @@ const STASH_TAG: &str = "wowlua-studio:";
 
 /// The environment variable a push's credential helper reads the GitHub
 /// token from (never on the command line).
-const TOKEN_ENV: &str = "WOWLUA_STUDIO_GIT_TOKEN";
+pub(crate) const TOKEN_ENV: &str = "WOWLUA_STUDIO_GIT_TOKEN";
 
 /// What git printed.
-struct Out {
-    ok: bool,
-    stdout: String,
-    stderr: String,
+pub(crate) struct Out {
+    pub(crate) ok: bool,
+    pub(crate) stdout: String,
+    pub(crate) stderr: String,
 }
 
 /// git in `root`, never asking on a terminal.
-fn command(root: &Path) -> Command {
+pub(crate) fn command(root: &Path) -> Command {
     let mut c = Command::new("git");
     c.arg("-C")
         .arg(root)
@@ -40,7 +40,7 @@ fn command(root: &Path) -> Command {
     c
 }
 
-fn run_with(mut c: Command, input: Option<&str>) -> Result<Out, String> {
+pub(crate) fn run_with(mut c: Command, input: Option<&str>) -> Result<Out, String> {
     c.stdin(if input.is_some() {
         Stdio::piped()
     } else {
@@ -71,7 +71,7 @@ fn run(root: &Path, args: &[&str]) -> Result<Out, String> {
 }
 
 /// git's output when it succeeds, its error otherwise.
-fn ok(root: &Path, args: &[&str]) -> Result<String, String> {
+pub(crate) fn ok(root: &Path, args: &[&str]) -> Result<String, String> {
     let out = run(root, args)?;
     if out.ok {
         Ok(out.stdout)
@@ -963,7 +963,7 @@ fn parse_blame(text: &str) -> Vec<BlameLine> {
 /// A `.wowlua` file's text as wowlua fmt writes it, with its package's
 /// settings (as the language server formats); none when it can't be
 /// formatted (a syntax error: the check reports it).
-fn formatted(path: &Path, text: &str) -> Option<String> {
+pub(crate) fn formatted(path: &Path, text: &str) -> Option<String> {
     let mut db = wowlua_span::SourceDb::new();
     let config = path
         .parent()
@@ -1225,6 +1225,9 @@ mod tests {
             vec!["config", "user.name", "Tester"],
             vec!["config", "user.email", "tester@example.com"],
             vec!["config", "commit.gpgsign", "false"],
+            // (files as written: Windows' git turns `\n` into `\r\n` on
+            // checkout otherwise)
+            vec!["config", "core.autocrlf", "false"],
         ] {
             ok(&root, &args).expect("git");
         }

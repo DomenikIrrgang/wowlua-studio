@@ -26,6 +26,8 @@ pub enum Action {
     SignIn,
     /// The git page (to push a branch).
     ShowGit,
+    /// Ask Claude to fix a failing check (S100).
+    AskClaude(crate::claude::Prompt),
 }
 
 /// A pull request's tab.
@@ -165,7 +167,7 @@ pub fn list(ui: &mut Ui, state: &mut GithubState, system: &dyn System, now: f64)
     let p = palette(ui.ctx());
     let action = None;
     let repo = match &state.repo {
-        Some(Ok((r, _, _))) => Some(r.full()),
+        Some(Ok((r, _, _, _))) => Some(r.full()),
         _ => None,
     };
     forms::padded(ui, 12, 8, |ui| {
@@ -309,8 +311,18 @@ pub fn main(
             });
             return None;
         }
-        Some(Err(GithubError::SignedOut)) => {
+        Some(Err(e @ (GithubError::SignedOut | GithubError::NotAccepted))) => {
+            let rejected = *e == GithubError::NotAccepted;
             forms::padded(ui, 24, 22, |ui| {
+                if rejected {
+                    forms::paragraph(
+                        ui,
+                        "GitHub didn't accept your saved sign-in: it may have been revoked or expired.",
+                        12.5,
+                        19.0,
+                        p.ink,
+                    );
+                }
                 ui.label(
                     egui::RichText::new("signed out of GitHub")
                         .font(Face::PlexSemiBold.at(15.0))
@@ -1656,7 +1668,51 @@ fn job_card(
             state.view.open_jobs.insert(job.id);
         }
     }
-    None
+    // (a failed job: Claude can look at its log, S100)
+    let mut action = None;
+    if failed
+        && let Some((log, notes)) = state.logs.get(&job.id)
+        && widgets::button(
+            ui,
+            ButtonKind::Secondary,
+            "fix the failing check with Claude",
+            true,
+            None,
+        )
+        .clicked()
+    {
+        let mut context = String::new();
+        for s in job
+            .steps
+            .iter()
+            .filter(|s| s.conclusion.as_deref() == Some("failure"))
+        {
+            let text = step_log(log, &s.name);
+            let tail: String = {
+                let n = text.chars().count();
+                text.chars().skip(n.saturating_sub(20_000)).collect()
+            };
+            context.push_str(&format!(
+                "The step \"{}\" failed; its log's end:\n{tail}\n",
+                s.name
+            ));
+        }
+        for a in notes {
+            context.push_str(&format!(
+                "{}:{}: {} {}: {}\n",
+                a.path, a.line, a.level, a.title, a.message
+            ));
+        }
+        action = Some(Action::AskClaude(crate::claude::Prompt {
+            draft: format!(
+                "The check \"{}\" fails on GitHub. Find why, fix it, and run what it runs here to check.",
+                job.name
+            ),
+            label: format!("failed check {}", job.name),
+            context,
+        }));
+    }
+    action
 }
 
 /// A step's part of a job's log: between its `##[group]Run …` and the
@@ -1693,7 +1749,7 @@ fn new_pull(
         state.want_branches(system);
     }
     let default = match &state.repo {
-        Some(Ok((_, d, _))) => d.clone(),
+        Some(Ok((_, d, _, _))) => d.clone(),
         _ => "main".into(),
     };
     let base = state.view.base.clone().unwrap_or(default);

@@ -76,6 +76,7 @@ impl Explorer {
         workspace: &Workspace,
         system: &dyn System,
         git: &crate::git::GitState,
+        note: Option<&str>,
     ) -> Option<PathBuf> {
         let p = palette(ui.ctx());
         let rows = match self.rows.take() {
@@ -108,6 +109,12 @@ impl Explorer {
             p.ink_muted,
         );
 
+        // (a clone's: deleted when the workspace closes, M12)
+        if let Some(note) = note {
+            wowlua_studio_ui::forms::padded(ui, 12, 4, |ui| {
+                wowlua_studio_ui::forms::paragraph(ui, note, 11.5, 16.0, p.ink_muted);
+            });
+        }
         let mut clicked = None;
         egui::ScrollArea::vertical().auto_shrink(false).show_rows(
             ui,
