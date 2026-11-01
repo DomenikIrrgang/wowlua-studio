@@ -137,6 +137,8 @@ fn accelerator(key: &egui::KeyboardShortcut) -> Option<Accelerator> {
         egui::Key::M => Code::KeyM,
         egui::Key::N => Code::KeyN,
         egui::Key::O => Code::KeyO,
+        egui::Key::S => Code::KeyS,
+        egui::Key::W => Code::KeyW,
         _ => return None,
     };
     Some(Accelerator::new(mods, code))

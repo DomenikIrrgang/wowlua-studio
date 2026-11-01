@@ -11,7 +11,10 @@ use wowlua_studio_ui::{Face, Icon, Palette, icons, palette, widgets};
 
 use crate::system::{Entry, System, Workspace};
 
-const ROW_H: f32 = 24.0;
+/// A row, at the settings' density (S062).
+fn row_h() -> f32 {
+    wowlua_studio_ui::row(24.0)
+}
 const SECTION_H: f32 = 30.0;
 
 #[derive(Default)]
@@ -66,7 +69,15 @@ impl Explorer {
         self.rows = None;
     }
 
-    pub fn show(&mut self, ui: &mut Ui, workspace: &Workspace, system: &dyn System) {
+    /// Draws the tree; returns the file clicked, to open.
+    pub fn show(
+        &mut self,
+        ui: &mut Ui,
+        workspace: &Workspace,
+        system: &dyn System,
+        git: &crate::git::GitState,
+        note: Option<&str>,
+    ) -> Option<PathBuf> {
         let p = palette(ui.ctx());
         let rows = match self.rows.take() {
             Some(rows) => rows,
@@ -98,29 +109,40 @@ impl Explorer {
             p.ink_muted,
         );
 
+        // (a clone's: deleted when the workspace closes, M12)
+        if let Some(note) = note {
+            wowlua_studio_ui::forms::padded(ui, 12, 4, |ui| {
+                wowlua_studio_ui::forms::paragraph(ui, note, 11.5, 16.0, p.ink_muted);
+            });
+        }
         let mut clicked = None;
         egui::ScrollArea::vertical().auto_shrink(false).show_rows(
             ui,
-            ROW_H,
+            row_h(),
             rows.len(),
             |ui, range| {
                 for i in range {
-                    if self.row(ui, p, workspace, &rows[i]) {
+                    if self.row(ui, p, workspace, &rows[i], git) {
                         clicked = Some(i);
                     }
                 }
             },
         );
         self.rows = Some(rows);
-        if let Some(i) = clicked {
-            self.click(i);
-        }
+        clicked.and_then(|i| self.click(i))
     }
 
     /// Draws a row; returns whether it was clicked.
-    fn row(&self, ui: &mut Ui, p: &Palette, workspace: &Workspace, row: &Row) -> bool {
+    fn row(
+        &self,
+        ui: &mut Ui,
+        p: &Palette,
+        workspace: &Workspace,
+        row: &Row,
+        git: &crate::git::GitState,
+    ) -> bool {
         let (rect, response) =
-            ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::click());
+            ui.allocate_exact_size(Vec2::new(ui.available_width(), row_h()), Sense::click());
         let selected = match row {
             Row::File { path, .. } => self.selected.as_deref() == Some(path.as_path()),
             _ => false,
@@ -214,12 +236,44 @@ impl Explorer {
         } else {
             Face::Plex
         };
-        let text = widgets::galley(ui, name, face.at(12.5), p.ink, 0.0);
+        // Git (M11): a changed file's name in its change's colour and its
+        // letter at the right; a folder with changes, a dot.
+        let (ink, letter, dot) = match row {
+            Row::File { path, .. } => match git.change_of(path) {
+                Some(c) => (
+                    crate::git::page::change_color(c, p),
+                    Some((c.letter(), crate::git::page::change_color(c, p))),
+                    false,
+                ),
+                None => (p.ink, None, false),
+            },
+            // (a package's row has its kind and version at the right: its
+            // folders show the dot)
+            Row::Folder { path, .. } => (p.ink, None, git.folder_changed(path)),
+            Row::Package { .. } => (p.ink, None, false),
+        };
+        if let Some((letter, color)) = letter {
+            ui.painter().text(
+                Pos2::new(rect.right() - 16.0, cy),
+                Align2::CENTER_CENTER,
+                letter,
+                Face::PlexSemiBold.at(11.0),
+                color,
+            );
+        }
+        if dot {
+            ui.painter().rect_filled(
+                Rect::from_center_size(Pos2::new(rect.right() - 16.0, cy), Vec2::splat(6.0)),
+                CornerRadius::ZERO,
+                p.warning,
+            );
+        }
+        let text = widgets::galley(ui, name, face.at(12.5), ink, 0.0);
         let text_x = x + 42.0;
         ui.painter().with_clip_rect(rect).galley(
             Pos2::new(text_x, cy - text.size().y / 2.0),
             text.clone(),
-            p.ink,
+            ink,
         );
         if !meta.is_empty() {
             let at = text_x + text.size().x + 8.0;
@@ -234,8 +288,8 @@ impl Explorer {
         response.on_hover_cursor(CursorIcon::PointingHand).clicked()
     }
 
-    fn click(&mut self, i: usize) {
-        let Some(rows) = &self.rows else { return };
+    fn click(&mut self, i: usize) -> Option<PathBuf> {
+        let rows = self.rows.as_ref()?;
         match &rows[i] {
             Row::Package { dir: path, .. } | Row::Folder { path, .. } => {
                 let path = path.clone();
@@ -243,8 +297,12 @@ impl Explorer {
                     self.expanded.insert(path);
                 }
                 self.rows = None;
+                None
             }
-            Row::File { path, .. } => self.selected = Some(path.clone()),
+            Row::File { path, .. } => {
+                self.selected = Some(path.clone());
+                self.selected.clone()
+            }
         }
     }
 
@@ -312,7 +370,7 @@ impl Explorer {
 }
 
 /// A file's icon and its colour (the icons board's file types).
-fn file_icon(path: &Path, name: &str, p: &Palette) -> (Icon, Color32) {
+pub(crate) fn file_icon(path: &Path, name: &str, p: &Palette) -> (Icon, Color32) {
     let lower = name.to_lowercase();
     let ext = lower.rsplit_once('.').map_or("", |(_, e)| e);
     let in_profiles = path
@@ -361,6 +419,7 @@ mod tests {
             version: "1.0.0".into(),
             dir: Path::new("/w").join(rel),
             rel: rel.into(),
+            flavors: Vec::new(),
         };
         let workspace = Workspace {
             root: PathBuf::from("/w"),

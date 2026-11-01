@@ -20,13 +20,45 @@ pub enum Command {
     FollowPresets(bool),
     /// Whether the status bar shows the frame stats (S041).
     FrameStats(bool),
+    /// The game screen over the whole display, or back (S077).
+    GameFullScreen,
     /// Opens a folder from the system's picker (S025: in this window or a
     /// new one, when this one has a workspace).
     OpenFolder,
+    /// The start page's from-GitHub panel (M12); a new window's, when this
+    /// one has a workspace.
+    OpenFromGithub,
     /// An empty window, a process of its own (S031).
     NewWindow,
     /// Closes the workspace: the window shows the start page.
     CloseFolder,
+    /// Writes the active file.
+    Save,
+    /// Closes the active file's tab.
+    CloseEditor,
+    /// Opens the find bar (S051); with its replace row.
+    Find,
+    Replace,
+    /// The find bar's next and previous match.
+    FindNext,
+    FindPrevious,
+    /// Runs every test, or those that failed last (S052).
+    RunAllTests,
+    RunFailedTests,
+    /// Runs the title bar's addon on the game page, without the debugger
+    /// (S055, S071).
+    RunAddon,
+    /// `/reload` in the running session.
+    ReloadSession,
+    StopSession,
+    /// The debugger (S056): start the chosen configuration, or continue a
+    /// stopped session; pause; the steps; restart.
+    StartDebugging,
+    Pause,
+    StepOver,
+    StepInto,
+    StepOut,
+    RestartSession,
     /// The start page's new-addon form.
     NewAddon,
     /// The start page's adopt form.
@@ -114,6 +146,14 @@ pub fn entries(
         Some(Menu::File),
         Some(KeyboardShortcut::new(Modifiers::COMMAND, Key::O)),
     );
+    add(
+        Command::OpenFromGithub,
+        "file",
+        "open from GitHub…",
+        "clone a repository and open it",
+        Some(Menu::File),
+        None,
+    );
     if !workspace {
         add(
             Command::NewAddon,
@@ -145,12 +185,166 @@ pub fn entries(
     );
     if workspace {
         add(
+            Command::Save,
+            "file",
+            "save",
+            "the active file",
+            Some(Menu::File),
+            Some(KeyboardShortcut::new(Modifiers::COMMAND, Key::S)),
+        );
+        add(
+            Command::CloseEditor,
+            "file",
+            "close editor",
+            "the active file's tab",
+            Some(Menu::File),
+            Some(KeyboardShortcut::new(Modifiers::COMMAND, Key::W)),
+        );
+        add(
             Command::CloseFolder,
             "file",
             "close folder",
             "back to the start page",
             Some(Menu::File),
             None,
+        );
+    }
+    if workspace {
+        add(
+            Command::RunAllTests,
+            "test",
+            "run all tests",
+            "every test file, with coverage when it is on",
+            Some(Menu::Test),
+            None,
+        );
+        add(
+            Command::RunFailedTests,
+            "test",
+            "run the failed tests",
+            "the tests that failed last",
+            Some(Menu::Test),
+            None,
+        );
+        add(
+            Command::RunAddon,
+            "run",
+            "run the addon",
+            "the title bar's addon, flavor and world profile, without breakpoints",
+            Some(Menu::Run),
+            Some(KeyboardShortcut::new(Modifiers::CTRL, Key::F5)),
+        );
+        add(
+            Command::ReloadSession,
+            "run",
+            "reload the session",
+            "/reload in the running session",
+            Some(Menu::Run),
+            Some(KeyboardShortcut::new(Modifiers::COMMAND, Key::R)),
+        );
+        add(
+            Command::StopSession,
+            "run",
+            "stop the session",
+            "the running session",
+            Some(Menu::Run),
+            Some(KeyboardShortcut::new(Modifiers::SHIFT, Key::F5)),
+        );
+        add(
+            Command::StartDebugging,
+            "run",
+            "start debugging, or continue",
+            "the title bar's addon, flavor and world profile; a stopped session goes on",
+            Some(Menu::Run),
+            Some(KeyboardShortcut::new(Modifiers::NONE, Key::F5)),
+        );
+        add(
+            Command::Pause,
+            "run",
+            "pause",
+            "the running session stops where it is",
+            Some(Menu::Run),
+            Some(KeyboardShortcut::new(Modifiers::NONE, Key::F6)),
+        );
+        add(
+            Command::StepOver,
+            "run",
+            "step over",
+            "to the next line",
+            Some(Menu::Run),
+            Some(KeyboardShortcut::new(Modifiers::NONE, Key::F10)),
+        );
+        add(
+            Command::StepInto,
+            "run",
+            "step into",
+            "into the call, or the handler a dispatch runs",
+            Some(Menu::Run),
+            Some(KeyboardShortcut::new(Modifiers::NONE, Key::F11)),
+        );
+        add(
+            Command::StepOut,
+            "run",
+            "step out",
+            "out of the function",
+            Some(Menu::Run),
+            Some(KeyboardShortcut::new(Modifiers::SHIFT, Key::F11)),
+        );
+        add(
+            Command::RestartSession,
+            "run",
+            "restart the session",
+            "the same configuration again",
+            Some(Menu::Run),
+            None,
+        );
+    }
+    if workspace {
+        // The find bar (S051): cmd f, cmd alt f (ctrl h), cmd g (F3).
+        let mac = platform == Platform::MacOs;
+        add(
+            Command::Find,
+            "edit",
+            "find",
+            "in the active file",
+            Some(Menu::Edit),
+            Some(KeyboardShortcut::new(Modifiers::COMMAND, Key::F)),
+        );
+        add(
+            Command::Replace,
+            "edit",
+            "replace",
+            "in the active file",
+            Some(Menu::Edit),
+            Some(if mac {
+                KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::ALT, Key::F)
+            } else {
+                KeyboardShortcut::new(Modifiers::COMMAND, Key::H)
+            }),
+        );
+        add(
+            Command::FindNext,
+            "edit",
+            "find next",
+            "the next match",
+            Some(Menu::Edit),
+            Some(if mac {
+                KeyboardShortcut::new(Modifiers::COMMAND, Key::G)
+            } else {
+                KeyboardShortcut::new(Modifiers::NONE, Key::F3)
+            }),
+        );
+        add(
+            Command::FindPrevious,
+            "edit",
+            "find previous",
+            "the previous match",
+            Some(Menu::Edit),
+            Some(if mac {
+                KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, Key::G)
+            } else {
+                KeyboardShortcut::new(Modifiers::SHIFT, Key::F3)
+            }),
         );
     }
     add(
@@ -169,6 +363,16 @@ pub fn entries(
             page.label(),
             Some(Menu::Go),
             None,
+        );
+    }
+    if workspace {
+        add(
+            Command::GameFullScreen,
+            "view",
+            "game: full screen",
+            "the game alone, as in the game",
+            Some(Menu::View),
+            Some(KeyboardShortcut::new(Modifiers::ALT, Key::Enter)),
         );
     }
     add(
