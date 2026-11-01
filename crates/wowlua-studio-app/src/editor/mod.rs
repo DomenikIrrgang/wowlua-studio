@@ -165,6 +165,18 @@ impl Editors {
         Ok(self.tabs.len() - 1)
     }
 
+    /// A document of a text of no file (a built-in world profile, S081),
+    /// held without showing a tab: its index.
+    pub fn held_text(&mut self, path: &Path, text: &str) -> usize {
+        if let Some(i) = self.find(path) {
+            return i;
+        }
+        let mut tab = Tab::new(Document::new(path.to_path_buf(), text));
+        tab.hidden = true;
+        self.tabs.push(tab);
+        self.tabs.len() - 1
+    }
+
     /// Whether any tab is shown.
     pub fn shown(&self) -> bool {
         self.tabs.iter().any(|t| !t.hidden)
