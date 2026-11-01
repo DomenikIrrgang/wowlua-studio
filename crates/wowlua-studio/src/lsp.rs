@@ -31,6 +31,9 @@ pub fn start(events: Sender<Event>, ctx: egui::Context) -> Sender<Input> {
 fn run(input: &Receiver<Input>, events: &Sender<Event>, ctx: &egui::Context) {
     let start = Instant::now();
     let mut server = Embedded::new();
+    // (checked modules kept on disk: a reopened workspace checks faster,
+    // S062; the settings page clears them)
+    server.keep_on_disk();
     loop {
         server.set_time(start.elapsed());
         let next = match server.wait() {

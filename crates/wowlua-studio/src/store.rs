@@ -11,12 +11,17 @@ pub struct FileStore {
     dir: Option<PathBuf>,
 }
 
+/// Studio's data folder: `WOWLUA_STUDIO_DATA`, else the system's folder
+/// for application data.
+pub fn data_dir() -> Option<PathBuf> {
+    std::env::var_os("WOWLUA_STUDIO_DATA")
+        .map(PathBuf::from)
+        .or_else(|| dirs::config_dir().map(|d| d.join("wowlua-studio")))
+}
+
 impl FileStore {
     pub fn new() -> Self {
-        let dir = std::env::var_os("WOWLUA_STUDIO_DATA")
-            .map(PathBuf::from)
-            .or_else(|| dirs::config_dir().map(|d| d.join("wowlua-studio")));
-        FileStore { dir }
+        FileStore { dir: data_dir() }
     }
 }
 
