@@ -963,7 +963,7 @@ fn parse_blame(text: &str) -> Vec<BlameLine> {
 /// A `.wowlua` file's text as wowlua fmt writes it, with its package's
 /// settings (as the language server formats); none when it can't be
 /// formatted (a syntax error: the check reports it).
-fn formatted(path: &Path, text: &str) -> Option<String> {
+pub(crate) fn formatted(path: &Path, text: &str) -> Option<String> {
     let mut db = wowlua_span::SourceDb::new();
     let config = path
         .parent()
@@ -1225,6 +1225,9 @@ mod tests {
             vec!["config", "user.name", "Tester"],
             vec!["config", "user.email", "tester@example.com"],
             vec!["config", "commit.gpgsign", "false"],
+            // (files as written: Windows' git turns `\n` into `\r\n` on
+            // checkout otherwise)
+            vec!["config", "core.autocrlf", "false"],
         ] {
             ok(&root, &args).expect("git");
         }

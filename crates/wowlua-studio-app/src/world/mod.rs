@@ -182,6 +182,9 @@ impl ArtCache {
 /// The snapshots found, and warnings; or why none could be looked for.
 pub type Snapshots = Result<(Vec<WorldSnapshot>, Vec<String>), String>;
 
+/// A unit of a profile (S089): its key in `units`, its name, its movement.
+pub type ProfileUnit = (json::Key, String, Option<Json>);
+
 /// A unit to place in the game view (S080): its profile, its key in the
 /// profile's `units`, its name, and whether its patrol's path is drawn
 /// (waypoints until done) or its place (one click); its movement as it
@@ -260,8 +263,9 @@ pub struct WorldState {
     pub(crate) all_ranks: bool,
     /// Changes made from outside a form (the screenshot harness).
     pub pending: Vec<Change>,
-    /// The built-in profiles (S081): each flavor's default character, its
-    /// text, by its path (`wowlua:/default/<flavor>.json`).
+    /// The built-in profiles (S081, S083): each flavor's default character
+    /// and wowlua's named ones (`northshire`), their text, by their path
+    /// (`wowlua:/<name>/<flavor>.json`).
     builtins: Vec<(WorldProfile, String)>,
     /// A unit to place in the game view, asked by its form (S080).
     pub placing: Option<Placing>,
@@ -346,16 +350,25 @@ impl WorldState {
         self.listed_at = Some(now);
         self.profiles = system.world_profiles(&workspace.root);
         if self.builtins.is_empty() {
+            let built = |name: &str, f: &str, text: String| {
+                let profile = WorldProfile {
+                    name: format!("{name} · {f}"),
+                    path: PathBuf::from(format!("wowlua:/{name}/{f}.json")),
+                };
+                (profile, text)
+            };
             self.builtins = workspace
                 .flavors
                 .iter()
-                .filter_map(|f| {
-                    let text = system.default_profile(f)?;
-                    let profile = WorldProfile {
-                        name: format!("default · {f}"),
-                        path: PathBuf::from(format!("wowlua:/default/{f}.json")),
-                    };
-                    Some((profile, text))
+                .flat_map(|f| {
+                    let default = system
+                        .default_profile(f)
+                        .map(|text| built("default", f, text));
+                    let named = system
+                        .built_in_profiles(f)
+                        .into_iter()
+                        .map(|(name, text)| built(&name, f, text));
+                    default.into_iter().chain(named).collect::<Vec<_>>()
                 })
                 .collect();
         }
@@ -365,6 +378,30 @@ impl WorldState {
                 .first()
                 .or(self.builtins.first().map(|(p, _)| p))
                 .map(|p| p.name.clone());
+        }
+    }
+
+    /// The profile's units: each one's key in `units`, name and movement
+    /// (S089).
+    pub fn profile_units(&self) -> Vec<ProfileUnit> {
+        let Some(Ok(root)) = self.parsed.as_ref().map(|p| &p.value) else {
+            return Vec::new();
+        };
+        let entry = |key: json::Key, u: &Json| {
+            let name = u["name"].as_str()?.to_owned();
+            Some((key, name, u.get("movement").cloned()))
+        };
+        match &root["units"] {
+            Json::Object(m) => m
+                .iter()
+                .filter_map(|(k, u)| entry(json::Key::Name(k.clone()), u))
+                .collect(),
+            Json::Array(list) => list
+                .iter()
+                .enumerate()
+                .filter_map(|(i, u)| entry(json::Key::Index(i), u))
+                .collect(),
+            _ => Vec::new(),
         }
     }
 
@@ -871,19 +908,25 @@ pub fn editor(
         });
     });
 
-    // A built-in one: what it is, and read-only (S081).
+    // A built-in one: what it is, and read-only (S081, S083).
     if builtin {
+        let kind = builtin_kind(&profile.path);
+        let text = if kind == "default" {
+            "The world a test or session starts in when it names no profile (world: none): \
+             a fresh character of this flavor as wowlua recorded it from the client, \
+             what every profile adds to. Read-only here: copy it to a new profile to change it."
+                .to_owned()
+        } else {
+            format!(
+                "Built into wowlua: a test or session names it as its own \
+                 (config({{ profile = \"{kind}\" }}), test.profile, the world picker) where the \
+                 package has no profile of that name. Read-only here: copy it to change it; \
+                 the copy, named {kind}, comes first."
+            )
+        };
         forms::padded(ui, 12, 6, |ui| {
             forms::callout(ui, CalloutKind::Note, |ui| {
-                forms::paragraph(
-                    ui,
-                    "The world a test or session starts in when it names no profile (world: none): \
-                     a fresh character of this flavor as wowlua recorded it from the client, \
-                     what every profile adds to. Read-only here: copy it to a new profile to change it.",
-                    12.0,
-                    18.0,
-                    p.ink,
-                );
+                forms::paragraph(ui, &text, 12.0, 18.0, p.ink);
             });
         });
     }
@@ -1100,8 +1143,10 @@ pub fn editor(
     (None, action)
 }
 
-/// A built-in profile copied into the package (S081): `tests/profiles/`
-/// under the first free name of `default-<flavor>`, then picked.
+/// A built-in profile copied into the package (S081, S083):
+/// `tests/profiles/` under the first free name of `default-<flavor>` (the
+/// default character) or its own name (wowlua's named ones, which the copy
+/// then stands for), then picked.
 fn copy_builtin(
     state: &mut WorldState,
     profile: &WorldProfile,
@@ -1116,10 +1161,16 @@ fn copy_builtin(
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
     let dir = workspace.root.join("tests/profiles");
+    let kind = builtin_kind(&profile.path);
+    let base = if kind == "default" {
+        format!("default-{flavor}")
+    } else {
+        kind
+    };
     let name = (1..)
         .map(|n| match n {
-            1 => format!("default-{flavor}"),
-            n => format!("default-{flavor}-{n}"),
+            1 => base.clone(),
+            n => format!("{base}-{n}"),
         })
         .find(|n| !state.profiles.iter().any(|p| &p.name == n))?;
     let text = editors.tabs[tab].doc.text();
@@ -1131,6 +1182,15 @@ fn copy_builtin(
         }
         Err(e) => Some(Action::Note("copy to a new profile".into(), e)),
     }
+}
+
+/// Which built-in a profile's path names (`wowlua:/<name>/<flavor>.json`):
+/// `default` or a named one.
+fn builtin_kind(path: &Path) -> String {
+    path.parent()
+        .and_then(|d| d.file_name())
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "default".into())
 }
 
 /// The package's first flavor (the classes and races a character may have).
@@ -1485,6 +1545,7 @@ pub fn live(
     ui: &mut Ui,
     state: &mut WorldState,
     debug: &mut DebugState,
+    game: &mut crate::game::GameState,
     workspace: &Workspace,
     system: &dyn System,
 ) -> Option<Action> {
@@ -1507,6 +1568,11 @@ pub fn live(
                             );
                         });
                         if started == &name {
+                            // (the world: units dragged to their places,
+                            // paths drawn; S089)
+                            let units = state.profile_units();
+                            crate::game::profile_view(ui, game, system, &name, &units);
+                            ui.add_space(8.0);
                             forms::checkbox(ui, &mut state.auto_apply, "apply edits", Some("to the running world"));
                             forms::paragraph(
                                 ui,

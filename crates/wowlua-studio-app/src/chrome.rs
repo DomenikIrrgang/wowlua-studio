@@ -622,18 +622,8 @@ fn rail_item(ui: &mut Ui, r: Rect, page: Page, current: Page, commands: &mut Vec
         label,
         fg,
     );
-    if page.planned() {
-        // A dashed ring marks planned work.
-        let c = Pos2::new(r.right() - 10.0, r.top() + 9.0);
-        painter.circle_stroke(c, 3.0, Stroke::new(1.0, p.ink_muted));
-    }
-    let tip = if page.planned() {
-        format!("{} · planned", page.label())
-    } else {
-        page.label().to_owned()
-    };
     let resp = resp
-        .on_hover_text(tip)
+        .on_hover_text(page.label())
         .on_hover_cursor(CursorIcon::PointingHand);
     if resp.clicked() {
         commands.push(Command::ShowPage(page));
