@@ -29,6 +29,8 @@ pub enum Act {
     Restore { path: PathBuf, text: String },
     /// Opens a file in the editor.
     Open(PathBuf),
+    /// Opens an Actions run on the pull requests page (M12).
+    OpenRun(u64),
 }
 
 #[derive(Clone, Debug)]

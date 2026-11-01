@@ -9,7 +9,10 @@ use wowlua_studio_ui::{Face, Palette, palette};
 
 use crate::lsp::{Diag, Location, Symbol, Wire};
 
-const ROW_H: f32 = 24.0;
+/// A row, at the settings' density (S062).
+fn row_h() -> f32 {
+    wowlua_studio_ui::row(24.0)
+}
 
 /// The problems of every file; returns the one clicked.
 /// The problems of every file, or of `only` (the editor's file) when the
@@ -58,12 +61,12 @@ pub fn problems<'a>(
     let mut picked = None;
     egui::ScrollArea::vertical().auto_shrink(false).show_rows(
         ui,
-        ROW_H,
+        row_h(),
         rows.len(),
         |ui, range| {
             for row in &rows[range] {
-                let (r, resp) =
-                    ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::click());
+                let (r, resp) = ui
+                    .allocate_exact_size(Vec2::new(ui.available_width(), row_h()), Sense::click());
                 if resp.hovered() {
                     ui.painter().rect_filled(r, CornerRadius::ZERO, p.bg_300);
                 }
@@ -152,12 +155,12 @@ pub fn outline(ui: &mut Ui, symbols: Option<&[Symbol]>) -> Option<Wire> {
     let mut picked = None;
     egui::ScrollArea::vertical().auto_shrink(false).show_rows(
         ui,
-        ROW_H,
+        row_h(),
         symbols.len(),
         |ui, range| {
             for s in &symbols[range] {
-                let (r, resp) =
-                    ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::click());
+                let (r, resp) = ui
+                    .allocate_exact_size(Vec2::new(ui.available_width(), row_h()), Sense::click());
                 if resp.hovered() {
                     ui.painter().rect_filled(r, CornerRadius::ZERO, p.bg_300);
                 }

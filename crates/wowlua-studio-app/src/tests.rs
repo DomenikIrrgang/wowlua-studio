@@ -18,7 +18,10 @@ use crate::editor::view::{Lens, LensAct, LensClick, Tone};
 use crate::lsp::Discovered;
 use crate::system::{System, TestDone, TestEvent, TestFile, TestOutcome, TestRequest, Workspace};
 
-const ROW_H: f32 = 24.0;
+/// A row, at the settings' density (S062).
+fn row_h() -> f32 {
+    wowlua_studio_ui::row(24.0)
+}
 
 /// The results panel's tabs.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -123,6 +126,8 @@ pub enum Action {
     /// Profile a test (S057).
     Profile(PathBuf, Option<String>),
     ShowCoverage,
+    /// Ask Claude why a test failed (S100).
+    AskWhy(PathBuf, String),
 }
 
 /// A test's state in the explorer.
@@ -159,6 +164,11 @@ impl TestsState {
     pub fn next_run(&mut self) -> u64 {
         self.next += 1;
         self.next
+    }
+
+    /// The number the next run will get.
+    pub fn peek_run(&self) -> u64 {
+        self.next + 1
     }
 
     /// A test run's news; the run's end when it ended.
@@ -475,6 +485,14 @@ pub fn lenses(state: &TestsState, workspace: &Workspace, path: &Path) -> Vec<Len
                         test: failed.name.clone(),
                     },
                 ));
+                out.push(click(
+                    "ask Claude why",
+                    line,
+                    LensClick::AskWhyFailed {
+                        file: file.clone(),
+                        test: failed.name.clone(),
+                    },
+                ));
                 out.push(run());
                 out.push(debug());
                 out.push(profile());
@@ -685,12 +703,12 @@ pub fn explorer(ui: &mut Ui, state: &mut TestsState, workspace: &Workspace) -> O
     }
     egui::ScrollArea::vertical().auto_shrink(false).show_rows(
         ui,
-        ROW_H,
+        row_h(),
         rows.len(),
         |ui, range| {
             for row in &rows[range] {
-                let (r, resp) =
-                    ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::click());
+                let (r, resp) = ui
+                    .allocate_exact_size(Vec2::new(ui.available_width(), row_h()), Sense::click());
                 let selected = match row {
                     Row::File { path, .. } => state.selected == Some((path.clone(), None)),
                     Row::Test { path, name, .. } => {
@@ -1748,7 +1766,7 @@ fn failure_view(
         ui.spacing_mut().item_spacing.y = 0.0;
         for (function, path, n) in &places {
             let (r, resp) =
-                ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::click());
+                ui.allocate_exact_size(Vec2::new(ui.available_width(), row_h()), Sense::click());
             if resp.hovered() {
                 ui.painter().rect_filled(r, CornerRadius::ZERO, p.bg_300);
             }
@@ -1798,13 +1816,16 @@ fn failure_view(
         if button(ui, ButtonKind::Primary, "debug this test", true, None).clicked() {
             action = Some(Action::Debug(file.to_path_buf(), Some(name.to_owned())));
         }
+        if button(ui, ButtonKind::Secondary, "ask Claude why", true, None).clicked() {
+            action = Some(Action::AskWhy(file.to_path_buf(), name.to_owned()));
+        }
         if button(ui, ButtonKind::Secondary, "run it again", idle, None).clicked() {
             action = Some(Action::Run(request_for(&package, file, Some(name), state)));
         }
-        if button(ui, ButtonKind::Ghost, "profile it", idle, None).clicked() {
+        if button(ui, ButtonKind::Tertiary, "profile it", idle, None).clicked() {
             action = Some(Action::Profile(file.to_path_buf(), Some(name.to_owned())));
         }
-        if button(ui, ButtonKind::Ghost, "open the test", true, None).clicked() {
+        if button(ui, ButtonKind::Tertiary, "open the test", true, None).clicked() {
             action = Some(Action::Open(file.to_path_buf(), test_line.unwrap_or(0)));
         }
     });
@@ -1877,7 +1898,7 @@ fn snapshot_view(
         }
         if button(
             ui,
-            ButtonKind::Ghost,
+            ButtonKind::Tertiary,
             "accept every changed snapshot (wowlua test -u)",
             idle,
             None,
@@ -2178,6 +2199,7 @@ mod unit {
                 line(2, "profile"),
                 line(5, "failed at line 7"),
                 line(5, "show failure"),
+                line(5, "ask Claude why"),
                 line(5, "run test"),
                 line(5, "debug"),
                 line(5, "profile"),
