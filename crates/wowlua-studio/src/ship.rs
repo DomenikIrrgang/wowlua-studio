@@ -58,7 +58,7 @@ fn manifest_at(dir: &Path) -> (Option<String>, bool) {
 /// As the CLI loads the package of `dir`: at a workspace's root its own
 /// package (`-p <it>`, S061), not its members; the lockfile kept up to
 /// date, dependencies fetched when missing.
-fn options(dir: &Path) -> LoadOptions {
+pub(crate) fn options(dir: &Path) -> LoadOptions {
     let (name, workspace) = manifest_at(dir);
     LoadOptions {
         cwd: dir.to_path_buf(),
@@ -96,7 +96,7 @@ fn spawn(name: &str, work: impl FnOnce() + Send + 'static) {
         .stack_size(64 << 20)
         .spawn(move || crate::tests::user_initiated(work));
     if let Err(e) = spawned {
-        eprintln!("wowlua studio: cannot start {name}: {e}");
+        crate::log::line(&format!("cannot start {name}: {e}"));
     }
 }
 
@@ -115,7 +115,7 @@ fn git(dir: &Path, args: &[&str]) -> Option<String> {
 }
 
 /// The session's diagnostics where they point, lints at their levels.
-fn diagnostics(session: &mut Session, root: &Path) -> (bool, Vec<ShipDiagnostic>) {
+pub(crate) fn diagnostics(session: &mut Session, root: &Path) -> (bool, Vec<ShipDiagnostic>) {
     let taken = session.take_diagnostics();
     let fail = taken.should_fail(false);
     let list = taken

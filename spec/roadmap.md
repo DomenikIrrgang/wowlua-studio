@@ -341,12 +341,51 @@ confirm showing the commands. The frame budget holds with SuuUI's size:
 
 ## M10: Settings and dependencies
 
-Artboards: settings, wowlua.json.
+Artboards: settings, wowlua.json (an editor tab, S063).
 
 - Studio's settings and keybindings; `wowlua.json` as forms that keep the
   file's order.
 - Dependencies from the registry: search, add, update, outdated (S010;
   the design adds this view first).
+
+Built (S062): Studio's settings on this computer by section, found by name,
+every one the canvas has and the features behind them: the theme (the OS's
+too), the interface's size, density, reduced motion; the editor's font
+size, format on save, inlay hints, lenses, coverage in the gutter, word
+wrap (at the window or the package's line width); completion (while
+typing, the keys that accept, auto-import from wowlua's completion, T506,
+documentation beside the list, signature help); the language server's
+check timing, threads and profile (wowlua T504) and its check cache kept on
+disk and cleared (T505); the debugger's stops, dispatch frames, inline
+values, secrets and default clock, one with the debugger page's; the game
+screen's size, the installation's art (kept on disk) and data; the
+installation and Blizzard's UI refreshed (T505); layouts per workspace,
+floating panels as OS windows; Studio's log and releases. Keybindings
+recorded per command, the editor's too, with clashes. GitHub's device
+sign-in and the Claude API key in the OS credential store (their other
+settings kept for M12 and M14). A `wowlua.json` opens in its editor tab as
+its form (S063), its sections listed inside the tab: the designed rows,
+every other key from the schema, the json view the tab's code, a
+requirement that excludes the built-in wowlua fixed. Its dependencies
+section: newer versions when it opens, the registry searched, added,
+updated, removed, a new requirement, yanked versions. The settings page is
+Studio's own settings only. Flavors come from wowlua's flavor table
+everywhere (S064); build profiles are edited in wowlua.json's build
+section, the coverage minimums and the test screen as fields. Buttons lead
+with their verb's icon (Option D) and settings are picked, not typed from
+blank: sliders, steppers with presets, tags, chips and pickers (S065):
+world profiles' CVars found among the client's with their defaults
+(wowlua's `cvars`), key bindings recorded and their actions picked from
+Blizzard's UI, spell and item IDs found by name or ID in the installation
+(items in its `ItemSparse`). World profiles' classes, races and powers
+come from wowlua's flavor table (S066, wowlua T512 and T513): every power
+of a class on its own slider, the faction following the race, only the
+classes the race can be, its racial spells shown. A publish target's
+build profile is picked on the ship page and written to `wowlua.json`
+(S067). The frame budget holds: 0.05 ms median,
+0.12 ms p99. GitHub's sign-in uses
+the "wowlua studio" OAuth App (its client ID built in; no secret). Not yet:
+checked by hand on macOS only.
 
 ## M11: Git
 
@@ -354,6 +393,20 @@ Artboard: git.
 
 - Changes, staging, diff, commit (with the repository's hooks), branches,
   history, pull and push, merge conflicts.
+
+Built (S068, S069, S070): the git page with its changes (the branch, the
+message, commit and commit and push, format and check first, conflicts,
+staged and changed files with their letters, staged by file), the
+history (a commit's message, files and diffs; switch to it, a branch from
+it, revert it), a file's diff hunk by hunk side by side or inline in the
+editor's colours (stage, unstage, discard each hunk), switching with the
+changes carried or stashed, new branches, pull as git config says, push
+and fetch with the GitHub sign-in first, a merge's conflicts taken from a
+side or aborted. Outside it: the branch in the status bar with every
+branch a click away, the explorer's colours, the gutter's marks against
+the last commit with their hunk, the cursor line's blame, a conflict's
+lenses in the editor, Studio's own fetch every 5 minutes. Not yet:
+checked by hand on macOS only.
 
 **Exit (wowlua M15):** SuuUI opened from disk in Studio on Windows, macOS
 and Linux: edited and checked, its tests run, run against the default UI
@@ -365,20 +418,124 @@ installed into the WoW folder, committed.
 Artboards: pull request, online workspace.
 
 - Signing in with GitHub; pull requests, reviews and Actions runs.
-- A repository opened online with no folder, edits kept as drafts on this
-  machine. Needs a host per workspace in wowlua (today `wowlua_host`
-  installs one for the whole process) and wowlua's commands run in Studio's
-  process for its terminal.
+- A repository from GitHub opened as a folder would: cloned into Studio's
+  data, deleted when it closes (S075).
 
-## M13: The 3D world (planned)
+Built, the first half (S072, S073, S074): the pull requests page with the
+open pull requests and the workflow runs; a pull request's conversation,
+its files with line comments and threads, reviews with pending comments,
+merging, and new pull requests from a pushed branch (also from the git
+page after a push); a run's jobs, steps, logs and annotations, re-run and
+cancel; your runs in progress as status bar jobs, told when they end;
+GitHub read on open, with git's fetch and every 15 s while a run goes.
 
-Needs new work in wowlua: unit positions in the engine and world profiles,
-a world renderer with models from the installation.
+Built, the second half (S075): "from GitHub" on the start page (a typed
+repository or link, your repositories, the branch), the palette's and file
+menu's "open from GitHub…", recents that clone again; the clone opened as
+a folder, marked in the status bar and the explorer; what closing would
+lose asked first, then the clone deleted; clones left by a window that quit
+cleaned up or offered; a read-only repository's fork. Not yet: checked by
+hand on macOS only.
 
-## M14: Claude (planned, last)
+## M13: The 3D world
+
+Artboards: game, world profiles (S076).
+
+- The zone behind the game screen's UI, a toggle of the screen (S076):
+  terrain, buildings and doodads from the installation, the units as
+  their models; cameras, click to target, playing through the world
+  profile's bindings, units that move and act; nameplates, distances,
+  ranges, facing and line of sight from the positions; the camera API;
+  overlays for ranges, sight and unit info.
+- The world profile page places units, draws their paths and gives them
+  movement and actions; the debugger shows the world as it paused.
+- camelot first.
+
+Needs new work in wowlua: unit positions, movement and actions in the
+engine, world profiles and the test API; a world renderer with the
+zone's terrain, buildings, doodads and models from the installation.
+Built (S076 to S089, wowlua T515 to T547): the game screen's toggle shows
+the world behind the UI: the zone's terrain, buildings, trees and props and
+the units as their models, solid, from the installation, drawn as the
+game's settings say (frame rate, vsync, render scale); playing moves your
+character with its poses, the mouse turns the camera, clicks target and
+talk; units walk, patrol and act; names and nameplates over them; the
+world seen from the game's camera, from Studio's orbit or from above, with
+overlays of ranges, sight and unit info; the world while the debugger is
+paused; the world profile page's units placed and their paths drawn, in the
+game view and on the page's own view. Not yet: the cameras, overlays and
+the profile page's view checked by hand on macOS.
+
+## M14: Claude
 
 Building AddOns with Claude inside Studio, through Studio's tools, every
 change approved.
+
+Artboards: claude, claude's changes, ask claude from any page, M14 open
+questions (all answered, S090 to S094).
+
+How it works (S090): Studio runs the Claude Code the user installed and
+signed in to, on their Claude plan; Studio never signs in to Claude nor
+keeps a sign-in. The native host starts `claude -p` with JSON in and out
+(`--input-format stream-json --output-format stream-json
+--include-partial-messages`), its own tools off (`--disallowedTools`),
+Studio's tools given over MCP (`--mcp-config`), the model and effort
+chosen (`--model`, `--effort`); a conversation goes on with `--resume`.
+`claude auth status` tells whether it is signed in. The flags are checked
+against Claude Code's reference when built. Native only: the browser build
+has no Claude.
+
+The plan, in this order:
+
+1. **Claude Code found and signed in** (host): where `claude` is (the
+   PATH, or a setting), its version, `claude auth status`; the claude
+   page's states: not installed (where to get it), not signed in ("sign in
+   through Claude Code" runs `claude auth login`, which opens the browser),
+   ready. A conversation's process, its JSON stream read on a thread of
+   the host, events for the app (system::System gains Claude's part).
+2. **Studio's tools over MCP** (host): wowlua's tools as `wowlua mcp`
+   has them (wowlua T549: sessions, screenshots, the frame tree, input,
+   time, the debugger, the profiler, inspect, pick, units, events,
+   save_world, set_screen; check, fmt, build, test with coverage), served
+   in process (`wowlua_debug::mcp::Server` with Studio's launcher), on
+   Claude's own windowless session; and Studio's own: the workspace's
+   files (read; edit and create, each asking, S091) and git (S094). How
+   Claude Code reaches them (Studio's binary as a stdio bridge, or a local
+   HTTP endpoint with a token) is to be decided when built.
+3. **The conversation** (the claude page): messages as they stream, each
+   tool call as a row (what it read, ran or changed), an edit's diff with
+   allow, "allow edits in this conversation" and deny; the tools and
+   permissions panel (allow, ask, never per tool group; answers last for
+   the conversation, S091); the screenshot of a game call with "open the
+   session" (the game page shows Claude's session, S092).
+4. **Changes and checkpoints** (the claude's changes board, S091): Studio
+   keeps a file before Claude's first edit after each of your messages;
+   the conversation's changed files, per-hunk undo and redo, going back
+   to a checkpoint (only Claude's changes; your own stay), undo all,
+   commit these changes.
+5. **What Claude knows** (S092): wowlua's docs and the stdlib's
+   reference, the addon's CLAUDE.md, `wowlua.json`, the open file and its
+   problems; `@` chips for files, worlds, tests, the stop, a recording.
+6. **Asked from the other pages** (S093): fix with Claude (the editor's
+   quick fixes and menu), why it fails (tests), explain this stop
+   (debugger), make it faster (profiler), ask about this frame (the game's
+   frame picker), fix the failing check and help with a conflict (git and
+   GitHub).
+7. **Model, usage, conversations** (S092): the model and effort picker
+   (the newest model by default), the plan's usage per conversation as
+   Claude Code reports it, "paused: usage limit" until it resets; the
+   conversations of a workspace in Studio's data, listed, one running at a
+   time.
+
+Needs new work in wowlua: the rest of wowlua's tools in `wowlua mcp`
+(T549, done).
+Built so far: step 1, Claude Code found and signed in, and the settings
+(S095); step 2, Studio's tools over MCP through a stdio bridge in
+Studio's own binary (S096); step 3, the conversation (S097); step 4,
+changes and checkpoints (S098); step 5, what Claude knows (S099); step
+6, asking Claude from the other pages (S100); step 7, the model and
+effort per conversation, and the kept conversations (S101). Checked by
+hand on macOS (2026-11-01); not yet on Windows and Linux.
 
 ## Checked by hand on Windows and Linux
 
@@ -405,19 +562,54 @@ and tests it on Windows and Linux (S058). On each, with SuuUI's workspace:
    install release, edit a file in the installed folder and see the
    warning; the dev loop with a save (copied and linked); save a publish
    token and see it in `wowlua login`'s store; a dry run.
+10. **M10**: the system theme following the OS; the interface size; record
+    a key and use it; word wrap at the window; save the Claude key; open
+    `wowlua.json`, edit a key in its form and see the json view; search the
+    registry and add a dependency in its dependencies section; pick a flavor
+    from the table; open a build profile from the ship page in
+    `wowlua.json`'s build section; in a world profile pick a race and see
+    the faction and classes follow, a druid's powers, a CVar, a binding by
+    pressing its key, a spell and an item by name; pick a target's profile
+    and see `wowlua.json` follow.
+
+11. **M11**: stage a hunk and commit with format and check; switch branch
+    with changes and stash them, then switch back; pull, push with the
+    GitHub sign-in and with your git setup signed out; resolve a merge
+    conflict in the editor with its lenses; the status bar's branch list;
+    the gutter's marks and blame as you type.
+12. **M12**: open a pull request, comment on a line and send it with a
+    review; reply to a thread and resolve it; merge one; push a new branch
+    and create its pull request from the git page; open a failed run's
+    step log and annotations, re-run its failed jobs and watch it in the
+    status bar until the notification; open a repository from GitHub by
+    typing it and from your list, change a file and close: the dialog lists
+    it; commit and push, close: it goes without asking; quit with a change
+    and see the start page offer the clone; open a repository you can't
+    push to and fork it.
+
+13. **M13**: turn the 3D world on and walk into a building and a fence
+    (they stop you); orbit and look from above; turn on the overlays; pause
+    at a breakpoint and look around; on the world profile page drag a unit
+    and shift-drag its path.
+14. **M14**: with Claude Code installed, the claude page finds it (signed
+    in, or "sign in through Claude Code" in the terminal); ask Claude to
+    read a file and change it: the question about the edit, allow, the
+    change in "claude's changes", undo its hunk, go back to the checkpoint;
+    "fix with Claude" on a problem in the editor; "ask Claude why" on a
+    failed test; a new conversation and the first one opened again from
+    the claude panel. On Windows the bridge's socket is a Unix socket
+    (Windows 10 and later).
 
 ## Open questions
 
 Asked when their milestone starts; nothing here is decided yet.
 
 - Installers and code signing per system (first release).
-- The GitHub app Studio signs in with, and who registers it (M12).
-- Whether "sign in with Claude" is possible for a third-party app (M14).
 
 ## Design changes owed
 
 Where Studio was decided to differ from the canvas, or the canvas is
-missing a part; the canvas is updated to match. None are owed now.
+missing a part; the canvas is updated to match. On 2026-10-30 the settings board got the git section (fetch every) and the editor's blame row, the git board the changes' stage all and the staged files' unstage all (S070). None are owed now: on 2026-10-30 the start board got a clone's progress ("from GitHub, cloning") and the from-GitHub board the closing dialog's "discard them and close" (S075). On 2026-11-01 the settings board's claude section got Claude Code, the model, the effort, the tool groups' permissions and the saved key's removal (S095); the claude boards lost their planned marks, the conversation's footer got the model and effort and the cost, and the claude's changes board is the tab beside the conversation (S097 to S101).
 
 Brought up to date on 2026-10-27: the panels board's presets
 for every page (S017), the palette's prompt (S018), the menus (S019), the

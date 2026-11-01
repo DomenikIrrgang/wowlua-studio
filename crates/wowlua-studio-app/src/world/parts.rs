@@ -7,14 +7,14 @@ use std::collections::HashMap;
 
 use egui::{Align2, CornerRadius, Rect, Sense, Stroke, Ui, Vec2};
 use serde_json::{Value as Json, json};
-use wowlua_studio_ui::forms;
 use wowlua_studio_ui::widgets::{self, ButtonKind};
 use wowlua_studio_ui::{Face, palette};
+use wowlua_studio_ui::{controls, forms};
 
 use super::json::Key;
 use super::schema::{self, Form, Kind};
 use super::{Action, ArtCache, Change, list};
-use crate::system::{Art, System};
+use crate::system::{Art, Find, System};
 
 /// What a form works with.
 pub struct Cx<'a> {
@@ -32,6 +32,11 @@ pub struct Cx<'a> {
     pub spells: Option<&'a (String, Vec<crate::system::SpellRow>)>,
     pub class_spells: Option<&'a (String, Vec<crate::system::ClassSpell>)>,
     pub all_ranks: &'a mut bool,
+    /// What the ID pickers found; the questions to ask.
+    pub found: &'a HashMap<(Find, String, String), Vec<crate::system::SpellRow>>,
+    pub ask: &'a mut Vec<(Find, String)>,
+    /// A unit to place in the game view, or its path to draw (S080).
+    pub place: &'a mut Option<super::Placing>,
 }
 
 /// Where the installation's art comes from.
@@ -187,6 +192,89 @@ fn input(
         forms::label(ui, label);
         field(ui, cx, path, kind, width, hint);
     });
+}
+
+/// A number one step at a time under its label, with presets beside it
+/// (S065); `default` while unset.
+#[allow(clippy::too_many_arguments)]
+fn stepped(
+    ui: &mut Ui,
+    cx: &mut Cx<'_>,
+    label: &str,
+    path: Vec<Key>,
+    width: f32,
+    (min, max): (Option<f64>, Option<f64>),
+    unit: &str,
+    presets: &[(String, f64)],
+    default: f64,
+) {
+    ui.vertical(|ui| {
+        ui.set_width(width);
+        forms::label(ui, label);
+        let before = at(cx.root, &path).and_then(Json::as_f64).unwrap_or(default);
+        let mut v = before;
+        // (the presets on their own row: the columns are narrow)
+        controls::stepper(ui, &path_of(&path), &mut v, min, max, 1.0, unit);
+        let options: Vec<(&str, f64)> = presets.iter().map(|(l, n)| (l.as_str(), *n)).collect();
+        if let Some(picked) = controls::presets(ui, &options, v) {
+            v = picked;
+        }
+        if (v - before).abs() > 1e-9 {
+            cx.set(path, Some(number(v)));
+        }
+    });
+}
+
+/// A pool (health, power) under its label: how much is left on a slider up
+/// to the maximum, the maximum a stepper (S065).
+#[allow(clippy::too_many_arguments)]
+fn pool(
+    ui: &mut Ui,
+    cx: &mut Cx<'_>,
+    label: &str,
+    now: Vec<Key>,
+    max: Vec<Key>,
+    width: f32,
+    default_max: f64,
+) {
+    ui.vertical(|ui| {
+        ui.set_width(width);
+        forms::label(ui, label);
+        let mut top = at(cx.root, &max)
+            .and_then(Json::as_f64)
+            .unwrap_or(default_max)
+            .max(1.0);
+        let mut left = at(cx.root, &now)
+            .and_then(Json::as_f64)
+            .unwrap_or(top)
+            .min(top);
+        if controls::slider(
+            ui,
+            &path_of(&now),
+            &mut left,
+            0.0,
+            top,
+            1.0,
+            1.0,
+            "",
+            &[],
+            width,
+        ) {
+            cx.set(now.clone(), Some(number(left)));
+        }
+        if controls::stepper(ui, &path_of(&max), &mut top, Some(1.0), None, 1.0, "max") {
+            cx.set(max, Some(number(top)));
+        }
+    });
+}
+
+/// A level's presets: 1, 10, the flavor's highest.
+fn level_presets(max: u32) -> Vec<(String, f64)> {
+    vec![
+        ("1".into(), 1.0),
+        ("10".into(), 10.0),
+        (format!("max · {max}"), f64::from(max)),
+    ]
 }
 
 /// A field without its label.
@@ -438,79 +526,372 @@ pub fn designed(ui: &mut Ui, cx: &mut Cx<'_>, part: &str) -> Option<Action> {
         "equipment" => equipment(ui, cx),
         "bags" => bags(ui, cx),
         "savedVariables" => return saved_variables(ui, cx),
+        "money" => money(ui, cx),
+        "position" => position(ui, cx),
+        "screen" => screen(ui, cx),
         _ => {}
     }
     None
 }
 
-/// The classes a flavor has, by file name and short name.
-pub fn classes(flavor: &str) -> Vec<(&'static str, &'static str)> {
-    let mut out = vec![
-        ("WARRIOR", "WAR"),
-        ("PALADIN", "PAL"),
-        ("HUNTER", "HUN"),
-        ("ROGUE", "ROG"),
-        ("PRIEST", "PRI"),
-        ("SHAMAN", "SHA"),
-        ("MAGE", "MAG"),
-        ("WARLOCK", "LOC"),
-        ("DRUID", "DRU"),
-    ];
-    let later = |from: &[&str]| from.contains(&flavor) || flavor.is_empty();
-    if later(&["wrath", "cata", "mists", "standard"]) {
-        out.push(("DEATHKNIGHT", "DK"));
+/// The money (S065): gold, silver and copper, kept in copper.
+fn money(ui: &mut Ui, cx: &mut Cx<'_>) {
+    let path = vec![name("money")];
+    let copper = at(cx.root, &path)
+        .and_then(Json::as_f64)
+        .unwrap_or(0.0)
+        .max(0.0)
+        .round();
+    let (mut g, mut s, mut c) = (
+        (copper / 10_000.0).floor(),
+        ((copper / 100.0) % 100.0).floor(),
+        copper % 100.0,
+    );
+    let mut changed = false;
+    ui.horizontal_wrapped(|ui| {
+        changed |= controls::stepper(ui, "money.gold", &mut g, Some(0.0), None, 1.0, "gold");
+        changed |= controls::stepper(
+            ui,
+            "money.silver",
+            &mut s,
+            Some(0.0),
+            Some(99.0),
+            1.0,
+            "silver",
+        );
+        changed |= controls::stepper(
+            ui,
+            "money.copper",
+            &mut c,
+            Some(0.0),
+            Some(99.0),
+            1.0,
+            "copper",
+        );
+    });
+    if changed {
+        cx.set(path, Some(number(g * 10_000.0 + s * 100.0 + c)));
     }
-    if later(&["mists", "standard"]) {
-        out.push(("MONK", "MNK"));
-    }
-    if later(&["standard"]) {
-        out.push(("DEMONHUNTER", "DH"));
-        out.push(("EVOKER", "EVO"));
-    }
-    out
+    caption(ui, "Applied as mock.player:setMoney, in copper.");
 }
 
-/// The races a flavor has, by file name.
-pub fn races(flavor: &str) -> Vec<&'static str> {
-    let mut out = vec![
-        "Human", "Dwarf", "NightElf", "Gnome", "Orc", "Scourge", "Tauren", "Troll",
+/// Where the character is (S065): the map and zone, the place on the map
+/// as sliders, the facing on a compass, `UnitPosition`'s coordinates as
+/// fields.
+fn position(ui: &mut Ui, cx: &mut Cx<'_>) {
+    let p = |f: &str| vec![name("position"), name(f)];
+    let w = col(ui, 3);
+    ui.horizontal(|ui| {
+        stepped(
+            ui,
+            cx,
+            "map ID",
+            p("mapID"),
+            w,
+            (Some(0.0), None),
+            "",
+            &[],
+            0.0,
+        );
+        input(ui, cx, "zone", p("zone"), Kind::Text, w, "Elwynn Forest");
+        input(
+            ui,
+            cx,
+            "sub-zone",
+            p("subZone"),
+            Kind::Text,
+            w,
+            "Northshire Valley",
+        );
+    });
+    ui.add_space(8.0);
+    let width = ui.available_width().min(520.0);
+    for (key, label) in [("x", "x · across the map"), ("y", "y · down the map")] {
+        forms::label(ui, label);
+        let path = p(key);
+        let mut v = at(cx.root, &path).and_then(Json::as_f64).unwrap_or(0.5);
+        let ticks = [(0.0, "0%"), (0.5, "50%"), (1.0, "100%")];
+        if controls::slider(
+            ui,
+            &path_of(&path),
+            &mut v,
+            0.0,
+            1.0,
+            0.001,
+            100.0,
+            "%",
+            &ticks,
+            width,
+        ) {
+            cx.set(path, Some(number(v)));
+        }
+        ui.add_space(4.0);
+    }
+    forms::label(ui, "facing · counter-clockwise from north");
+    let path = p("facing");
+    let mut v = at(cx.root, &path).and_then(Json::as_f64).unwrap_or(0.0);
+    let tau = std::f64::consts::TAU;
+    let ticks = [
+        (0.0, "N"),
+        (tau / 4.0, "W"),
+        (tau / 2.0, "S"),
+        (tau * 0.75, "E"),
+        (tau, "N"),
     ];
-    let later = |from: &[&str]| from.contains(&flavor) || flavor.is_empty();
-    if later(&["tbc", "wrath", "cata", "mists", "standard"]) {
-        out.extend(["BloodElf", "Draenei"]);
+    if controls::slider(
+        ui,
+        &path_of(&path),
+        &mut v,
+        0.0,
+        tau,
+        // (radians kept, shown in whole degrees)
+        std::f64::consts::PI / 180.0,
+        180.0 / std::f64::consts::PI,
+        "°",
+        &ticks,
+        width,
+    ) {
+        cx.set(path, Some(number(v)));
     }
-    if later(&["cata", "mists", "standard"]) {
-        out.extend(["Worgen", "Goblin"]);
-    }
-    if later(&["mists", "standard"]) {
-        out.push("Pandaren");
-    }
-    if later(&["standard"]) {
-        out.extend([
-            "Nightborne",
-            "HighmountainTauren",
-            "VoidElf",
-            "LightforgedDraenei",
-            "ZandalariTroll",
-            "KulTiran",
-            "DarkIronDwarf",
-            "Vulpera",
-            "MagharOrc",
-            "Mechagnome",
-            "Dracthyr",
-            "EarthenDwarf",
-        ]);
-    }
-    out
+    ui.add_space(8.0);
+    forms::label(ui, "world · UnitPosition's coordinates");
+    ui.horizontal_wrapped(|ui| {
+        for (key, unit, step) in [
+            ("y", "y", 0.1),
+            ("x", "x", 0.1),
+            ("z", "z", 0.1),
+            ("instanceID", "instance", 1.0),
+        ] {
+            let path = vec![name("position"), name("world"), name(key)];
+            let before = at(cx.root, &path).and_then(Json::as_f64).unwrap_or(0.0);
+            let mut v = before;
+            if controls::stepper(ui, &path_of(&path), &mut v, None, None, step, unit)
+                && (v - before).abs() > 1e-9
+            {
+                cx.set(path, Some(number(v)));
+            }
+        }
+    });
+    caption(ui, "Applied as mock.moveTo.");
 }
 
-const POWER: &[&str] = &[
-    "0 · mana",
-    "1 · rage",
-    "2 · focus",
-    "3 · energy",
-    "6 · runic power",
+/// The screen (S065): its size (three, or custom), its DPI scale and the
+/// game's own UI Scale control; off leaves the client's scale.
+fn screen(ui: &mut Ui, cx: &mut Cx<'_>) {
+    const SIZES: &[(u32, u32)] = &[(1920, 1080), (2560, 1440), (3840, 2160)];
+    let p = |f: &str| vec![name("screen"), name(f)];
+    let width = ui.available_width().min(520.0);
+    let w = at(cx.root, &p("width")).and_then(Json::as_f64);
+    let h = at(cx.root, &p("height")).and_then(Json::as_f64);
+    let mut labels: Vec<String> = SIZES.iter().map(|(w, h)| format!("{w} × {h}")).collect();
+    labels.push("custom…".into());
+    let at_size = match (w, h) {
+        (None, None) => 0,
+        (Some(w), Some(h)) => SIZES
+            .iter()
+            .position(|(sw, sh)| f64::from(*sw) == w && f64::from(*sh) == h)
+            .unwrap_or(SIZES.len()),
+        _ => SIZES.len(),
+    };
+    let custom_id = egui::Id::unique("wowlua-studio-profile-screen-custom");
+    let custom: bool = ui.data(|d| d.get_temp(custom_id)).unwrap_or(false);
+    let mut index = if custom { SIZES.len() } else { at_size };
+    forms::label(ui, "size");
+    let opts: Vec<(&str, bool)> = labels.iter().map(|l| (l.as_str(), true)).collect();
+    if forms::select(
+        ui,
+        "profile-screen-size",
+        &opts,
+        &mut index,
+        width.min(240.0),
+    ) {
+        ui.data_mut(|d| d.insert_temp(custom_id, index == SIZES.len()));
+        if let Some((sw, sh)) = SIZES.get(index) {
+            cx.set(p("width"), Some(json!(sw)));
+            cx.set(p("height"), Some(json!(sh)));
+        }
+    }
+    if index == SIZES.len() {
+        ui.horizontal_wrapped(|ui| {
+            for (key, unit, fallback, (lo, hi)) in [
+                ("width", "×", 1920.0, (640.0, 7680.0)),
+                ("height", "px", 1080.0, (480.0, 4320.0)),
+            ] {
+                let path = p(key);
+                let mut v = at(cx.root, &path)
+                    .and_then(Json::as_f64)
+                    .unwrap_or(fallback);
+                if controls::stepper(ui, &path_of(&path), &mut v, Some(lo), Some(hi), 1.0, unit) {
+                    cx.set(path, Some(number(v)));
+                }
+            }
+        });
+    }
+    ui.add_space(6.0);
+    forms::label(ui, "DPI scale");
+    let dpis = [1.0, 1.25, 1.5, 2.0];
+    let dpi = at(cx.root, &p("dpiScale"))
+        .and_then(Json::as_f64)
+        .unwrap_or(1.0);
+    let names: Vec<String> = dpis.iter().map(|d| format!("{d}")).collect();
+    let mut at_dpi = dpis
+        .iter()
+        .position(|d| (d - dpi).abs() < 1e-9)
+        .unwrap_or(0);
+    let opts: Vec<(&str, bool)> = names.iter().map(|l| (l.as_str(), true)).collect();
+    if forms::select(
+        ui,
+        "profile-screen-dpi",
+        &opts,
+        &mut at_dpi,
+        width.min(240.0),
+    ) {
+        cx.set(p("dpiScale"), Some(number(dpis[at_dpi])));
+    }
+    ui.add_space(6.0);
+    let path = p("uiScale");
+    let scale = at(cx.root, &path).and_then(Json::as_f64);
+    let mut on = scale.is_some();
+    if forms::checkbox(
+        ui,
+        &mut on,
+        "Use UI Scale",
+        Some("off: the client's own scale"),
+    ) {
+        cx.set(path.clone(), on.then(|| number(1.0)));
+    }
+    if let Some(s) = scale {
+        let mut v = s;
+        let ticks = [(0.65, "65%"), (1.0, "100%"), (1.15, "115%")];
+        if controls::slider(
+            ui,
+            &path_of(&path),
+            &mut v,
+            0.65,
+            1.15,
+            0.01,
+            100.0,
+            "%",
+            &ticks,
+            width,
+        ) {
+            cx.set(path, Some(number(v)));
+        }
+    }
+}
+
+/// The classes' short names on their art tiles.
+const SHORT: &[(&str, &str)] = &[
+    ("WARRIOR", "WAR"),
+    ("PALADIN", "PAL"),
+    ("HUNTER", "HUN"),
+    ("ROGUE", "ROG"),
+    ("PRIEST", "PRI"),
+    ("SHAMAN", "SHA"),
+    ("MAGE", "MAG"),
+    ("WARLOCK", "LOC"),
+    ("DRUID", "DRU"),
+    ("DEATHKNIGHT", "DK"),
+    ("MONK", "MNK"),
+    ("DEMONHUNTER", "DH"),
+    ("EVOKER", "EVO"),
 ];
+
+/// The flavor as wowlua's table has it; retail's (every class and race)
+/// for one it doesn't know.
+fn flavor_of(flavor: &str) -> Option<&'static wowlua_flavors::Flavor> {
+    let table = wowlua_flavors::table();
+    table.flavor(flavor).or_else(|| table.flavor("standard"))
+}
+
+/// The classes a flavor has (wowlua's flavor table, in the client's
+/// order), by file name and short name.
+pub fn classes(flavor: &str) -> Vec<(&'static str, &'static str)> {
+    flavor_of(flavor)
+        .map(|f| {
+            f.classes
+                .iter()
+                .map(|c| {
+                    let file = c.file.as_str();
+                    let short = SHORT
+                        .iter()
+                        .find(|(f, _)| *f == file)
+                        .map_or_else(|| &file[..file.len().min(3)], |(_, s)| *s);
+                    (file, short)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The races a flavor has (wowlua's flavor table), by file name.
+pub fn races(flavor: &str) -> Vec<&'static str> {
+    flavor_of(flavor)
+        .map(|f| f.race_files().collect())
+        .unwrap_or_default()
+}
+
+/// The powers a class has on a flavor (wowlua's table), the shown one
+/// first.
+fn powers_of(flavor: &str, class: &str) -> Vec<&'static str> {
+    flavor_of(flavor)
+        .and_then(|f| f.class(class))
+        .map(|c| c.powers.iter().map(String::as_str).collect())
+        .unwrap_or_default()
+}
+
+/// Every power a class has (T512): one slider each up to its maximum, in
+/// `powers.<TOKEN>`, the flavor's defaults while unset; which one shows.
+fn class_powers(ui: &mut Ui, cx: &mut Cx<'_>, base: &[Key], class: &str, width: f32) {
+    let flavor = cx.look.flavor;
+    let powers = powers_of(flavor, class);
+    let table = wowlua_flavors::table();
+    let f = flavor_of(flavor);
+    ui.horizontal_wrapped(|ui| {
+        for token in &powers {
+            let default = f.and_then(|f| f.power_default(token));
+            let mut now: Vec<Key> = base.to_vec();
+            now.extend([name("powers"), name(token), name("current")]);
+            let mut max: Vec<Key> = base.to_vec();
+            max.extend([name("powers"), name(token), name("max")]);
+            let label = token.to_ascii_lowercase().replace('_', " ");
+            pool(
+                ui,
+                cx,
+                &label,
+                now,
+                max,
+                width,
+                default.map_or(100.0, |d| d.max),
+            );
+        }
+    });
+    // Which power the unit shows (a druid's form): one of the class's.
+    if powers.len() > 1 {
+        let mut path: Vec<Key> = base.to_vec();
+        path.push(name("powerType"));
+        let shown = at(cx.root, &path)
+            .and_then(Json::as_f64)
+            .and_then(|id| table.power_token(id as u32))
+            .unwrap_or(powers[0]);
+        let mut index = powers.iter().position(|t| *t == shown).unwrap_or(0);
+        let labels: Vec<String> = powers
+            .iter()
+            .map(|t| t.to_ascii_lowercase().replace('_', " "))
+            .collect();
+        let opts: Vec<(&str, bool)> = labels.iter().map(|l| (l.as_str(), true)).collect();
+        ui.vertical(|ui| {
+            ui.set_width(width);
+            forms::label(ui, "shown power");
+            if forms::select(ui, &path_of(&path), &opts, &mut index, width)
+                && let Some(id) = table.power_type(powers[index])
+            {
+                cx.set(path, Some(number(f64::from(id))));
+            }
+        });
+    }
+}
+
 const SEX: &[&str] = &["2 · male", "3 · female", "1 · unknown"];
 const ROLES: &[&str] = &["TANK", "HEALER", "DAMAGER", "NONE"];
 
@@ -537,6 +918,24 @@ fn character(ui: &mut Ui, cx: &mut Cx<'_>) {
         .unwrap_or("")
         .to_string();
     let look = cx.look;
+    let race = data
+        .as_ref()
+        .and_then(|d| d["race"].as_str())
+        .unwrap_or("")
+        .to_string();
+    let chosen = data
+        .as_ref()
+        .and_then(|d| d["faction"].as_str())
+        .and_then(wowlua_flavors::Faction::parse);
+    let flavor = flavor_of(look.flavor);
+    let either = flavor
+        .and_then(|f| f.race(&race))
+        .is_some_and(wowlua_flavors::Race::is_either);
+    let faction = flavor.and_then(|f| f.faction_of(&race, chosen));
+    // (the classes the race can be, of its faction: every one without a race)
+    let allowed: Option<Vec<&str>> = flavor
+        .filter(|f| f.has_race(&race))
+        .map(|f| f.classes_for(&race, faction));
     ui.horizontal(|ui| {
         let pic = look.pic(
             if class.is_empty() { "class" } else { &class },
@@ -556,7 +955,18 @@ fn character(ui: &mut Ui, cx: &mut Cx<'_>) {
             "WoW Forever only",
         );
         input(ui, cx, "realm", p("realm"), Kind::Text, w, "Realm");
-        input(ui, cx, "level", p("level"), Kind::Number, w, "1");
+        let max = crate::flavors::max_level(look.flavor);
+        stepped(
+            ui,
+            cx,
+            &format!("level · 1 to {max}"),
+            p("level"),
+            w,
+            (Some(1.0), Some(f64::from(max))),
+            "",
+            &level_presets(max),
+            1.0,
+        );
     });
     ui.add_space(10.0);
     forms::label(ui, "class");
@@ -566,6 +976,7 @@ fn character(ui: &mut Ui, cx: &mut Cx<'_>) {
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
         for (file, short) in &list {
+            let can = allowed.as_ref().is_none_or(|a| a.contains(file));
             if tile(
                 ui,
                 w,
@@ -573,53 +984,113 @@ fn character(ui: &mut Ui, cx: &mut Cx<'_>) {
                 file,
                 "",
                 class == *file,
-                false,
-            ) {
+                !can,
+            ) && can
+            {
                 cx.set(p("class"), Some(Json::String((*file).to_string())));
             }
         }
     });
+    if allowed
+        .as_ref()
+        .is_some_and(|a| !class.is_empty() && !a.contains(&class.as_str()))
+    {
+        caption(
+            ui,
+            &format!(
+                "A {race} can't be a {class} in this flavor's client: pick another class or race."
+            ),
+        );
+    }
     caption(
         ui,
-        "By file name, as the client names classes; the icons are the installation's (CLASS_ICON_TCOORDS on the class sheet).",
+        "By file name, as the client names classes; the icons are the installation's (CLASS_ICON_TCOORDS on the class sheet). Only the classes the race can be, as the flavor's client pairs them.",
     );
     ui.add_space(10.0);
     ui.horizontal(|ui| {
         let w = col(ui, 4);
         let races = races(look.flavor);
-        choice(ui, cx, "race", p("race"), &races, w);
+        // The race; a race of one faction takes the chosen one away.
+        ui.vertical(|ui| {
+            ui.set_width(w);
+            forms::label(ui, "race");
+            let mut list: Vec<&str> = vec!["(none)"];
+            list.extend(races.iter().copied());
+            if !race.is_empty() && !list.contains(&race.as_str()) {
+                list.push(&race);
+            }
+            let mut index = list.iter().position(|r| *r == race).unwrap_or(0);
+            let opts: Vec<(&str, bool)> = list.iter().map(|r| (*r, true)).collect();
+            if forms::select(ui, &path_of(&p("race")), &opts, &mut index, w) {
+                let picked = (index > 0).then(|| list[index].to_owned());
+                let keeps = picked.as_deref().is_some_and(|r| {
+                    flavor
+                        .and_then(|f| f.race(r))
+                        .is_some_and(wowlua_flavors::Race::is_either)
+                });
+                cx.set(p("race"), picked.map(Json::String));
+                if !keeps && chosen.is_some() {
+                    cx.set(p("faction"), None);
+                }
+            }
+        });
         choice(ui, cx, "sex", p("sex"), SEX, w);
         choice(ui, cx, "role", p("role"), ROLES, w);
-        choice(ui, cx, "faction", p("faction"), &["Alliance", "Horde"], w);
+        // The faction: the race's, chosen only where the race lets you.
+        if either {
+            choice(ui, cx, "faction", p("faction"), &["Alliance", "Horde"], w);
+        } else {
+            ui.vertical(|ui| {
+                ui.set_width(w);
+                forms::label(ui, "faction");
+                let shown = match faction {
+                    Some(f) => format!("{f} · from {race}"),
+                    None => "from the race".to_owned(),
+                };
+                ui.add_sized(
+                    Vec2::new(w, forms::CONTROL_H),
+                    egui::Label::new(
+                        egui::RichText::new(shown)
+                            .font(Face::Plex.at(12.0))
+                            .color(palette(ui.ctx()).ink_muted),
+                    ),
+                );
+            });
+        }
     });
     ui.add_space(10.0);
     let health_max = max_key(data.as_ref(), "maxHealth", "healthMax");
     let power_max = max_key(data.as_ref(), "maxPower", "powerMax");
     ui.horizontal(|ui| {
         let w = col(ui, 4);
-        let half = (w - 8.0) / 2.0;
-        ui.vertical(|ui| {
-            ui.set_width(w);
-            forms::label(ui, "health · max");
-            ui.horizontal(|ui| {
-                field(ui, cx, p("health"), Kind::Number, half, "100");
-                field(ui, cx, p(&health_max), Kind::Number, half, "100");
-            });
-        });
-        ui.vertical(|ui| {
-            ui.set_width(w);
-            forms::label(ui, "power · max");
-            ui.horizontal(|ui| {
-                field(ui, cx, p("power"), Kind::Number, half, "0");
-                field(ui, cx, p(&power_max), Kind::Number, half, "100");
-            });
-        });
-        choice(ui, cx, "power type", p("powerType"), POWER, w);
+        pool(ui, cx, "health", p("health"), p(&health_max), w, 100.0);
+        // (with a class, its powers below; without, the one power)
+        if class.is_empty() {
+            pool(ui, cx, "power", p("power"), p(&power_max), w, 100.0);
+            let tokens: Vec<String> = wowlua_flavors::table()
+                .power_types
+                .iter()
+                .map(|t| {
+                    format!(
+                        "{} · {}",
+                        t.id,
+                        t.token.to_ascii_lowercase().replace('_', " ")
+                    )
+                })
+                .collect();
+            let options: Vec<&str> = tokens.iter().map(String::as_str).collect();
+            choice(ui, cx, "power type", p("powerType"), &options, w);
+        }
         ui.vertical(|ui| {
             check(ui, cx, "dead", p("dead"), false);
             check(ui, cx, "pvp", p("pvp"), false);
         });
     });
+    if !class.is_empty() {
+        ui.add_space(10.0);
+        let w = col(ui, 4);
+        class_powers(ui, cx, &base, &class, w);
+    }
     caption(
         ui,
         "Applied as mock.setPlayer. Leave a field empty for the client's default.",
@@ -830,23 +1301,29 @@ fn units(ui: &mut Ui, cx: &mut Cx<'_>) {
                                 w,
                                 "Player",
                             );
-                            input(
+                            let classes: Vec<&str> = classes(cx.look.flavor)
+                                .iter()
+                                .map(|(file, _)| *file)
+                                .collect();
+                            choice(
                                 ui,
                                 cx,
                                 "class",
                                 vec![name("character"), name("class")],
-                                Kind::Text,
+                                &classes,
                                 w,
-                                "WARRIOR",
                             );
-                            input(
+                            let max = crate::flavors::max_level(cx.look.flavor);
+                            stepped(
                                 ui,
                                 cx,
                                 "level",
                                 vec![name("character"), name("level")],
-                                Kind::Number,
                                 w,
-                                "1",
+                                (Some(1.0), Some(f64::from(max))),
+                                "",
+                                &level_presets(max),
+                                1.0,
                             );
                             choice(
                                 ui,
@@ -901,23 +1378,27 @@ fn units(ui: &mut Ui, cx: &mut Cx<'_>) {
                                 w,
                                 "Unit",
                             );
-                            input(
-                                ui,
-                                cx,
-                                "class",
-                                unit_path(&key, "class"),
-                                Kind::Text,
-                                w,
-                                "ROGUE",
-                            );
-                            input(
+                            // (the flavor's classes; none: a creature)
+                            let classes: Vec<&str> = classes(cx.look.flavor)
+                                .iter()
+                                .map(|(file, _)| *file)
+                                .collect();
+                            choice(ui, cx, "class", unit_path(&key, "class"), &classes, w);
+                            let max = crate::flavors::max_level(cx.look.flavor);
+                            let yours = cx.root["character"]["level"].as_f64().unwrap_or(1.0);
+                            let mut presets = vec![(format!("yours · {yours}"), yours)];
+                            presets.extend(level_presets(max));
+                            presets.push(("?? (boss)".into(), -1.0));
+                            stepped(
                                 ui,
                                 cx,
                                 "level",
                                 unit_path(&key, "level"),
-                                Kind::Number,
                                 w,
-                                "1",
+                                (Some(-1.0), Some(f64::from(max) + 3.0)),
+                                "",
+                                &presets,
+                                1.0,
                             );
                             choice(ui, cx, "role", unit_path(&key, "role"), ROLES, w);
                         });
@@ -933,37 +1414,28 @@ fn units(ui: &mut Ui, cx: &mut Cx<'_>) {
                                 &["hostile", "neutral", "friendly"],
                                 w,
                             );
-                            input(
+                            let yards =
+                                [("5 · melee", 5.0), ("10", 10.0), ("30", 30.0), ("40", 40.0)];
+                            stepped(
                                 ui,
                                 cx,
-                                "distance (yd)",
+                                "distance",
                                 unit_path(&key, "distance"),
-                                Kind::Number,
                                 w,
-                                "unknown",
+                                (Some(0.0), None),
+                                "yd",
+                                &yards.map(|(l, n)| (l.to_owned(), n)),
+                                20.0,
                             );
-                            ui.vertical(|ui| {
-                                ui.set_width(w);
-                                forms::label(ui, "health · max");
-                                ui.horizontal(|ui| {
-                                    field(
-                                        ui,
-                                        cx,
-                                        unit_path(&key, "health"),
-                                        Kind::Number,
-                                        half,
-                                        "100",
-                                    );
-                                    field(
-                                        ui,
-                                        cx,
-                                        unit_path(&key, &health_max),
-                                        Kind::Number,
-                                        half,
-                                        "100",
-                                    );
-                                });
-                            });
+                            pool(
+                                ui,
+                                cx,
+                                "health",
+                                unit_path(&key, "health"),
+                                unit_path(&key, &health_max),
+                                w,
+                                100.0,
+                            );
                             ui.vertical(|ui| {
                                 ui.set_width(w);
                                 forms::label(ui, "npc ID · classification");
@@ -976,17 +1448,36 @@ fn units(ui: &mut Ui, cx: &mut Cx<'_>) {
                                         half,
                                         "—",
                                     );
+                                    // (UnitClassification's answers)
                                     field(
                                         ui,
                                         cx,
                                         unit_path(&key, "classification"),
-                                        Kind::Text,
+                                        Kind::Choice(
+                                            [
+                                                "normal",
+                                                "elite",
+                                                "rare",
+                                                "rareelite",
+                                                "worldboss",
+                                                "trivial",
+                                                "minus",
+                                            ]
+                                            .map(str::to_owned)
+                                            .to_vec(),
+                                        ),
                                         half,
                                         "normal",
                                     );
                                 });
                             });
                         });
+                        // A unit with a class has every power it has (T512).
+                        if let Some(class) = data["class"].as_str().filter(|c| !c.is_empty()) {
+                            ui.add_space(6.0);
+                            let w = col(ui, 4);
+                            class_powers(ui, cx, &[name("units"), key.clone()], class, w);
+                        }
                         ui.add_space(6.0);
                         ui.horizontal_wrapped(|ui| {
                             let player = data["player"] == Json::Bool(true);
@@ -1049,6 +1540,8 @@ fn units(ui: &mut Ui, cx: &mut Cx<'_>) {
                                 }
                             }
                         });
+                        where_and_what(ui, cx, &key, &data);
+                        creature_and_role(ui, cx, &key, &data);
                     });
                 },
             );
@@ -1192,6 +1685,278 @@ fn auras(ui: &mut Ui, cx: &mut Cx<'_>) {
     }
 }
 
+/// What an ID picker found for a query, asked for when not yet.
+fn found<'b>(cx: &mut Cx<'b>, what: Find, query: &str) -> Option<&'b [crate::system::SpellRow]> {
+    let all: &'b HashMap<_, _> = cx.found;
+    let hit = all.get(&(what, cx.look.flavor.to_owned(), query.to_owned()));
+    if hit.is_none() && !cx.ask.iter().any(|(w, q)| *w == what && q == query) {
+        cx.ask.push((what, query.to_owned()));
+    }
+    hit.map(Vec::as_slice)
+}
+
+/// The picker a field of this name is (`spellId`, `itemID`).
+fn find_of(field: &str) -> Option<Find> {
+    match field.to_ascii_lowercase().as_str() {
+        "spellid" => Some(Find::Spell),
+        "itemid" => Some(Find::Item),
+        _ => None,
+    }
+}
+
+/// An ID found by name among the client's spells or items (S065): the
+/// picked one's name and ID; open, a search and what it finds.
+fn find(
+    ui: &mut Ui,
+    cx: &mut Cx<'_>,
+    label: &str,
+    path: Vec<Key>,
+    what: Find,
+    width: f32,
+) -> Option<crate::system::SpellRow> {
+    let p = palette(ui.ctx());
+    // (the row picked this frame, for what else it fills in)
+    let mut chosen: Option<crate::system::SpellRow> = None;
+    let now = at(cx.root, &path).and_then(Json::as_u64).map(|n| n as u32);
+    let key = path_of(&path);
+    let open_id = egui::Id::unique(("wowlua-studio-find", key.clone()));
+    let mut open: bool = ui.data(|d| d.get_temp(open_id)).unwrap_or(false);
+    ui.vertical(|ui| {
+        ui.set_width(width);
+        if !label.is_empty() {
+            forms::label(ui, label);
+        }
+        // The picked one: its name (asked by its ID), the ID.
+        let picked = now.and_then(|id| {
+            found(cx, what, &id.to_string())
+                .and_then(|rows| rows.iter().find(|r| r.id == id))
+                .map(|r| r.name.clone())
+        });
+        let main = match (now, picked) {
+            (None, _) => "(none)".to_owned(),
+            (Some(_), Some(n)) => n,
+            (Some(id), None) => format!("{} {id}", what.word()),
+        };
+        let meta = now.map(|id| id.to_string()).unwrap_or_default();
+        let (rect, response) =
+            ui.allocate_exact_size(Vec2::new(width, forms::CONTROL_H), Sense::click());
+        let painter = ui.painter();
+        painter.rect_filled(
+            rect,
+            CornerRadius::ZERO,
+            if response.hovered() { p.bg_300 } else { p.bg_000 },
+        );
+        let stroke = if open {
+            Stroke::new(2.0, p.amber_ink)
+        } else {
+            Stroke::new(1.0, p.line_strong)
+        };
+        painter.rect_stroke(rect, CornerRadius::ZERO, stroke, egui::StrokeKind::Inside);
+        let mut x = rect.left() + 8.0;
+        let icon = match what {
+            Find::Spell => now.map(Art::Spell),
+            Find::Item => now.map(Art::Item),
+            Find::Creature => None,
+        };
+        if let Some(tex) = icon.and_then(|a| cx.look.pic("", Some(a)).tex) {
+            let r = Rect::from_min_size(egui::pos2(x, rect.center().y - 10.0), Vec2::splat(20.0));
+            painter.image(
+                tex,
+                r,
+                Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                egui::Color32::WHITE,
+            );
+            x += 28.0;
+        }
+        let meta_w = painter
+            .text(
+                egui::pos2(rect.right() - 26.0, rect.center().y),
+                Align2::RIGHT_CENTER,
+                &meta,
+                Face::Plex.at(11.5),
+                p.ink_muted,
+            )
+            .width();
+        let room = (rect.right() - 26.0 - meta_w - 8.0 - x).max(0.0);
+        let shown = fit_to(ui, &main, Face::Plex.at(12.5), room);
+        ui.painter().text(
+            egui::pos2(x, rect.center().y),
+            Align2::LEFT_CENTER,
+            shown,
+            Face::Plex.at(12.5),
+            if now.is_some() { p.ink } else { p.ink_muted },
+        );
+        // (the chevron)
+        let c = egui::pos2(rect.right() - 13.0, rect.center().y);
+        let chevron = Stroke::new(1.5, p.ink_muted);
+        ui.painter().line_segment([c + Vec2::new(-3.5, -1.5), c + Vec2::new(0.0, 2.0)], chevron);
+        ui.painter().line_segment([c + Vec2::new(0.0, 2.0), c + Vec2::new(3.5, -1.5)], chevron);
+        if response.clicked() {
+            open = !open;
+        }
+        if !open {
+            return;
+        }
+        // Open: a search and what it finds.
+        egui::Frame::new()
+            .fill(p.bg_100)
+            .stroke(Stroke::new(1.0, p.line_strong))
+            .inner_margin(egui::Margin::same(6))
+            .show(ui, |ui| {
+                ui.set_width(width - 12.0);
+                let search = format!("{key}/find");
+                let typed = {
+                    let buffer = cx.buffers.entry(search.clone()).or_default();
+                    forms::text_input(
+                        ui,
+                        buffer,
+                        width - 12.0,
+                        &format!("search the client's {}s by name or ID", what.word()),
+                    );
+                    buffer.trim().to_owned()
+                };
+                let typed_id = typed.parse::<u32>().ok();
+                let mut pick: Option<Option<u32>> = None;
+                if typed.chars().count() < 2 && typed_id.is_none() {
+                    caption(ui, "Type two letters of its name, or its ID.");
+                } else {
+                    match found(cx, what, &typed) {
+                        None => caption(ui, "searching the client…"),
+                        Some([]) => {
+                            caption(
+                                ui,
+                                &format!(
+                                    "No {} of this flavor's client found (no installation with its client: use the ID).",
+                                    what.word()
+                                ),
+                            );
+                        }
+                        Some(rows) => {
+                            for r in rows.iter().take(12) {
+                                if found_row(ui, cx, what, r, width - 12.0) {
+                                    pick = Some(Some(r.id));
+                                    chosen = Some(r.clone());
+                                }
+                            }
+                        }
+                    }
+                    if let Some(id) = typed_id
+                        && widgets::button(ui, ButtonKind::Inline, &format!("use ID {id}"), true, None)
+                            .clicked()
+                    {
+                        pick = Some(Some(id));
+                    }
+                }
+                if now.is_some()
+                    && widgets::button(ui, ButtonKind::Inline, "clear", true, None).clicked()
+                {
+                    pick = Some(None);
+                }
+                if let Some(id) = pick {
+                    cx.set(path.clone(), id.map(|i| number(f64::from(i))));
+                    cx.buffers.insert(search, String::new());
+                    open = false;
+                }
+            });
+    });
+    ui.data_mut(|d| d.insert_temp(open_id, open));
+    chosen
+}
+
+/// A row an ID picker found: icon, name, its text, the ID; whether it
+/// was clicked.
+fn found_row(
+    ui: &mut Ui,
+    cx: &mut Cx<'_>,
+    what: Find,
+    row: &crate::system::SpellRow,
+    width: f32,
+) -> bool {
+    let p = palette(ui.ctx());
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 28.0), Sense::click());
+    if response.hovered() {
+        ui.painter().rect_filled(rect, CornerRadius::ZERO, p.bg_300);
+    }
+    let art = match what {
+        Find::Spell => Some(Art::Spell(row.id)),
+        Find::Item => Some(Art::Item(row.id)),
+        Find::Creature => None,
+    };
+    let mut x = rect.left() + 6.0;
+    if let Some(tex) = cx.look.pic("", art).tex {
+        let r = Rect::from_min_size(egui::pos2(x, rect.center().y - 10.0), Vec2::splat(20.0));
+        ui.painter().image(
+            tex,
+            r,
+            Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            egui::Color32::WHITE,
+        );
+    }
+    x += 28.0;
+    let id_w = ui
+        .painter()
+        .text(
+            egui::pos2(rect.right() - 6.0, rect.center().y),
+            Align2::RIGHT_CENTER,
+            row.id.to_string(),
+            Face::Plex.at(11.5),
+            p.ink_muted,
+        )
+        .width();
+    let room = (rect.right() - 6.0 - id_w - 12.0 - x).max(0.0);
+    let name = fit_to(ui, &row.name, Face::PlexMedium.at(12.0), room);
+    let name_w = ui
+        .painter()
+        .text(
+            egui::pos2(x, rect.center().y),
+            Align2::LEFT_CENTER,
+            name,
+            Face::PlexMedium.at(12.0),
+            p.ink,
+        )
+        .width();
+    let rest = room - name_w - 10.0;
+    if rest > 40.0 && !row.text.is_empty() {
+        let text = fit_to(
+            ui,
+            row.text.lines().next().unwrap_or(""),
+            Face::Plex.at(11.5),
+            rest,
+        );
+        ui.painter().text(
+            egui::pos2(x + name_w + 10.0, rect.center().y),
+            Align2::LEFT_CENTER,
+            text,
+            Face::Plex.at(11.5),
+            p.ink_muted,
+        );
+    }
+    response.clicked()
+}
+
+/// `text` cut with an ellipsis to fit `width` in `font`.
+fn fit_to(ui: &Ui, text: &str, font: egui::FontId, width: f32) -> String {
+    let w = |s: &str| {
+        ui.fonts_mut(|f| {
+            f.layout_no_wrap(s.to_owned(), font.clone(), egui::Color32::WHITE)
+                .size()
+                .x
+        })
+    };
+    if w(text) <= width {
+        return text.to_owned();
+    }
+    let mut chars: Vec<char> = text.chars().collect();
+    while !chars.is_empty() {
+        chars.pop();
+        let s: String = chars.iter().collect::<String>() + "…";
+        if w(&s) <= width {
+            return s;
+        }
+    }
+    String::new()
+}
+
 /// An entry's fields in a card, with its removal.
 fn entry_card(ui: &mut Ui, cx: &mut Cx<'_>, title: &str, base: Vec<Key>, fields: &[(&str, Kind)]) {
     let mut remove = false;
@@ -1229,6 +1994,8 @@ fn grid(ui: &mut Ui, cx: &mut Cx<'_>, base: &[Key], fields: &[(&str, Kind)]) {
                         forms::label(ui, f);
                         check(ui, cx, "", path, false);
                     });
+                } else if let Some(what) = find_of(f) {
+                    find(ui, cx, f, path, what, w);
                 } else {
                     input(ui, cx, f, path, kind.clone(), w, "");
                 }
@@ -1338,6 +2105,52 @@ fn spells(ui: &mut Ui, cx: &mut Cx<'_>) {
         }
         cx.set(vec![name("trained")], Some(json!(ids)));
     };
+
+    // The race's spells (T513): known with the race, not listed.
+    let race = root["character"]["race"].as_str().unwrap_or("");
+    if let Some(f) = flavor_of(cx.look.flavor)
+        && f.has_race(race)
+    {
+        let faction = f.faction_of(
+            race,
+            root["character"]["faction"]
+                .as_str()
+                .and_then(wowlua_flavors::Faction::parse),
+        );
+        let class_file = (!class.is_empty()).then_some(class.as_str());
+        let racials: Vec<&wowlua_flavors::Racial> = f.racials(race, faction, class_file).collect();
+        ui.label(
+            egui::RichText::new(format!("From the race · {race}"))
+                .font(Face::PlexMedium.at(12.0))
+                .color(p.ink),
+        );
+        if racials.is_empty() {
+            caption(
+                ui,
+                "This flavor's racial spells weren't read from its client: the race's spells come from the game's tables.",
+            );
+        } else {
+            ui.horizontal_wrapped(|ui| {
+                for r in &racials {
+                    egui::Frame::new()
+                        .stroke(Stroke::new(1.0, p.line))
+                        .inner_margin(egui::Margin::symmetric(8, 4))
+                        .show(ui, |ui| {
+                            ui.label(
+                                egui::RichText::new(format!("{} · {}", r.name, r.spell))
+                                    .font(Face::Plex.at(12.0))
+                                    .color(p.ink),
+                            );
+                        });
+                }
+            });
+            caption(
+                ui,
+                "Known with the race, without training: not in the profile.",
+            );
+        }
+        ui.add_space(10.0);
+    }
 
     // The class's spells.
     if class.is_empty() {
@@ -1702,7 +2515,15 @@ fn actions(ui: &mut Ui, cx: &mut Cx<'_>) {
                 if current.is_some() {
                     let mut id = base.clone();
                     id.push(name("id"));
-                    input(ui, cx, "ID", id, Kind::Scalar, w, "0");
+                    match current.as_ref().and_then(|a| a["type"].as_str()) {
+                        Some("spell") => {
+                            find(ui, cx, "spell", id, Find::Spell, w);
+                        }
+                        Some("item") => {
+                            find(ui, cx, "item", id, Find::Item, w);
+                        }
+                        _ => input(ui, cx, "ID", id, Kind::Scalar, w, "0"),
+                    }
                     let mut usable = base.clone();
                     usable.push(name("usable"));
                     ui.vertical(|ui| {
@@ -1967,7 +2788,7 @@ fn bags(ui: &mut Ui, cx: &mut Cx<'_>) {
                     if v.is_number() {
                         // An ID alone: made a stack to give it a count.
                         ui.horizontal(|ui| {
-                            field(ui, cx, base.clone(), Kind::Number, 140.0, "item ID");
+                            find(ui, cx, "", base.clone(), Find::Item, 300.0);
                             if forms::text_button(ui, "as a stack").clicked() {
                                 cx.set(base.clone(), Some(json!({ "id": v, "count": 1 })));
                             }
@@ -1976,12 +2797,15 @@ fn bags(ui: &mut Ui, cx: &mut Cx<'_>) {
                             }
                         });
                     } else {
+                        let mut id = base.clone();
+                        id.push(name("id"));
+                        find(ui, cx, "item", id, Find::Item, 300.0);
+                        ui.add_space(6.0);
                         grid(
                             ui,
                             cx,
                             &base,
                             &[
-                                ("id", Kind::Number),
                                 ("count", Kind::Number),
                                 ("bound", Kind::Bool),
                                 ("locked", Kind::Bool),
@@ -2327,7 +3151,7 @@ fn schema_grid(ui: &mut Ui, cx: &mut Cx<'_>, base: &[Key], fields: &[schema::Fie
                     });
                     if f.kind == Kind::Bool {
                         check(ui, cx, "", path, false);
-                    } else {
+                    } else if !known(ui, cx, &f.name, &f.kind, path.clone(), w) {
                         field(ui, cx, path, f.kind.clone(), w, "");
                     }
                     if !f.help.is_empty() {
@@ -2338,6 +3162,134 @@ fn schema_grid(ui: &mut Ui, cx: &mut Cx<'_>, base: &[Key], fields: &[schema::Fie
         });
         ui.add_space(6.0);
     }
+}
+
+/// The item qualities, as the client numbers them.
+const QUALITIES: &[&str] = &[
+    "0 · Poor",
+    "1 · Common",
+    "2 · Uncommon",
+    "3 · Rare",
+    "4 · Epic",
+    "5 · Legendary",
+    "6 · Artifact",
+    "7 · Heirloom",
+];
+
+/// Where an item is worn (`C_Item.GetItemInventoryTypeByID`'s tokens).
+const EQUIP_LOCS: &[&str] = &[
+    "INVTYPE_HEAD",
+    "INVTYPE_NECK",
+    "INVTYPE_SHOULDER",
+    "INVTYPE_BODY",
+    "INVTYPE_CHEST",
+    "INVTYPE_ROBE",
+    "INVTYPE_WAIST",
+    "INVTYPE_LEGS",
+    "INVTYPE_FEET",
+    "INVTYPE_WRIST",
+    "INVTYPE_HAND",
+    "INVTYPE_FINGER",
+    "INVTYPE_TRINKET",
+    "INVTYPE_CLOAK",
+    "INVTYPE_WEAPON",
+    "INVTYPE_SHIELD",
+    "INVTYPE_2HWEAPON",
+    "INVTYPE_WEAPONMAINHAND",
+    "INVTYPE_WEAPONOFFHAND",
+    "INVTYPE_HOLDABLE",
+    "INVTYPE_RANGED",
+    "INVTYPE_THROWN",
+    "INVTYPE_RANGEDRIGHT",
+    "INVTYPE_RELIC",
+    "INVTYPE_TABARD",
+    "INVTYPE_BAG",
+    "INVTYPE_AMMO",
+    "INVTYPE_QUIVER",
+];
+
+/// A field of a schema's form that has a control of its own (S065): any
+/// number a stepper (a quality a select, a level up to the flavor's
+/// highest, a count with presets, seconds by halves), an item's slot a
+/// select. False: the plain field draws it.
+fn known(
+    ui: &mut Ui,
+    cx: &mut Cx<'_>,
+    name: &str,
+    kind: &Kind,
+    path: Vec<Key>,
+    width: f32,
+) -> bool {
+    let lower = name.to_ascii_lowercase();
+    if let Some(what) = find_of(name)
+        && *kind == Kind::Number
+    {
+        find(ui, cx, "", path, what, width);
+        return true;
+    }
+    if (lower == "equiploc" || lower == "inventorytype") && *kind == Kind::Text {
+        let now = at(cx.root, &path)
+            .and_then(Json::as_str)
+            .unwrap_or("")
+            .to_owned();
+        let mut list: Vec<&str> = vec!["(none)"];
+        list.extend(EQUIP_LOCS);
+        let mut index = list.iter().position(|l| *l == now).unwrap_or(0);
+        let opts: Vec<(&str, bool)> = list.iter().map(|l| (*l, true)).collect();
+        if forms::select(ui, &path_of(&path), &opts, &mut index, width) {
+            cx.set(
+                path,
+                (index > 0).then(|| Json::String(list[index].to_owned())),
+            );
+        }
+        return true;
+    }
+    if *kind != Kind::Number {
+        return false;
+    }
+    let now = at(cx.root, &path).and_then(Json::as_f64);
+    if lower == "quality" {
+        let mut index = now.map_or(1, |q| q.clamp(0.0, 7.0) as usize);
+        let opts: Vec<(&str, bool)> = QUALITIES.iter().map(|q| (*q, true)).collect();
+        if forms::select(ui, &path_of(&path), &opts, &mut index, width) {
+            cx.set(path, Some(number(index as f64)));
+        }
+        return true;
+    }
+    let before = now.unwrap_or(0.0);
+    let mut v = before;
+    let id = path_of(&path);
+    let changed = if lower.contains("level") && !lower.contains("item") {
+        let max = f64::from(crate::flavors::max_level(cx.look.flavor));
+        controls::stepper(ui, &id, &mut v, Some(1.0), Some(max), 1.0, "")
+    } else if lower.contains("count") || lower.contains("stack") {
+        let mut changed = controls::stepper(ui, &id, &mut v, Some(0.0), None, 1.0, "");
+        if let Some(p) = controls::presets(ui, &[("1", 1.0), ("20", 20.0), ("200", 200.0)], v) {
+            v = p;
+            changed = true;
+        }
+        changed
+    } else if [
+        "delay",
+        "duration",
+        "cooldown",
+        "remaining",
+        "time",
+        "seconds",
+    ]
+    .iter()
+    .any(|w| lower.contains(w))
+    {
+        controls::stepper(ui, &id, &mut v, Some(0.0), None, 0.5, "s")
+    } else {
+        // (a whole number steps by one, a fraction by a tenth)
+        let step = if before.fract() == 0.0 { 1.0 } else { 0.1 };
+        controls::stepper(ui, &id, &mut v, None, None, step, "")
+    };
+    if changed && (v - before).abs() > 1e-9 {
+        cx.set(path, Some(number(v)));
+    }
+    true
 }
 
 /// The fields the schema doesn't name, as keys and JSON values.
@@ -2411,14 +3363,267 @@ fn new_key(ui: &mut Ui, cx: &mut Cx<'_>, base: &[Key], word: &str) {
     });
 }
 
+/// A key as the client names it in a binding: `ALT-CTRL-SHIFT-F`.
+fn binding_key(key: egui::Key, m: egui::Modifiers) -> Option<String> {
+    use egui::Key as K;
+    let name = match key {
+        K::Space => "SPACE".to_owned(),
+        K::Escape => return None,
+        K::Enter => "ENTER".to_owned(),
+        K::Tab => "TAB".to_owned(),
+        K::Backspace => "BACKSPACE".to_owned(),
+        K::Delete => "DELETE".to_owned(),
+        K::Insert => "INSERT".to_owned(),
+        K::Home => "HOME".to_owned(),
+        K::End => "END".to_owned(),
+        K::PageUp => "PAGEUP".to_owned(),
+        K::PageDown => "PAGEDOWN".to_owned(),
+        K::ArrowUp => "UP".to_owned(),
+        K::ArrowDown => "DOWN".to_owned(),
+        K::ArrowLeft => "LEFT".to_owned(),
+        K::ArrowRight => "RIGHT".to_owned(),
+        other => other.name().to_ascii_uppercase(),
+    };
+    let mut out = String::new();
+    if m.alt {
+        out.push_str("ALT-");
+    }
+    if m.ctrl {
+        out.push_str("CTRL-");
+    }
+    if m.shift {
+        out.push_str("SHIFT-");
+    }
+    if m.mac_cmd {
+        out.push_str("META-");
+    }
+    out.push_str(&name);
+    Some(out)
+}
+
+/// The bindings (S065): each a recorded key and an action picked from the
+/// flavor's client (Blizzard's UI's bindings), a new one by pressing it.
+fn bindings(ui: &mut Ui, cx: &mut Cx<'_>, base: &[Key], value: &Json) {
+    let p = palette(ui.ctx());
+    // (the actions read once per flavor)
+    let id = egui::Id::unique(("wowlua-studio-binding-actions", cx.look.flavor.to_owned()));
+    let actions: std::sync::Arc<Vec<(String, String)>> = match ui.data(|d| d.get_temp(id)) {
+        Some(a) => a,
+        None => {
+            let a = std::sync::Arc::new(cx.system.binding_actions(cx.look.flavor));
+            ui.data_mut(|d| d.insert_temp(id, a.clone()));
+            a
+        }
+    };
+    let labels: Vec<String> = actions
+        .iter()
+        .map(|(n, c)| {
+            if c.is_empty() {
+                n.clone()
+            } else {
+                format!("{n} · {c}")
+            }
+        })
+        .collect();
+    let entries: Vec<(String, String)> = value
+        .as_object()
+        .map(|o| {
+            o.iter()
+                .map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_owned()))
+                .collect()
+        })
+        .unwrap_or_default();
+    for (key, action) in &entries {
+        let mut path = base.to_vec();
+        path.push(name(key));
+        forms::bar(ui, |ui| {
+            cell(
+                ui,
+                220.0,
+                egui::RichText::new(key)
+                    .font(Face::PlexMedium.at(12.0))
+                    .color(p.ink),
+            );
+            if actions.is_empty() {
+                field(ui, cx, path.clone(), Kind::Text, 260.0, "MOVEFORWARD");
+            } else {
+                let mut names: Vec<&str> = vec!["(none)"];
+                names.extend(labels.iter().map(String::as_str));
+                let mut index = actions
+                    .iter()
+                    .position(|(n, _)| n == action)
+                    .map_or(0, |i| i + 1);
+                let opts: Vec<(&str, bool)> = names.iter().map(|n| (*n, true)).collect();
+                if forms::select(ui, &path_of(&path), &opts, &mut index, 300.0) {
+                    let v = actions
+                        .get(index.wrapping_sub(1))
+                        .map(|(n, _)| Json::String(n.clone()));
+                    cx.set(path.clone(), v.or_else(|| Some(json!(""))));
+                }
+            }
+            if widgets::button(ui, ButtonKind::Tertiary, "remove", true, None).clicked() {
+                cx.set(path.clone(), None);
+            }
+        });
+    }
+    if actions.is_empty() {
+        caption(
+            ui,
+            "The client's actions show once its Blizzard UI is fetched (the start page).",
+        );
+    }
+    // A new binding: press its key.
+    let recording_id = egui::Id::unique(("wowlua-studio-binding-recording", base.len()));
+    let recording: bool = ui.data(|d| d.get_temp(recording_id)).unwrap_or(false);
+    if recording {
+        let pressed = ui.input(|i| {
+            i.events.iter().find_map(|e| match e {
+                egui::Event::Key {
+                    key,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } => Some((*key, *modifiers)),
+                _ => None,
+            })
+        });
+        ui.horizontal(|ui| {
+            caption(ui, "press the key, with its modifiers (escape: cancel)…");
+            if widgets::button(ui, ButtonKind::Tertiary, "cancel", true, None).clicked() {
+                ui.data_mut(|d| d.insert_temp(recording_id, false));
+            }
+        });
+        if let Some((key, modifiers)) = pressed {
+            ui.data_mut(|d| d.insert_temp(recording_id, false));
+            if let Some(k) = binding_key(key, modifiers) {
+                let mut path = base.to_vec();
+                path.push(name(&k));
+                cx.set(path, Some(json!("")));
+            }
+        }
+    } else if widgets::button(ui, ButtonKind::Secondary, "record a key", true, None).clicked() {
+        ui.data_mut(|d| d.insert_temp(recording_id, true));
+    }
+}
+
+/// The CVars (S065): each set one with its value and the client's default,
+/// a new one found by name among the flavor's (wowlua's recorded ones),
+/// starting at its default; typed by name where wowlua has none.
+fn cvars(ui: &mut Ui, cx: &mut Cx<'_>, base: &[Key], value: &Json, kind: &Kind) {
+    let p = palette(ui.ctx());
+    // (the CVars read once per flavor)
+    let id = egui::Id::unique(("wowlua-studio-cvars", cx.look.flavor.to_owned()));
+    let known: std::sync::Arc<Vec<crate::system::CVarInfo>> = match ui.data(|d| d.get_temp(id)) {
+        Some(c) => c,
+        None => {
+            let c = std::sync::Arc::new(cx.system.cvars(cx.look.flavor));
+            ui.data_mut(|d| d.insert_temp(id, c.clone()));
+            c
+        }
+    };
+    if known.len() <= 1 {
+        return map_rows(ui, cx, base, value, kind, ("CVar", "value", "+ CVar"));
+    }
+    let info = |n: &str| known.iter().find(|c| c.name.eq_ignore_ascii_case(n));
+    let entries: Vec<String> = value
+        .as_object()
+        .map(|o| o.keys().cloned().collect())
+        .unwrap_or_default();
+    for k in &entries {
+        let mut path = base.to_vec();
+        path.push(name(k));
+        let cvar = info(k);
+        forms::bar(ui, |ui| {
+            cell(
+                ui,
+                260.0,
+                egui::RichText::new(k)
+                    .font(Face::PlexMedium.at(12.0))
+                    .color(p.ink),
+            );
+            field(ui, cx, path.clone(), kind.clone(), 160.0, "");
+            let note = match cvar {
+                Some(c) if c.read_only => format!("default {} · read-only", c.default),
+                Some(c) if c.secure => {
+                    format!("default {} · secure: addons can't set it", c.default)
+                }
+                Some(c) => format!("default {}", c.default),
+                None => "not one of the client's".to_owned(),
+            };
+            ui.label(
+                egui::RichText::new(note)
+                    .font(Face::Plex.at(11.5))
+                    .color(p.ink_muted),
+            );
+            if widgets::button(ui, ButtonKind::Tertiary, "remove", true, None).clicked() {
+                cx.set(path.clone(), None);
+            }
+        });
+    }
+    // A new one: found by name.
+    let search = format!("{}/find", path_of(base));
+    let typed = {
+        let buffer = cx.buffers.entry(search.clone()).or_default();
+        forms::text_input(ui, buffer, 260.0, "find a CVar…");
+        buffer.trim().to_ascii_lowercase()
+    };
+    if !typed.is_empty() {
+        let found: Vec<&crate::system::CVarInfo> = known
+            .iter()
+            .filter(|c| c.name.to_ascii_lowercase().contains(&typed))
+            .filter(|c| !entries.iter().any(|e| e.eq_ignore_ascii_case(&c.name)))
+            .take(12)
+            .collect();
+        if found.is_empty() {
+            caption(ui, "No CVar of this flavor's client has that in its name.");
+        }
+        let names: Vec<String> = found.iter().map(|c| c.name.clone()).collect();
+        if let Some(picked) = controls::suggestions(ui, &names)
+            && let Some(c) = info(&picked)
+        {
+            let mut path = base.to_vec();
+            path.push(name(&c.name));
+            let v = parse(kind, &c.default)
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| json!(c.default));
+            cx.set(path, Some(v));
+            cx.buffers.insert(search, String::new());
+        }
+    }
+    caption(
+        ui,
+        &format!(
+            "The {} CVars of this flavor's client, with their defaults as wowlua recorded them.",
+            known.len()
+        ),
+    );
+}
+
 /// Keys and values (`cvars`, `bindings`, `stats`).
 fn map(ui: &mut Ui, cx: &mut Cx<'_>, base: &[Key], value: &Json, kind: &Kind, part: &str) {
-    let (key_head, value_head, word) = match part {
-        "cvars" => ("CVar", "value", "+ CVar"),
-        "bindings" => ("key", "action", "+ binding"),
+    if part == "bindings" {
+        return bindings(ui, cx, base, value);
+    }
+    if part == "cvars" {
+        return cvars(ui, cx, base, value, kind);
+    }
+    let heads = match part {
         "stats" => ("stat", "value", "+ stat"),
         _ => ("key", "value", "+ entry"),
     };
+    map_rows(ui, cx, base, value, kind, heads);
+}
+
+/// Keys and values as typed: a key's name, its value.
+fn map_rows(
+    ui: &mut Ui,
+    cx: &mut Cx<'_>,
+    base: &[Key],
+    value: &Json,
+    kind: &Kind,
+    (key_head, value_head, word): (&str, &str, &str),
+) {
     let p = palette(ui.ctx());
     ui.horizontal(|ui| {
         cell(
@@ -2465,6 +3670,675 @@ fn map(ui: &mut Ui, cx: &mut Cx<'_>, base: &[Key], value: &Json, kind: &Kind, pa
     new_key(ui, cx, base, word);
 }
 
+/// Where a unit is and what it does (S080; wowlua T515 to T518): its
+/// place on the map (typed, or placed in the game view), how it moves
+/// (its patrol's waypoints drawn there too) and its actions.
+fn where_and_what(ui: &mut Ui, cx: &mut Cx<'_>, key: &Key, data: &Json) {
+    let label = data["name"].as_str().unwrap_or("the unit").to_owned();
+    let id = path_of(&unit_path(key, ""));
+    ui.add_space(10.0);
+    forms::label(ui, "where it is and what it does");
+    ui.add_space(4.0);
+    // Its place: north, west and up yards on the map.
+    ui.horizontal(|ui| {
+        for (axis, hint) in [("y", "north"), ("x", "west"), ("z", "up")] {
+            ui.vertical(|ui| {
+                forms::label(ui, hint);
+                let mut path = unit_path(key, "world");
+                path.push(name(axis));
+                field(ui, cx, path, Kind::Number, 96.0, "—");
+            });
+        }
+        ui.vertical(|ui| {
+            forms::label(ui, " ");
+            ui.horizontal(|ui| {
+                if widgets::button(
+                    ui,
+                    ButtonKind::Secondary,
+                    "place it in the game view",
+                    true,
+                    None,
+                )
+                .clicked()
+                {
+                    *cx.place = Some(super::Placing {
+                        profile: String::new(),
+                        unit: key.clone(),
+                        label: label.clone(),
+                        path: false,
+                        movement: data.get("movement").cloned(),
+                    });
+                }
+                if data.get("world").is_some() && forms::text_button(ui, "clear ×").clicked() {
+                    cx.set(unit_path(key, "world"), None);
+                }
+            });
+        });
+    });
+    hint(
+        ui,
+        "or only a distance, as before: it stands that far in front of you",
+    );
+    ui.add_space(8.0);
+    // How it moves.
+    let movement = data.get("movement");
+    let kind = movement
+        .and_then(|m| m["kind"].as_str())
+        .unwrap_or("stand")
+        .to_owned();
+    let kinds = ["stand", "patrol", "follow", "approach", "flee"];
+    ui.horizontal(|ui| {
+        forms::label(ui, "movement");
+        let at_kind = kinds.iter().position(|k| *k == kind).unwrap_or(0);
+        if let Some(i) = widgets::seg(ui, &format!("{id}movement"), &kinds, at_kind, false) {
+            if i == 0 {
+                cx.set(unit_path(key, "movement"), None);
+            } else {
+                let mut path = unit_path(key, "movement");
+                path.push(name("kind"));
+                cx.set(path, Some(json!(kinds[i])));
+            }
+        }
+    });
+    let mpath = |k: &str| {
+        let mut p = unit_path(key, "movement");
+        p.push(name(k));
+        p
+    };
+    match kind.as_str() {
+        "patrol" => {
+            ui.add_space(4.0);
+            let points = movement
+                .and_then(|m| m.get("path"))
+                .map(list)
+                .unwrap_or_default();
+            ui.horizontal_wrapped(|ui| {
+                forms::label(ui, &format!("path · {} waypoints", points.len()));
+                for (k, p) in &points {
+                    let text = format!(
+                        "{:.1}, {:.1}",
+                        p["y"].as_f64().unwrap_or(0.0),
+                        p["x"].as_f64().unwrap_or(0.0)
+                    );
+                    if forms::text_button(ui, &format!("{text} ×")).clicked() {
+                        let mut path = mpath("path");
+                        path.push(k.clone());
+                        cx.set(path, None);
+                    }
+                }
+                if widgets::button(
+                    ui,
+                    ButtonKind::Secondary,
+                    "draw in the game view",
+                    true,
+                    None,
+                )
+                .clicked()
+                {
+                    *cx.place = Some(super::Placing {
+                        profile: String::new(),
+                        unit: key.clone(),
+                        label: label.clone(),
+                        path: true,
+                        movement: movement.cloned(),
+                    });
+                }
+            });
+            ui.horizontal(|ui| {
+                check(ui, cx, "loops", mpath("loop"), true);
+                speed(ui, cx, mpath("speed"), "2.5");
+            });
+        }
+        "follow" | "approach" | "flee" => {
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if kind != "flee" {
+                    stepped(
+                        ui,
+                        cx,
+                        "keeps",
+                        mpath("keep"),
+                        180.0,
+                        (Some(0.0), None),
+                        "yd",
+                        &[("melee 2".to_owned(), 2.0), ("10".to_owned(), 10.0)],
+                        2.0,
+                    );
+                }
+                speed(ui, cx, mpath("speed"), "7");
+            });
+            if kind == "follow" {
+                hint(
+                    ui,
+                    "it walks after you when you move, so your range checks change as you play",
+                );
+            }
+        }
+        _ => {}
+    }
+    ui.add_space(8.0);
+    // What it does.
+    forms::label(ui, "actions");
+    hint(
+        ui,
+        "seconds after the session starts, every so many seconds, or when you come near",
+    );
+    let actions = data.get("actions").map(list).unwrap_or_default();
+    for (k, a) in &actions {
+        let apath = |f: &str| {
+            let mut p = unit_path(key, "actions");
+            p.push(k.clone());
+            if !f.is_empty() {
+                p.push(name(f));
+            }
+            p
+        };
+        ui.horizontal(|ui| {
+            let whens = ["at", "every", "within"];
+            let when = whens.iter().position(|w| a.get(*w).is_some()).unwrap_or(0);
+            if let Some(i) = widgets::seg(
+                ui,
+                &format!("{}when", path_of(&apath(""))),
+                &whens,
+                when,
+                false,
+            ) && i != when
+            {
+                let value = a.get(whens[when]).cloned().unwrap_or(json!(0));
+                cx.set(apath(whens[when]), None);
+                cx.set(apath(whens[i]), Some(value));
+            }
+            field(ui, cx, apath(whens[when]), Kind::Number, 64.0, "0");
+            ui.label(match whens[when] {
+                "within" => "yd",
+                _ => "s",
+            });
+            field(
+                ui,
+                cx,
+                apath("do"),
+                Kind::Choice(["attack", "cast", "face"].map(str::to_owned).to_vec()),
+                110.0,
+                "attack",
+            );
+            match a["do"].as_str().unwrap_or("attack") {
+                "attack" => {
+                    forms::label(ui, "damage");
+                    field(ui, cx, apath("damage"), Kind::Number, 64.0, "10");
+                    forms::label(ui, "every");
+                    field(ui, cx, apath("speed"), Kind::Number, 56.0, "2");
+                    ui.label("s");
+                }
+                "cast" => {
+                    forms::label(ui, "spell");
+                    field(ui, cx, apath("spell"), Kind::Number, 80.0, "ID");
+                    forms::label(ui, "cast time");
+                    field(ui, cx, apath("castTime"), Kind::Number, 56.0, "its own");
+                    ui.label("s");
+                }
+                _ => {}
+            }
+            if forms::text_button(ui, "×").clicked() {
+                cx.set(apath(""), None);
+            }
+        });
+    }
+    if forms::text_button(ui, "+ action").clicked() {
+        let new = json!({ "at": 0, "do": "attack", "damage": 10 });
+        let mut path = unit_path(key, "actions");
+        if data.get("actions").is_some() {
+            path.push(Key::Index(actions.len()));
+            cx.set(path, Some(new));
+        } else {
+            cx.set(path, Some(json!([new])));
+        }
+    }
+}
+
+/// A line of help under a field, in the muted ink.
+fn hint(ui: &mut Ui, text: &str) {
+    let ink = palette(ui.ctx()).ink_muted;
+    forms::paragraph(ui, text, 12.0, 18.0, ink);
+}
+
+/// A walk's speed (yards a second, fractions too), its default `hint`,
+/// with a walk's and a run's (wowlua T517).
+fn speed(ui: &mut Ui, cx: &mut Cx<'_>, path: Vec<Key>, hint: &str) {
+    ui.vertical(|ui| {
+        forms::label(ui, "speed");
+        ui.horizontal(|ui| {
+            field(ui, cx, path.clone(), Kind::Number, 64.0, hint);
+            ui.label("yd/s");
+            for (label, v) in [("walk 2.5", 2.5), ("run 7", 7.0)] {
+                if forms::text_button(ui, label).clicked() {
+                    cx.set(path.clone(), Some(json!(v)));
+                }
+            }
+        });
+    });
+}
+
+/// What a unit is (S082; wowlua T530, T531): the creature (searched among
+/// those the installation knows, its model previewed), how it fights,
+/// what it is to the player (a vendor, a trainer, gossip, a service) and
+/// what it drops.
+fn creature_and_role(ui: &mut Ui, cx: &mut Cx<'_>, key: &Key, data: &Json) {
+    let p = palette(ui.ctx());
+    let id = path_of(&unit_path(key, ""));
+    // The creature.
+    ui.add_space(12.0);
+    forms::label(ui, "the creature");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        // Its model, as a model frame draws it; a browser of others.
+        let display = data
+            .get("displayId")
+            .or(data.get("displayID"))
+            .and_then(Json::as_u64)
+            .map(|d| d as u32);
+        ui.vertical(|ui| {
+            let (rect, _) = ui.allocate_exact_size(Vec2::splat(132.0), Sense::hover());
+            ui.painter().rect_filled(rect, CornerRadius::same(4), p.bg_000);
+            ui.painter()
+                .rect_stroke(rect, CornerRadius::same(4), Stroke::new(1.0, p.line_strong), egui::StrokeKind::Inside);
+            match display.and_then(|d| cx.look.pic("", Some(Art::Model(d))).tex) {
+                Some(tex) => {
+                    ui.painter().image(
+                        tex,
+                        rect.shrink(1.0),
+                        Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                        egui::Color32::WHITE,
+                    );
+                }
+                None => {
+                    ui.painter().text(
+                        rect.center(),
+                        Align2::CENTER_CENTER,
+                        match display {
+                            Some(d) => format!("model {d}"),
+                            None => "no model".to_owned(),
+                        },
+                        Face::Plex.at(11.5),
+                        p.ink_muted,
+                    );
+                }
+            }
+            let browse_id = egui::Id::unique(("wowlua-studio-models", id.clone()));
+            let mut browsing: bool = ui.data(|d| d.get_temp(browse_id)).unwrap_or(false);
+            if forms::text_button(ui, "browse models…").clicked() {
+                browsing = !browsing;
+            }
+            ui.data_mut(|d| d.insert_temp(browse_id, browsing));
+        });
+        ui.vertical(|ui| {
+            if let Some(row) = find(ui, cx, "creature", unit_path(key, "npcID"), Find::Creature, 380.0) {
+                // (the creature picked: its name, model, type and
+                // classification as the installation knows them)
+                cx.set(unit_path(key, "name"), Some(json!(row.name)));
+                if let Some(d) = row.icon {
+                    cx.set(unit_path(key, "displayId"), Some(json!(d)));
+                }
+                let mut parts = row.text.split(" · ");
+                if let Some(kind) = parts.next().filter(|k| *k != "—") {
+                    cx.set(unit_path(key, "creatureType"), Some(json!(kind)));
+                }
+                if let Some(class) = parts.next().filter(|c| *c != "—") {
+                    cx.set(unit_path(key, "classification"), Some(json!(class)));
+                }
+                if let Some(family) = parts.next().filter(|f| *f != "—") {
+                    cx.set(unit_path(key, "creatureFamily"), Some(json!(family)));
+                }
+            }
+            hint(
+                ui,
+                "the creatures your installation knows: its creature table and cache (the cache grows as you play)",
+            );
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    forms::label(ui, "model");
+                    field(ui, cx, unit_path(key, "displayId"), Kind::Number, 96.0, "display ID");
+                });
+                choice(
+                    ui,
+                    cx,
+                    "type",
+                    unit_path(key, "creatureType"),
+                    &[
+                        "Beast", "Humanoid", "Undead", "Elemental", "Dragonkin", "Demon", "Giant",
+                        "Mechanical", "Critter",
+                    ],
+                    130.0,
+                );
+                ui.vertical(|ui| {
+                    forms::label(ui, "family");
+                    field(ui, cx, unit_path(key, "creatureFamily"), Kind::Text, 110.0, "Wolf");
+                });
+                choice(ui, cx, "faction", unit_path(key, "faction"), &["Alliance", "Horde"], 120.0);
+            });
+        });
+    });
+    // The model browser: display IDs from the one shown, a page at a time.
+    let browse_id = egui::Id::unique(("wowlua-studio-models", id.clone()));
+    if ui.data(|d| d.get_temp::<bool>(browse_id)).unwrap_or(false) {
+        let page_id = egui::Id::unique(("wowlua-studio-models-page", id.clone()));
+        let base = data
+            .get("displayId")
+            .or(data.get("displayID"))
+            .and_then(Json::as_u64)
+            .unwrap_or(1) as u32;
+        let mut page: u32 = ui.data(|d| d.get_temp(page_id)).unwrap_or(0);
+        ui.horizontal(|ui| {
+            if forms::text_button(ui, "‹ earlier").clicked() {
+                page = page.saturating_sub(1);
+            }
+            let first = base.saturating_add(page * 8);
+            hint(ui, &format!("models {first} to {}", first + 7));
+            if forms::text_button(ui, "later ›").clicked() {
+                page += 1;
+            }
+        });
+        ui.data_mut(|d| d.insert_temp(page_id, page));
+        ui.horizontal_wrapped(|ui| {
+            let first = base.saturating_add(page * 8);
+            for d in first..first + 8 {
+                let (rect, r) = ui.allocate_exact_size(Vec2::splat(76.0), Sense::click());
+                let stroke = if r.hovered() {
+                    p.amber_ink
+                } else {
+                    p.line_strong
+                };
+                ui.painter()
+                    .rect_filled(rect, CornerRadius::same(3), p.bg_000);
+                ui.painter().rect_stroke(
+                    rect,
+                    CornerRadius::same(3),
+                    Stroke::new(1.0, stroke),
+                    egui::StrokeKind::Inside,
+                );
+                if let Some(tex) = cx.look.pic("", Some(Art::Model(d))).tex {
+                    ui.painter().image(
+                        tex,
+                        rect.shrink(1.0),
+                        Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                        egui::Color32::WHITE,
+                    );
+                }
+                ui.painter().text(
+                    rect.left_bottom() + Vec2::new(4.0, -4.0),
+                    Align2::LEFT_BOTTOM,
+                    d.to_string(),
+                    Face::Plex.at(10.5),
+                    p.ink_muted,
+                );
+                if r.clicked() {
+                    cx.set(unit_path(key, "displayId"), Some(json!(d)));
+                }
+            }
+        });
+    }
+
+    // How it fights.
+    ui.add_space(12.0);
+    forms::label(ui, "combat");
+    hint(ui, "what the API shows addons of it, and how hard it hits");
+    ui.horizontal(|ui| {
+        let attack = |k: &str| {
+            let mut p = unit_path(key, "attack");
+            p.push(name(k));
+            p
+        };
+        ui.vertical(|ui| {
+            forms::label(ui, "damage a swing");
+            field(ui, cx, attack("damage"), Kind::Number, 96.0, "10");
+        });
+        ui.vertical(|ui| {
+            forms::label(ui, "every (s)");
+            field(ui, cx, attack("speed"), Kind::Number, 96.0, "2");
+        });
+        ui.vertical(|ui| {
+            forms::label(ui, "your threat (%)");
+            field(ui, cx, unit_path(key, "threat"), Kind::Number, 96.0, "—");
+        });
+        ui.vertical(|ui| {
+            forms::label(ui, "its spells");
+            hint(ui, "cast by its actions above");
+        });
+    });
+
+    // What it is to the player.
+    ui.add_space(12.0);
+    forms::label(ui, "what it is to you");
+    hint(ui, "right-click it in play mode to talk to it");
+    let roles = [
+        "none",
+        "vendor",
+        "class trainer",
+        "gossip",
+        "banker",
+        "mailbox",
+        "auctioneer",
+        "flight master",
+    ];
+    let services = ["banker", "mailbox", "auctioneer", "flightmaster"];
+    let role = if data.get("gossip").is_some() {
+        3
+    } else if data.get("trainer").is_some() {
+        2
+    } else if data.get("vendor").is_some() {
+        1
+    } else {
+        match data["service"].as_str() {
+            Some(s) => services.iter().position(|x| *x == s).map_or(0, |i| i + 4),
+            None => 0,
+        }
+    };
+    if let Some(i) = widgets::seg(ui, &format!("{id}role"), &roles, role, false)
+        && i != role
+    {
+        for k in ["vendor", "trainer", "gossip", "service"] {
+            if data.get(k).is_some() {
+                cx.set(unit_path(key, k), None);
+            }
+        }
+        match i {
+            1 => cx.set(
+                unit_path(key, "vendor"),
+                Some(json!({ "items": [], "repairs": false })),
+            ),
+            2 => cx.set(
+                unit_path(key, "trainer"),
+                Some(json!({ "class": "WARRIOR" })),
+            ),
+            3 => cx.set(
+                unit_path(key, "gossip"),
+                Some(json!({ "text": "Greetings.", "options": [] })),
+            ),
+            4..=7 => cx.set(unit_path(key, "service"), Some(json!(services[i - 4]))),
+            _ => {}
+        }
+    }
+    ui.add_space(6.0);
+    let sub = |k: &str, rest: &[Key]| {
+        let mut p = unit_path(key, k);
+        p.extend(rest.iter().cloned());
+        p
+    };
+    match role {
+        1 => {
+            forms::label(ui, "it sells · its window opens when you talk to it");
+            let items = data["vendor"].get("items").map(list).unwrap_or_default();
+            for (k, item) in &items {
+                ui.horizontal(|ui| {
+                    find(
+                        ui,
+                        cx,
+                        "",
+                        sub("vendor", &[name("items"), k.clone(), name("id")]),
+                        Find::Item,
+                        260.0,
+                    );
+                    ui.vertical(|ui| {
+                        forms::label(ui, "price · copper");
+                        field(
+                            ui,
+                            cx,
+                            sub("vendor", &[name("items"), k.clone(), name("price")]),
+                            Kind::Number,
+                            80.0,
+                            "the item's",
+                        );
+                    });
+                    ui.vertical(|ui| {
+                        forms::label(ui, "stack");
+                        field(
+                            ui,
+                            cx,
+                            sub("vendor", &[name("items"), k.clone(), name("stack")]),
+                            Kind::Number,
+                            56.0,
+                            "1",
+                        );
+                    });
+                    ui.vertical(|ui| {
+                        forms::label(ui, "limited");
+                        field(
+                            ui,
+                            cx,
+                            sub("vendor", &[name("items"), k.clone(), name("available")]),
+                            Kind::Number,
+                            56.0,
+                            "—",
+                        );
+                    });
+                    let _ = item;
+                    if forms::text_button(ui, "×").clicked() {
+                        cx.set(sub("vendor", &[name("items"), k.clone()]), None);
+                    }
+                });
+            }
+            ui.horizontal(|ui| {
+                if forms::text_button(ui, "+ item").clicked() {
+                    let path = sub("vendor", &[name("items"), Key::Index(items.len())]);
+                    cx.set(path, Some(json!({ "id": 159 })));
+                }
+                check(ui, cx, "repairs", sub("vendor", &[name("repairs")]), false);
+            });
+        }
+        2 => {
+            ui.horizontal(|ui| {
+                let classes: Vec<&str> = classes(cx.look.flavor).iter().map(|(f, _)| *f).collect();
+                choice(
+                    ui,
+                    cx,
+                    "the class it trains",
+                    sub("trainer", &[name("class")]),
+                    &classes,
+                    180.0,
+                );
+                hint(ui, "its services as the client lists them for the class");
+            });
+        }
+        3 => {
+            ui.vertical(|ui| {
+                forms::label(ui, "its text");
+                field(
+                    ui,
+                    cx,
+                    sub("gossip", &[name("text")]),
+                    Kind::Text,
+                    420.0,
+                    "Greetings.",
+                );
+            });
+            let options = data["gossip"].get("options").map(list).unwrap_or_default();
+            for (k, _) in &options {
+                ui.horizontal(|ui| {
+                    field(
+                        ui,
+                        cx,
+                        sub("gossip", &[name("options"), k.clone(), name("name")]),
+                        Kind::Text,
+                        260.0,
+                        "an option",
+                    );
+                    field(
+                        ui,
+                        cx,
+                        sub("gossip", &[name("options"), k.clone(), name("opens")]),
+                        Kind::Choice(
+                            ["close", "vendor", "trainer", "taxi"]
+                                .map(str::to_owned)
+                                .to_vec(),
+                        ),
+                        120.0,
+                        "close",
+                    );
+                    if forms::text_button(ui, "×").clicked() {
+                        cx.set(sub("gossip", &[name("options"), k.clone()]), None);
+                    }
+                });
+            }
+            if forms::text_button(ui, "+ option").clicked() {
+                let path = sub("gossip", &[name("options"), Key::Index(options.len())]);
+                cx.set(
+                    path,
+                    Some(json!({ "name": "Tell me more.", "opens": "close" })),
+                );
+            }
+            hint(
+                ui,
+                "an option that opens vendor or trainer opens this unit's own; give it those too",
+            );
+        }
+        4 => hint(ui, "a banker: talking to it opens your bank"),
+        5 => hint(ui, "a mailbox: talking to it opens your inbox"),
+        6 => hint(ui, "an auctioneer: talking to it opens the auction house"),
+        7 => hint(ui, "a flight master: talking to it offers the flight map"),
+        _ => {}
+    }
+
+    // What it drops.
+    ui.add_space(12.0);
+    forms::label(ui, "loot");
+    hint(ui, "what its corpse holds when you kill it");
+    let loot = data.get("loot").map(list).unwrap_or_default();
+    for (k, _) in &loot {
+        ui.horizontal(|ui| {
+            find(
+                ui,
+                cx,
+                "",
+                sub("loot", &[k.clone(), name("id")]),
+                Find::Item,
+                260.0,
+            );
+            ui.vertical(|ui| {
+                forms::label(ui, "count");
+                field(
+                    ui,
+                    cx,
+                    sub("loot", &[k.clone(), name("count")]),
+                    Kind::Number,
+                    56.0,
+                    "1",
+                );
+            });
+            if forms::text_button(ui, "×").clicked() {
+                cx.set(sub("loot", std::slice::from_ref(k)), None);
+            }
+        });
+    }
+    if forms::text_button(ui, "+ item").clicked() {
+        let new = json!({ "id": 159, "count": 1 });
+        if data.get("loot").is_some() {
+            cx.set(sub("loot", &[Key::Index(loot.len())]), Some(new));
+        } else {
+            cx.set(unit_path(key, "loot"), Some(json!([new])));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2496,7 +4370,9 @@ mod tests {
     #[test]
     fn a_flavor_s_classes_and_races() {
         assert_eq!(classes("camelot").len(), 9);
-        assert_eq!(classes("wrath").len(), 10);
+        assert_eq!(classes("tbc").len(), 9);
+        assert_eq!(classes("mists").len(), 11);
+        assert!(races("mists").contains(&"Pandaren") && !races("mists").contains(&"Nightborne"));
         assert_eq!(classes("standard").len(), 13);
         assert!(races("vanilla").len() == 8 && races("tbc").contains(&"Draenei"));
     }

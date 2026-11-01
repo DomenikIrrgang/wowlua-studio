@@ -4,15 +4,32 @@
 //! menu bar. `wowlua-studio <folder>` opens the folder (S031: a new window
 //! is Studio started again with it).
 
+mod art;
+mod bindings;
+mod claude;
+mod claude_changes;
+mod claude_run;
+mod claude_tools;
+/// The argument that opens a window on the start page's from-GitHub panel
+/// (M12).
+pub const FROM_GITHUB: &str = "--from-github";
+
+mod clones;
+mod deps;
 mod frame_stats;
 mod game;
 mod gamedata;
+mod git;
+mod github;
+mod log;
 mod lsp;
+mod mcp_link;
 #[cfg(target_os = "macos")]
 mod menu_bar;
 mod native;
 mod profiles;
 mod screenshot;
+mod settings;
 mod ship;
 mod store;
 mod terminal;
@@ -35,6 +52,20 @@ const PLATFORM: Platform = if cfg!(target_os = "macos") {
 };
 
 fn main() -> eframe::Result {
+    // Claude Code's way to Studio's tools (S096): no window, only the
+    // bridge between its standard input and output and Studio's socket.
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("mcp-bridge") {
+        let (Some(socket), Some(token)) = (args.get(2), args.get(3)) else {
+            eprintln!("usage: wowlua-studio mcp-bridge <socket> <token>");
+            std::process::exit(2);
+        };
+        if let Err(e) = mcp_link::bridge(std::path::Path::new(socket), token) {
+            eprintln!("wowlua studio is not reachable: {e}");
+            std::process::exit(1);
+        }
+        std::process::exit(0);
+    }
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("wowlua studio")
         .with_inner_size([1440.0, 900.0])
@@ -91,6 +122,8 @@ fn app_icon() -> Option<egui::IconData> {
 
 struct App {
     studio: Studio,
+    /// When the display's refresh rate was last read.
+    display_checked: Option<f64>,
     stats: Option<FrameStats>,
     screenshot: Option<Screenshot>,
     #[cfg(target_os = "macos")]
@@ -111,15 +144,20 @@ impl App {
             system: Box::new(system),
         };
         let mut studio = Studio::new(ctx, host);
-        if let Some(folder) = std::env::args_os().nth(1) {
-            let folder = std::path::PathBuf::from(folder);
-            studio.open(&std::path::absolute(&folder).unwrap_or(folder));
+        match std::env::args_os().nth(1) {
+            Some(arg) if arg == FROM_GITHUB => studio.show_from_github(),
+            Some(folder) => {
+                let folder = std::path::PathBuf::from(folder);
+                studio.open(&std::path::absolute(&folder).unwrap_or(folder));
+            }
+            None => {}
         }
         let screenshot = Screenshot::from_env(&mut studio);
         App {
             #[cfg(target_os = "macos")]
             menu_bar: menu_bar::MenuBar::new(ctx, &studio.entries()),
             studio,
+            display_checked: None,
             stats: FrameStats::from_env(),
             screenshot,
         }
@@ -144,13 +182,39 @@ impl eframe::App for App {
         if let Some(cpu) = frame.info().cpu_usage {
             self.studio.set_frame_time(cpu);
         }
+        // (the window waits for the display, or not, as the settings say:
+        // S087)
+        let present = if self.studio.window_vsync() {
+            eframe::wgpu::PresentMode::AutoVsync
+        } else {
+            eframe::wgpu::PresentMode::AutoNoVsync
+        };
+        if let Some(mut config) = frame.wgpu_surface_config()
+            && config.present_mode != present
+        {
+            config.present_mode = present;
+            frame.set_wgpu_surface_config(config);
+        }
+        // (the refresh rate of the window's display, once a second: the
+        // game's vsync keeps to it, S087)
+        let now = ui.input(|i| i.time);
+        if self.display_checked.is_none_or(|t| now - t >= 1.0) {
+            self.display_checked = Some(now);
+            if let Some(mhz) = frame
+                .winit_window()
+                .and_then(|w| w.current_monitor())
+                .and_then(|m| m.refresh_rate_millihertz())
+            {
+                self.studio.set_display_rate(f64::from(mhz) / 1000.0);
+            }
+        }
         let started = std::time::Instant::now();
         self.studio.ui(ui);
         if let Some(stats) = &mut self.stats {
             stats.record(started.elapsed());
         }
         if let Some(shot) = &mut self.screenshot {
-            shot.step(ui.ctx());
+            shot.step(ui.ctx(), &mut self.studio);
         }
     }
 

@@ -12,6 +12,18 @@ use wowlua_casc::spelltext::Caster;
 use wowlua_casc::tables::Table;
 use wowlua_studio_app::system::{Art, ClassSpell, Image, SpellRow};
 
+/// The item qualities by ID (`Enum.ItemQuality`).
+const QUALITIES: &[&str] = &[
+    "poor",
+    "common",
+    "uncommon",
+    "rare",
+    "epic",
+    "legendary",
+    "artifact",
+    "heirloom",
+];
+
 /// The class sheet the character screens draw class icons from.
 const CLASS_SHEET: &str = "Interface\\Glues\\CharacterCreate\\UI-CharacterCreate-Classes";
 
@@ -65,6 +77,45 @@ pub struct GameData {
     clients: Mutex<HashMap<String, Option<Arc<Casc>>>>,
     spells: Mutex<HashMap<String, Option<Arc<Spells>>>>,
     items: Mutex<HashMap<String, Option<Arc<Table>>>>,
+    sparse: Mutex<HashMap<String, Option<Arc<Table>>>>,
+    /// The creatures each flavor's client knows (wowlua T531), read once.
+    creatures: Mutex<HashMap<String, Arc<Vec<wowlua_casc::display::Creature>>>>,
+    /// What draws the models' previews (S082), made on first use.
+    renderer: Mutex<Option<Result<wowlua_render::Renderer, String>>>,
+}
+
+/// A creature's type, as `UnitCreatureType` names it (`CreatureType`).
+fn creature_type(kind: u32) -> Option<&'static str> {
+    Some(match kind {
+        1 => "Beast",
+        2 => "Dragonkin",
+        3 => "Demon",
+        4 => "Elemental",
+        5 => "Giant",
+        6 => "Undead",
+        7 => "Humanoid",
+        8 => "Critter",
+        9 => "Mechanical",
+        10 => "Not specified",
+        11 => "Totem",
+        12 => "Non-combat Pet",
+        13 => "Gas Cloud",
+        _ => return None,
+    })
+}
+
+/// A creature's classification, as `UnitClassification` answers.
+fn creature_classification(c: u32) -> Option<&'static str> {
+    Some(match c {
+        0 => "normal",
+        1 => "elite",
+        2 => "rareelite",
+        3 => "worldboss",
+        4 => "rare",
+        5 => "trivial",
+        6 => "minus",
+        _ => return None,
+    })
 }
 
 impl GameData {
@@ -107,9 +158,166 @@ impl GameData {
             .clone()
     }
 
+    /// The items' names, qualities and levels (`ItemSparse`), opened once.
+    fn item_sparse(&self, flavor: &str) -> Option<Arc<Table>> {
+        let casc = self.client(flavor)?;
+        let mut sparse = self.sparse.lock().ok()?;
+        sparse
+            .entry(flavor.to_string())
+            .or_insert_with(|| Table::open(&casc, "ItemSparse").map(Arc::new))
+            .clone()
+    }
+
+    /// The client's items whose name holds `query` (or whose ID it is),
+    /// the first 40, each with its quality and item level as its text.
+    pub fn search_items(&self, flavor: &str, query: &str) -> Vec<SpellRow> {
+        let q = query.trim();
+        let id = q.parse::<u32>().ok();
+        if q.chars().count() < 2 && id.is_none() {
+            return Vec::new();
+        }
+        let Some(sparse) = self.item_sparse(flavor) else {
+            return Vec::new();
+        };
+        let items = self.item_table(flavor);
+        let lower = q.to_lowercase();
+        let mut out = Vec::new();
+        for row in sparse.rows() {
+            let name = row.string("Display_lang").unwrap_or_default();
+            if id != Some(row.id()) && !name.to_lowercase().contains(&lower) {
+                continue;
+            }
+            let quality = QUALITIES
+                .get(row.int("OverallQualityID") as usize)
+                .copied()
+                .unwrap_or("");
+            out.push(SpellRow {
+                id: row.id(),
+                name,
+                icon: items
+                    .as_ref()
+                    .and_then(|t| t.row(row.id()))
+                    .map(|r| r.int("IconFileDataID"))
+                    .filter(|i| *i != 0),
+                text: format!("{quality} · item level {}", row.int("ItemLevel")),
+            });
+            if out.len() >= 40 {
+                break;
+            }
+        }
+        out
+    }
+
+    /// The creatures the flavor's client knows whose name holds the query
+    /// (or of its ID), as rows: the display as the icon, the type and
+    /// classification as the text (S082).
+    pub fn search_creatures(&self, flavor: &str, query: &str) -> Vec<SpellRow> {
+        let q = query.trim();
+        let id = q.parse::<u32>().ok();
+        if q.chars().count() < 2 && id.is_none() {
+            return Vec::new();
+        }
+        let Some(casc) = self.client(flavor) else {
+            return Vec::new();
+        };
+        let all = {
+            let Ok(mut known) = self.creatures.lock() else {
+                return Vec::new();
+            };
+            known
+                .entry(flavor.to_string())
+                .or_insert_with(|| {
+                    let mut lib = wowlua_casc::display::Library::default();
+                    Arc::new(lib.creatures(&casc).to_vec())
+                })
+                .clone()
+        };
+        let lower = q.to_lowercase();
+        all.iter()
+            .filter(|c| id == Some(c.id) || c.name.to_lowercase().contains(&lower))
+            .take(40)
+            .map(|c| SpellRow {
+                id: c.id,
+                name: c.name.clone(),
+                icon: c.display,
+                text: [
+                    c.kind.and_then(creature_type).unwrap_or("—"),
+                    c.classification
+                        .and_then(creature_classification)
+                        .unwrap_or("—"),
+                    c.family.as_deref().unwrap_or("—"),
+                ]
+                .join(" · "),
+            })
+            .collect()
+    }
+
+    /// A creature display's model as a model frame draws it, 160 pixels a
+    /// side, on black (S082).
+    fn model_preview(&self, casc: &Arc<Casc>, display: u32) -> Option<Image> {
+        use wowlua_engine::scene;
+        let item = scene::Model {
+            widget: 0,
+            rect: scene::Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 160.0,
+                h: 160.0,
+            },
+            clip: None,
+            alpha: 1.0,
+            actors: vec![scene::Actor {
+                source: scene::ModelSource::Display(display),
+                position: [0.0; 3],
+                yaw: 0.6,
+                pitch: 0.0,
+                roll: 0.0,
+                fixed_axes: false,
+                scale: 1.0,
+                alpha: 1.0,
+                animation: 0,
+                variation: 0,
+            }],
+            camera: scene::ModelCamera::Frame {
+                portrait_zoom: 0.0,
+                distance_scale: 1.0,
+                camera: None,
+            },
+            light: scene::Light {
+                enabled: true,
+                direction: [-1.0, 0.3, -0.6],
+                ambient: [0.55; 3],
+                diffuse: [0.75; 3],
+            },
+            time: 0.0,
+        };
+        let shown = scene::Scene {
+            width: 160,
+            height: 160,
+            items: vec![scene::Item::Model(item)],
+            world: None,
+            over_units: Vec::new(),
+        };
+        let mut assets = wowlua_render::client::ClientAssets::new(Some(casc.clone()), &[]);
+        let mut renderer = self.renderer.lock().ok()?;
+        let r = renderer
+            .get_or_insert_with(wowlua_render::Renderer::new_blocking)
+            .as_mut()
+            .ok()?;
+        let img = r.render_blocking(&shown, 1.0, None, &mut assets).ok()?;
+        Some(Image {
+            width: img.width,
+            height: img.height,
+            rgba: img.pixels,
+        })
+    }
+
     /// The art, as an image (a class's icon cropped from the sheet).
     pub fn art(&self, flavor: &str, art: &Art) -> Option<Image> {
         let casc = self.client(flavor)?;
+        if let Art::Model(display) = art {
+            return self.model_preview(&casc, *display);
+        }
         let (bytes, crop) = match art {
             Art::File(id) => (casc.file_by_id(*id)?, None),
             Art::Class(class) => {
@@ -124,6 +332,7 @@ impl GameData {
                 let icon = self.item_table(flavor)?.row(*id)?.int("IconFileDataID");
                 (casc.file_by_id(icon)?, None)
             }
+            Art::Model(_) => return None,
         };
         let rgba = wowlua_casc::decode_image(&bytes)?;
         Some(cropped(rgba.width, rgba.height, &rgba.pixels, crop))
@@ -285,6 +494,28 @@ mod unit {
         assert_eq!(image.rgba, [0, 0, 0, 255]);
         let whole = cropped(4, 4, &pixels, None);
         assert_eq!(whole.rgba.len(), 64);
+    }
+
+    /// The client's items by name or ID (skipped without a camelot client).
+    #[test]
+    fn items_by_name_or_id_from_the_client() {
+        let data = GameData::default();
+        let found = data.search_items("camelot", "thunderfury");
+        if data.item_sparse("camelot").is_none() {
+            eprintln!("no camelot client: skipped");
+            return;
+        }
+        let blade = found.iter().find(|i| i.id == 19019).expect("Thunderfury");
+        assert!(blade.name.starts_with("Thunderfury"), "{}", blade.name);
+        assert!(
+            blade.text.starts_with("legendary · item level"),
+            "{}",
+            blade.text
+        );
+        assert!(blade.icon.is_some());
+        let by_id = data.search_items("camelot", "19019");
+        assert_eq!(by_id.first().map(|i| i.id), Some(19019));
+        assert!(data.search_items("camelot", "t").is_empty());
     }
 
     /// The client's warrior spells (skipped without a camelot client).
