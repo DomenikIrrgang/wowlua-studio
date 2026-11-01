@@ -38,6 +38,8 @@ pub enum Panel {
     Ship,
     Settings,
     Chat,
+    /// What Claude changed in the conversation (S098).
+    ClaudeChanges,
     // Bottom
     Problems,
     Output,
@@ -90,6 +92,7 @@ impl Panel {
             Panel::Ship => "ship",
             Panel::Settings => "settings",
             Panel::Chat => "conversation",
+            Panel::ClaudeChanges => "claude's changes",
             Panel::Problems => "problems",
             Panel::Output => "output",
             Panel::Terminal => "terminal",
@@ -138,7 +141,7 @@ impl Panel {
             Panel::Changes | Panel::History | Panel::Diff => "M11",
             Panel::PullRequests | Panel::PullRequest => "M12",
             Panel::World3d => "M13",
-            Panel::Conversations | Panel::Chat | Panel::Tools => "M14",
+            Panel::Conversations | Panel::Chat | Panel::ClaudeChanges | Panel::Tools => "M14",
         }
     }
 }
