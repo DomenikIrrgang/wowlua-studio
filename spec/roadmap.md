@@ -529,6 +529,9 @@ The plan, in this order:
 
 Needs new work in wowlua: the rest of wowlua's tools in `wowlua mcp`
 (T549, done).
+Built so far: step 1, Claude Code found and signed in, and the settings
+(S095). Next: step 2, Studio's tools over MCP through a stdio bridge in
+Studio's own binary (the user's choice, 2026-11-01).
 
 ## Checked by hand on Windows and Linux
 
@@ -595,7 +598,7 @@ Asked when their milestone starts; nothing here is decided yet.
 ## Design changes owed
 
 Where Studio was decided to differ from the canvas, or the canvas is
-missing a part; the canvas is updated to match. On 2026-10-30 the settings board got the git section (fetch every) and the editor's blame row, the git board the changes' stage all and the staged files' unstage all (S070). None are owed now: on 2026-10-30 the start board got a clone's progress ("from GitHub, cloning") and the from-GitHub board the closing dialog's "discard them and close" (S075).
+missing a part; the canvas is updated to match. On 2026-10-30 the settings board got the git section (fetch every) and the editor's blame row, the git board the changes' stage all and the staged files' unstage all (S070). None are owed now: on 2026-10-30 the start board got a clone's progress ("from GitHub, cloning") and the from-GitHub board the closing dialog's "discard them and close" (S075). On 2026-11-01 the settings board's claude section got Claude Code, the model, the effort, the tool groups' permissions and the saved key's removal (S095).
 
 Brought up to date on 2026-10-27: the panels board's presets
 for every page (S017), the palette's prompt (S018), the menus (S019), the

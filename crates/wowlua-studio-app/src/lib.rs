@@ -5,6 +5,7 @@
 //! the browser too (S002).
 
 pub mod chrome;
+pub mod claude;
 pub mod commands;
 pub mod coverage;
 pub mod debug;
@@ -121,6 +122,10 @@ pub struct Studio {
     schemas: std::collections::HashMap<editor::json::Schema, serde_json::Value>,
     /// The terminal panel's shell (S043).
     terminal: terminal::TerminalState,
+    /// Since when Claude Code's sign-in runs in the terminal (S095), and
+    /// when its status was last read.
+    claude_wait: Option<f64>,
+    claude_read: f64,
     /// The problems panel shows the editor's file only.
     problems_this_file: bool,
     /// The tests page (S052).
@@ -294,6 +299,8 @@ impl Studio {
             search: search::SearchState::default(),
             schemas: std::collections::HashMap::new(),
             terminal: terminal::TerminalState::default(),
+            claude_wait: None,
+            claude_read: 0.0,
             problems_this_file: false,
             tests: tests::TestsState::default(),
             game: game::GameState::default(),
@@ -691,6 +698,7 @@ impl Studio {
     pub fn ui(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
         self.events(&ctx);
+        self.claude_wait(&ctx);
         self.git.tick(
             &*self.host.system,
             self.settings.git_fetch_minutes,
@@ -1128,6 +1136,8 @@ impl Studio {
         let wowlua_version = self.host.wowlua_version.clone();
         let studio_settings = &mut self.settings;
         let mut settings_action = None;
+        let mut claude_action = None;
+        let claude_waiting = self.claude_wait.is_some();
         let installation = self.start.installation();
         let on_world = self.layout_page == Page::World;
         let on_debug = self.layout_page == Page::Debug;
@@ -1460,6 +1470,9 @@ impl Studio {
                     git_action = Some(a);
                 }
             }
+            Panel::Chat => {
+                claude_action = claude::chat(ui, settings_page, system, claude_waiting);
+            }
             _ => dock::placeholder(ui, panel),
         };
         let changed = dock::show(ui, area, layout, &mut self.dock, &mut content);
@@ -1510,6 +1523,9 @@ impl Studio {
         }
         if let Some(a) = settings_action {
             self.settings_action(a, ctx);
+        }
+        if let Some(claude::Action::SignIn(line)) = claude_action {
+            self.claude_sign_in(&line, ctx);
         }
         if let Some(a) = manifest_action {
             match a {
@@ -3187,8 +3203,39 @@ impl Studio {
     }
 
     /// What the settings page asks (S062).
+    /// Runs Claude Code's sign-in in the terminal (S095): Studio reads
+    /// Claude Code's status until it is signed in.
+    fn claude_sign_in(&mut self, line: &str, ctx: &Context) {
+        self.terminal.run(line);
+        self.queue(Command::ShowPanel(Panel::Terminal, dock::Dock::Bottom));
+        self.claude_wait = Some(ctx.input(|i| i.time));
+    }
+
+    /// While a sign-in runs: Claude Code's status every 3 s, until it is
+    /// signed in, for 10 minutes at most.
+    fn claude_wait(&mut self, ctx: &Context) {
+        let Some(since) = self.claude_wait else {
+            return;
+        };
+        let now = ctx.input(|i| i.time);
+        let signed_in = self
+            .settings_page
+            .claude()
+            .is_some_and(|c| c.account.is_some());
+        if signed_in || now - since > 600.0 {
+            self.claude_wait = None;
+            return;
+        }
+        if now - self.claude_read >= 3.0 {
+            self.claude_read = now;
+            self.host.system.settings_info();
+        }
+        ctx.request_repaint_after(std::time::Duration::from_secs(1));
+    }
+
     fn settings_action(&mut self, action: settings::Action, ctx: &Context) {
         match action {
+            settings::Action::ClaudeSignIn(line) => self.claude_sign_in(&line, ctx),
             settings::Action::Changed => {
                 self.apply_settings(ctx);
                 self.touch(ctx);

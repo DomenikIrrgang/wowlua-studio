@@ -1435,8 +1435,35 @@ pub struct SettingsInfo {
     pub log: Option<PathBuf>,
     /// Signed in to GitHub as.
     pub github: Option<String>,
-    /// A Claude API key is saved.
+    /// A Claude API key is saved (from before M14: Studio no longer uses
+    /// it, and the settings offer to remove it, S095).
     pub claude_key: bool,
+    /// Claude Code as Studio found it (S090, S095).
+    pub claude: ClaudeCode,
+}
+
+/// Claude Code as Studio found it (S090, S095): the program, its version
+/// and whom it is signed in as.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ClaudeCode {
+    /// The program Studio runs; none: not found.
+    pub path: Option<PathBuf>,
+    /// `2.1.314`.
+    pub version: Option<String>,
+    /// Signed in (`claude auth status`); none: signed out.
+    pub account: Option<ClaudeAccount>,
+    /// The line the terminal runs to sign in (`claude auth login`, the
+    /// program's path quoted for the terminal's shell).
+    pub sign_in: String,
+    /// Why Claude Code could not be asked.
+    pub problem: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ClaudeAccount {
+    pub email: String,
+    /// The plan (`max`, `pro`, …), else how it signed in.
+    pub plan: String,
 }
 
 /// Studio's releases (`check for updates`).
@@ -2152,7 +2179,11 @@ pub trait System {
     /// out (`false`).
     fn github_sign_in(&self, _on: bool) {}
     /// Saves the Claude API key, or removes it.
+    /// Removes the Claude API key kept before M14 (none: removes it).
     fn claude_key(&self, _key: Option<String>) {}
+    /// Signs Claude Code out (`claude auth logout`), then reads the
+    /// settings' information again (S095).
+    fn claude_sign_out(&self) {}
     /// The package's dependencies (→ [`DepsEvent::Read`]).
     fn deps_read(&self, _dir: &Path) {}
     /// Newer versions of them (→ [`DepsEvent::Outdated`]): the network.

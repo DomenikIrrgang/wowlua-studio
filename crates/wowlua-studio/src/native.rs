@@ -819,6 +819,13 @@ impl System for NativeSystem {
         crate::settings::claude_key(key.as_deref());
     }
 
+    fn claude_sign_out(&self) {
+        self.spawn(|| {
+            crate::claude::sign_out();
+            Event::Settings(crate::settings::info())
+        });
+    }
+
     fn deps_read(&self, dir: &Path) {
         let dir = dir.to_path_buf();
         self.spawn(move || Event::Deps(DepsEvent::Read(Box::new(crate::deps::read(&dir)))));

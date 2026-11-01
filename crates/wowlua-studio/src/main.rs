@@ -6,6 +6,7 @@
 
 mod art;
 mod bindings;
+mod claude;
 /// The argument that opens a window on the start page's from-GitHub panel
 /// (M12).
 pub const FROM_GITHUB: &str = "--from-github";
