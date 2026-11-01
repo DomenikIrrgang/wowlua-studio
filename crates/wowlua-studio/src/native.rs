@@ -64,6 +64,8 @@ pub struct NativeSystem {
     claude_link: RefCell<Option<crate::mcp_link::Link>>,
     claude_waiting: Waiting,
     claude_permissions: crate::claude_tools::Permissions,
+    /// What Claude changed in the conversation (S098).
+    claude_changes: crate::claude_changes::Shared,
     /// The running conversation (S097).
     claude_run: RefCell<Option<crate::claude_run::Conversation>>,
 }
@@ -99,6 +101,7 @@ impl NativeSystem {
             claude_link: RefCell::new(None),
             claude_waiting: Waiting::default(),
             claude_permissions: crate::claude_tools::Permissions::default(),
+            claude_changes: crate::claude_changes::Shared::default(),
             claude_run: RefCell::new(None),
         }
     }
@@ -866,10 +869,22 @@ impl System for NativeSystem {
             *p = permissions;
         }
         let shared = self.claude_permissions.clone();
+        // (the conversation's changes: kept while it goes on, new for a new
+        // workspace)
+        if let Ok(mut c) = self.claude_changes.lock()
+            && c.root() != root.as_path()
+        {
+            *c = crate::claude_changes::Changes::new(&root);
+        }
+        let changes = self.claude_changes.clone();
         // (a connection: Claude Code's; each its own tools)
         let link = crate::mcp_link::Link::open(move || {
-            let mut tools =
-                crate::claude_tools::StudioTools::new(root.clone(), shared.clone(), ask.clone());
+            let mut tools = crate::claude_tools::StudioTools::new(
+                root.clone(),
+                shared.clone(),
+                ask.clone(),
+                changes.clone(),
+            );
             Box::new(move |msg| tools.handle(msg))
         })
         .map_err(|e| format!("cannot open Studio's tools for Claude: {e}"))?;
@@ -924,8 +939,46 @@ impl System for NativeSystem {
         }
     }
 
+    fn claude_checkpoint(&self, label: &str) {
+        if let Ok(mut c) = self.claude_changes.lock() {
+            c.checkpoint(label);
+        }
+    }
+
+    fn claude_changes(&self) -> Option<wowlua_studio_app::system::ClaudeChanges> {
+        self.claude_changes.lock().ok().map(|c| c.view())
+    }
+
+    fn claude_undo(
+        &self,
+        path: &str,
+        hunk: &wowlua_studio_app::system::ClaudeHunk,
+    ) -> Result<(), String> {
+        self.claude_changes
+            .lock()
+            .map_err(|_| "busy".to_string())?
+            .undo(path, hunk)
+    }
+
+    fn claude_redo(&self, i: usize) -> Result<(), String> {
+        self.claude_changes
+            .lock()
+            .map_err(|_| "busy".to_string())?
+            .redo(i)
+    }
+
+    fn claude_back_to(&self, k: usize) -> Result<Vec<String>, String> {
+        self.claude_changes
+            .lock()
+            .map_err(|_| "busy".to_string())?
+            .back_to(k)
+    }
+
     fn claude_link_close(&self) {
         self.claude_stop();
+        if let Ok(mut c) = self.claude_changes.lock() {
+            *c = crate::claude_changes::Changes::default();
+        }
         self.claude_link.borrow_mut().take();
         // (questions still waiting get no answer: their tools say so)
         if let Ok(mut w) = self.claude_waiting.lock() {

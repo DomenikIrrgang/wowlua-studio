@@ -333,7 +333,9 @@ mod tests {
         let ask: AskApp = Arc::new(|_| Ok(ClaudeReply::Allowed(true)));
         let root = dir.path().to_path_buf();
         let link = crate::mcp_link::Link::open(move || {
-            let mut tools = StudioTools::new(root.clone(), permissions.clone(), ask.clone());
+            let changes = Arc::new(Mutex::new(crate::claude_changes::Changes::new(&root)));
+            let mut tools =
+                StudioTools::new(root.clone(), permissions.clone(), ask.clone(), changes);
             Box::new(move |msg| tools.handle(msg))
         })
         .unwrap();

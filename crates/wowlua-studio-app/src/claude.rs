@@ -12,7 +12,7 @@ use wowlua_studio_ui::{Face, Palette, forms, palette};
 
 use crate::settings::SettingsState;
 use crate::state::{CLAUDE_PERMISSIONS, CLAUDE_TOOLS, Settings};
-use crate::system::{ClaudeCode, ClaudeReply, ConversationEvent, System};
+use crate::system::{ClaudeChanges, ClaudeCode, ClaudeReply, ConversationEvent, System};
 
 /// What the page asks the app to do.
 pub enum Action {
@@ -24,6 +24,8 @@ pub enum Action {
     Stop,
     /// A new conversation.
     New,
+    /// Stage Claude's changed files and commit them on the git page.
+    Commit(Vec<String>),
 }
 
 /// One part of the conversation.
@@ -74,6 +76,15 @@ pub struct Conversation {
     /// Each tool group's permission in this conversation (from the
     /// settings at its start).
     pub permissions: BTreeMap<String, String>,
+    /// What Claude changed (S098), as last read; read again when stale
+    /// (an edit tool answered, a hunk undone).
+    pub changes: Option<ClaudeChanges>,
+    pub stale: bool,
+    /// The file the changes panel shows.
+    pub file: usize,
+    /// What Claude is told with the next message: the files went back to
+    /// a checkpoint.
+    pub notice: Option<String>,
 }
 
 impl Conversation {
@@ -128,9 +139,21 @@ impl Conversation {
                 image,
             } => {
                 for e in self.entries.iter_mut().rev() {
-                    if let Entry::Tool { id: i, answer, .. } = e
+                    if let Entry::Tool {
+                        id: i,
+                        name,
+                        answer,
+                        ..
+                    } = e
                         && *i == id
                     {
+                        // (Claude's changes are read again after an edit)
+                        if matches!(
+                            name.as_str(),
+                            "write_file" | "edit_file" | "delete_file" | "fmt"
+                        ) {
+                            self.stale = true;
+                        }
                         *answer = Some((text, error, image));
                         break;
                     }
@@ -443,6 +466,236 @@ fn entry(ui: &mut Ui, e: &Entry, p: &Palette, answered: &mut Option<(u64, bool, 
             forms::paragraph(ui, t, 11.5, 17.0, p.warning);
         }
     }
+}
+
+/// The changes panel (S098): the checkpoints, each file Claude changed
+/// with its hunks against how it was, undo and redo per hunk, undo all,
+/// commit.
+pub fn changes(ui: &mut Ui, c: &mut Conversation, system: &dyn System) -> Option<Action> {
+    let p = palette(ui.ctx());
+    if c.stale || c.changes.is_none() {
+        c.changes = system.claude_changes();
+        c.stale = false;
+    }
+    let Some(view) = c.changes.clone() else {
+        forms::padded(ui, 14, 12, |ui| {
+            forms::paragraph(
+                ui,
+                "Claude has changed nothing yet.",
+                12.5,
+                19.0,
+                p.ink_muted,
+            );
+        });
+        return None;
+    };
+    let mut action = None;
+    let mut redo_all = false;
+    let mut problem: Option<String> = None;
+    let mut back: Option<usize> = None;
+    ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            forms::padded(ui, 14, 12, |ui| {
+                let (added, removed): (usize, usize) = view
+                    .files
+                    .iter()
+                    .fold((0, 0), |(a, r), f| (a + f.added, r + f.removed));
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        egui::RichText::new(if view.files.is_empty() {
+                            "no changes".to_string()
+                        } else {
+                            format!("{} files · +{added} −{removed}", view.files.len())
+                        })
+                        .font(Face::PlexMedium.at(12.5))
+                        .color(p.ink),
+                    );
+                    let any = !view.files.is_empty();
+                    if widgets::button(
+                        ui,
+                        ButtonKind::Secondary,
+                        "undo all of Claude's changes",
+                        any,
+                        None,
+                    )
+                    .clicked()
+                    {
+                        back = Some(0);
+                    }
+                    if widgets::button(ui, ButtonKind::Primary, "commit these changes", any, None)
+                        .clicked()
+                    {
+                        action = Some(Action::Commit(
+                            view.files.iter().map(|f| f.path.clone()).collect(),
+                        ));
+                    }
+                });
+                ui.add_space(10.0);
+                if !view.checkpoints.is_empty() {
+                    ui.label(
+                        egui::RichText::new("checkpoints")
+                            .font(Face::PlexMedium.at(12.0))
+                            .color(p.ink_muted),
+                    );
+                    for (k, cp) in view.checkpoints.iter().enumerate() {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "before \"{}\" · then {} files",
+                                    short(&cp.label, 60),
+                                    cp.files
+                                ))
+                                .font(Face::Plex.at(12.0))
+                                .color(p.ink),
+                            );
+                            if cp.files > 0
+                                && widgets::button(
+                                    ui,
+                                    ButtonKind::Tertiary,
+                                    "go back to here",
+                                    true,
+                                    None,
+                                )
+                                .clicked()
+                            {
+                                back = Some(k);
+                            }
+                        });
+                    }
+                    ui.add_space(10.0);
+                }
+                for (i, f) in view.files.iter().enumerate() {
+                    let what = if f.created {
+                        " · made by Claude"
+                    } else if f.deleted {
+                        " · deleted"
+                    } else {
+                        ""
+                    };
+                    let shown = c.file == i;
+                    if ui
+                        .selectable_label(
+                            shown,
+                            egui::RichText::new(format!(
+                                "{}  +{} −{}{what}",
+                                f.path, f.added, f.removed
+                            ))
+                            .font(Face::PlexMedium.at(12.0)),
+                        )
+                        .clicked()
+                    {
+                        c.file = i;
+                    }
+                    if !shown {
+                        continue;
+                    }
+                    for h in &f.hunks {
+                        egui::Frame::new()
+                            .fill(p.bg_200)
+                            .stroke(egui::Stroke::new(1.0, p.line))
+                            .inner_margin(egui::Margin::symmetric(8, 6))
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        egui::RichText::new(format!("line {}", h.new_start))
+                                            .font(Face::Plex.at(11.0))
+                                            .color(p.ink_faint),
+                                    );
+                                    if widgets::button(
+                                        ui,
+                                        ButtonKind::Tertiary,
+                                        "undo this hunk",
+                                        true,
+                                        None,
+                                    )
+                                    .clicked()
+                                    {
+                                        if let Err(e) = system.claude_undo(&f.path, h) {
+                                            problem = Some(e);
+                                        }
+                                        c.stale = true;
+                                    }
+                                });
+                                for l in &h.old {
+                                    ui.label(
+                                        egui::RichText::new(format!("− {l}"))
+                                            .font(Face::Plex.at(11.5))
+                                            .color(p.error),
+                                    );
+                                }
+                                for l in &h.new {
+                                    ui.label(
+                                        egui::RichText::new(format!("+ {l}"))
+                                            .font(Face::Plex.at(11.5))
+                                            .color(p.success),
+                                    );
+                                }
+                            });
+                        ui.add_space(6.0);
+                    }
+                }
+                if !view.undone.is_empty() {
+                    ui.add_space(10.0);
+                    ui.label(
+                        egui::RichText::new("undone")
+                            .font(Face::PlexMedium.at(12.0))
+                            .color(p.ink_muted),
+                    );
+                    for (i, (path, h)) in view.undone.iter().enumerate() {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{path}: line {}, {} lines",
+                                    h.old_start,
+                                    h.new.len()
+                                ))
+                                .font(Face::Plex.at(12.0))
+                                .color(p.ink),
+                            );
+                            if widgets::button(ui, ButtonKind::Tertiary, "redo", true, None)
+                                .clicked()
+                                && !redo_all
+                            {
+                                if let Err(e) = system.claude_redo(i) {
+                                    problem = Some(e);
+                                }
+                                redo_all = true;
+                                c.stale = true;
+                            }
+                        });
+                    }
+                }
+                if let Some(e) = &problem {
+                    forms::paragraph(ui, e, 11.5, 17.0, p.warning);
+                }
+            });
+        });
+    if let Some(k) = back {
+        let label = view.checkpoints.get(k).map(|cp| cp.label.clone());
+        match system.claude_back_to(k) {
+            Ok(kept) => {
+                let to = match &label {
+                    Some(l) if k > 0 => format!("before \"{}\"", short(l, 60)),
+                    _ => "the conversation's start".into(),
+                };
+                let mut note = format!("The files are back to {to}.");
+                if !kept.is_empty() {
+                    note.push_str(&format!(
+                        " Kept, as you changed them after Claude: {}.",
+                        kept.join(", ")
+                    ));
+                }
+                c.entries.push(Entry::Note(note.clone()));
+                c.notice = Some(format!(
+                    "(Studio: the user went back: {note} Read the files again before changing them.)"
+                ));
+            }
+            Err(e) => c.entries.push(Entry::Note(e)),
+        }
+        c.stale = true;
+    }
+    action
 }
 
 /// The tools panel: this conversation's permission per tool group.

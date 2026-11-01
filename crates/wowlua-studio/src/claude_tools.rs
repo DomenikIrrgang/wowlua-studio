@@ -51,6 +51,8 @@ pub struct StudioTools {
     root: PathBuf,
     permissions: Permissions,
     ask: AskApp,
+    /// What Claude changes, kept for the review and the checkpoints (S098).
+    changes: crate::claude_changes::Shared,
 }
 
 /// Each tool group's permission, shared with Studio: the conversation
@@ -60,17 +62,41 @@ pub type Permissions = Arc<Mutex<BTreeMap<String, String>>>;
 impl StudioTools {
     /// `permissions`: each group's (`allow`, `ask`, `never`), as the
     /// conversation started.
-    pub fn new(root: PathBuf, permissions: Permissions, ask: AskApp) -> StudioTools {
+    pub fn new(
+        root: PathBuf,
+        permissions: Permissions,
+        ask: AskApp,
+        changes: crate::claude_changes::Shared,
+    ) -> StudioTools {
         let launcher = Arc::new(StudioLauncher {
             root: root.clone(),
             ask: ask.clone(),
+            changes: changes.clone(),
         });
         StudioTools {
             wowlua: wowlua_debug::mcp::Server::new(launcher),
             root,
             permissions,
             ask,
+            changes,
         }
+    }
+
+    /// Runs `change` on the file at `path` (in the workspace), kept as it
+    /// was before and as Claude left it.
+    fn changing(&self, path: &Path, change: impl FnOnce() -> Json) -> Json {
+        let rel = path
+            .strip_prefix(&self.root)
+            .map(|r| r.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_default();
+        if let Ok(mut c) = self.changes.lock() {
+            c.before(&rel);
+        }
+        let answer = change();
+        if let Ok(mut c) = self.changes.lock() {
+            c.after(&rel);
+        }
+        answer
     }
 
     fn permission(&self, tool: &str) -> String {
@@ -139,10 +165,10 @@ impl StudioTools {
             "write_file" => self.write_file(args),
             "edit_file" => self.edit_file(args),
             "delete_file" => match self.inside(args["path"].as_str().unwrap_or("")) {
-                Ok(p) => match std::fs::remove_file(&p) {
+                Ok(p) => self.changing(&p, || match std::fs::remove_file(&p) {
                     Ok(()) => text("deleted"),
                     Err(e) => error(format!("{}: {e}", p.display())),
-                },
+                }),
                 Err(e) => error(e),
             },
             "git_status" => git_answer(crate::git::ok(
@@ -353,10 +379,10 @@ impl StudioTools {
         {
             return error(format!("{}: {e}", dir.display()));
         }
-        match std::fs::write(&p, content) {
+        self.changing(&p, || match std::fs::write(&p, content) {
             Ok(()) => text(format!("wrote {} lines", content.lines().count())),
             Err(e) => error(format!("{}: {e}", p.display())),
-        }
+        })
     }
 
     fn edit_file(&self, args: &Json) -> Json {
@@ -373,10 +399,10 @@ impl StudioTools {
         };
         match was.matches(old).count() {
             0 => error("old is not in the file"),
-            1 => match std::fs::write(&p, was.replacen(old, new, 1)) {
+            1 => self.changing(&p, || match std::fs::write(&p, was.replacen(old, new, 1)) {
                 Ok(()) => text("edited"),
                 Err(e) => error(format!("{}: {e}", p.display())),
-            },
+            }),
             n => error(format!("old is in the file {n} times: give more of it")),
         }
     }
@@ -513,6 +539,7 @@ fn git_answer(r: Result<String, String>) -> Json {
 struct StudioLauncher {
     root: PathBuf,
     ask: AskApp,
+    changes: crate::claude_changes::Shared,
 }
 
 impl Launcher for StudioLauncher {
@@ -614,7 +641,7 @@ impl Launcher for StudioLauncher {
                 flavor,
                 true,
             )),
-            PackageCommand::Fmt { check, paths } => fmt(&self.root, *check, paths),
+            PackageCommand::Fmt { check, paths } => fmt(&self.root, *check, paths, &self.changes),
             PackageCommand::Test {
                 filter, coverage, ..
             } => {
@@ -720,7 +747,12 @@ fn build(root: &Path, profile: &str, flavor: &Option<String>, write: bool) -> Co
 
 /// `fmt`: the package's `.wowlua` files (or `paths`) as wowlua fmt writes
 /// them; with `check`, only the ones that would change.
-fn fmt(root: &Path, check: bool, paths: &[String]) -> Result<CommandOutput, String> {
+fn fmt(
+    root: &Path,
+    check: bool,
+    paths: &[String],
+    changes: &crate::claude_changes::Shared,
+) -> Result<CommandOutput, String> {
     let files: Vec<PathBuf> = if paths.is_empty() {
         ignore::WalkBuilder::new(root)
             .build()
@@ -739,15 +771,21 @@ fn fmt(root: &Path, check: bool, paths: &[String]) -> Result<CommandOutput, Stri
             continue;
         };
         if now != was {
+            let rel = path
+                .strip_prefix(root)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/");
             if !check {
+                if let Ok(mut c) = changes.lock() {
+                    c.before(&rel);
+                }
                 std::fs::write(&path, &now).map_err(|e| format!("{}: {e}", path.display()))?;
+                if let Ok(mut c) = changes.lock() {
+                    c.after(&rel);
+                }
             }
-            changed.push(
-                path.strip_prefix(root)
-                    .unwrap_or(&path)
-                    .display()
-                    .to_string(),
-            );
+            changed.push(rel);
         }
     }
     Ok(CommandOutput {
@@ -832,7 +870,12 @@ mod tests {
         for (g, p) in set {
             permissions.insert(g.to_string(), p.to_string());
         }
-        StudioTools::new(root.to_path_buf(), Arc::new(Mutex::new(permissions)), ask)
+        StudioTools::new(
+            root.to_path_buf(),
+            Arc::new(Mutex::new(permissions)),
+            ask,
+            Arc::new(Mutex::new(crate::claude_changes::Changes::new(root))),
+        )
     }
 
     fn no_app() -> AskApp {

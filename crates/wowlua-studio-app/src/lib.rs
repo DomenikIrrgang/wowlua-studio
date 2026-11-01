@@ -1483,6 +1483,11 @@ impl Studio {
                     claude::chat(ui, settings_page, system, claude_waiting, conversation);
             }
             Panel::Tools => claude::tools(ui, conversation, studio_settings, system),
+            Panel::ClaudeChanges => {
+                if let Some(a) = claude::changes(ui, conversation, system) {
+                    claude_action = Some(a);
+                }
+            }
             _ => dock::placeholder(ui, panel),
         };
         let changed = dock::show(ui, area, layout, &mut self.dock, &mut content);
@@ -3237,7 +3242,23 @@ impl Studio {
                 };
                 self.claude.entries.push(claude::Entry::You(text.clone()));
                 self.claude.busy = true;
+                // (Claude is told when the files went back to a checkpoint)
+                let text = match self.claude.notice.take() {
+                    Some(n) => format!("{n}\n\n{text}"),
+                    None => text,
+                };
+                let label: String = self
+                    .claude
+                    .entries
+                    .iter()
+                    .rev()
+                    .find_map(|e| match e {
+                        claude::Entry::You(t) => Some(t.clone()),
+                        _ => None,
+                    })
+                    .unwrap_or_default();
                 if self.claude.running {
+                    system.claude_checkpoint(&label);
                     if let Err(e) = system.claude_send(&text) {
                         self.claude.busy = false;
                         self.claude.entries.push(claude::Entry::Note(e));
@@ -3252,6 +3273,7 @@ impl Studio {
                     .ok_or_else(|| "Claude Code is not found".to_string())
                     .and_then(|claude| {
                         let link = system.claude_link(&w.root, self.claude.permissions.clone())?;
+                        system.claude_checkpoint(&label);
                         Ok(system::ClaudeStart {
                             claude,
                             mcp_config: link.mcp_config,
@@ -3277,6 +3299,12 @@ impl Studio {
                 self.claude.entries.push(claude::Entry::Note(
                     "stopped; the next message goes on".into(),
                 ));
+            }
+            claude::Action::Commit(paths) => {
+                if let Some(w) = &self.workspace {
+                    system.git(&w.root, system::GitRequest::Stage(paths));
+                    self.queue(Command::ShowPage(Page::Git));
+                }
             }
             claude::Action::New => {
                 for id in self.claude.open_asks() {

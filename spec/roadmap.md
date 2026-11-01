@@ -531,8 +531,8 @@ Needs new work in wowlua: the rest of wowlua's tools in `wowlua mcp`
 (T549, done).
 Built so far: step 1, Claude Code found and signed in, and the settings
 (S095); step 2, Studio's tools over MCP through a stdio bridge in
-Studio's own binary (S096); step 3, the conversation (S097). Next: step
-4, changes and checkpoints.
+Studio's own binary (S096); step 3, the conversation (S097); step 4,
+changes and checkpoints (S098). Next: step 5, what Claude knows.
 
 ## Checked by hand on Windows and Linux
 

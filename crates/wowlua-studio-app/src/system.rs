@@ -1476,6 +1476,45 @@ pub enum ClaudeReply {
     Failed(String),
 }
 
+/// What Claude changed in the conversation (S098): each file against how
+/// it was before, the checkpoints, the hunks undone (to redo).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ClaudeChanges {
+    pub files: Vec<ClaudeFile>,
+    pub checkpoints: Vec<ClaudeCheckpoint>,
+    /// Each undone hunk with its file.
+    pub undone: Vec<(String, ClaudeHunk)>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ClaudeFile {
+    /// In the workspace.
+    pub path: String,
+    pub added: usize,
+    pub removed: usize,
+    /// Claude made it; deleted it.
+    pub created: bool,
+    pub deleted: bool,
+    pub hunks: Vec<ClaudeHunk>,
+}
+
+/// Lines removed and added: where they are (1-based) before and now.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ClaudeHunk {
+    pub old_start: usize,
+    pub old: Vec<String>,
+    pub new_start: usize,
+    pub new: Vec<String>,
+}
+
+/// Before one of the user's messages: the message, and the files Claude
+/// changed after it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ClaudeCheckpoint {
+    pub label: String,
+    pub files: usize,
+}
+
 /// How a conversation with Claude starts (S097): Claude Code, the link to
 /// Studio's tools, the model and effort, the session to go on with, the
 /// first message.
@@ -2303,6 +2342,24 @@ pub trait System {
     }
     /// Ends Claude Code; the conversation goes on with `resume`.
     fn claude_stop(&self) {}
+    /// A checkpoint before the user's message `label` (S098).
+    fn claude_checkpoint(&self, _label: &str) {}
+    /// What Claude changed in the conversation.
+    fn claude_changes(&self) -> Option<ClaudeChanges> {
+        None
+    }
+    fn claude_undo(&self, _path: &str, _hunk: &ClaudeHunk) -> Result<(), String> {
+        Err("no conversation".into())
+    }
+    /// Redoes the `i`th hunk undone.
+    fn claude_redo(&self, _i: usize) -> Result<(), String> {
+        Err("no conversation".into())
+    }
+    /// Back to checkpoint `k` (0: the conversation's start): the files the
+    /// user changed after Claude are kept, and named.
+    fn claude_back_to(&self, _k: usize) -> Result<Vec<String>, String> {
+        Err("no conversation".into())
+    }
     /// The app's answer to [`Event::Claude`] `id`.
     fn claude_reply(&self, _id: u64, _reply: ClaudeReply) {}
     /// The package's dependencies (→ [`DepsEvent::Read`]).

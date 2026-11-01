@@ -7,6 +7,7 @@
 mod art;
 mod bindings;
 mod claude;
+mod claude_changes;
 mod claude_run;
 mod claude_tools;
 /// The argument that opens a window on the start page's from-GitHub panel
