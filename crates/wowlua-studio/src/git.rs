@@ -1225,6 +1225,9 @@ mod tests {
             vec!["config", "user.name", "Tester"],
             vec!["config", "user.email", "tester@example.com"],
             vec!["config", "commit.gpgsign", "false"],
+            // (files as written: Windows' git turns `\n` into `\r\n` on
+            // checkout otherwise)
+            vec!["config", "core.autocrlf", "false"],
         ] {
             ok(&root, &args).expect("git");
         }

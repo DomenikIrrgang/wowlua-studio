@@ -534,8 +534,8 @@ Built so far: step 1, Claude Code found and signed in, and the settings
 Studio's own binary (S096); step 3, the conversation (S097); step 4,
 changes and checkpoints (S098); step 5, what Claude knows (S099); step
 6, asking Claude from the other pages (S100); step 7, the model and
-effort per conversation, and the kept conversations (S101). Not yet: M14
-checked by hand on macOS, and on Windows and Linux.
+effort per conversation, and the kept conversations (S101). Checked by
+hand on macOS (2026-11-01); not yet on Windows and Linux.
 
 ## Checked by hand on Windows and Linux
 
@@ -605,7 +605,6 @@ and tests it on Windows and Linux (S058). On each, with SuuUI's workspace:
 Asked when their milestone starts; nothing here is decided yet.
 
 - Installers and code signing per system (first release).
-- Whether "sign in with Claude" is possible for a third-party app (M14).
 
 ## Design changes owed
 
