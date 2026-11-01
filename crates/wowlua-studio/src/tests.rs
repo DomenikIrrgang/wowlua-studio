@@ -38,7 +38,7 @@ pub fn start(
             });
         });
     if let Err(e) = spawned {
-        eprintln!("wowlua studio: cannot start the test run: {e}");
+        crate::log::line(&format!("cannot start the test run: {e}"));
     }
 }
 
@@ -47,7 +47,7 @@ pub fn start(
 /// SuuUI's 185 files from 80 s to many minutes. The system may still
 /// sleep.
 #[cfg(target_os = "macos")]
-fn user_initiated(work: impl FnOnce() + 'static) {
+pub(crate) fn user_initiated(work: impl FnOnce() + 'static) {
     use objc2_foundation::{NSActivityOptions, NSProcessInfo, NSString};
     let work = std::cell::Cell::new(Some(work));
     let block = block2::RcBlock::new(move || {
@@ -63,7 +63,7 @@ fn user_initiated(work: impl FnOnce() + 'static) {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn user_initiated(work: impl FnOnce() + 'static) {
+pub(crate) fn user_initiated(work: impl FnOnce() + 'static) {
     work()
 }
 
@@ -107,7 +107,7 @@ fn keep_profiles(
     })
 }
 
-fn run(
+pub(crate) fn run(
     root: &Path,
     request: &TestRequest,
     stop: &AtomicBool,
@@ -133,6 +133,7 @@ fn run(
         update_snapshots: request.update_snapshots,
         coverage: request.coverage,
         game_data: false,
+        world: false,
     };
     // Each test file profiled from its first line (S057).
     let start_profile: &(dyn Fn(&mut wowlua_vm::Vm) + Sync) = &|vm: &mut wowlua_vm::Vm| {

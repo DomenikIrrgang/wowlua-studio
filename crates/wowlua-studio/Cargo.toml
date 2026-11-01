@@ -14,6 +14,8 @@ alacritty_terminal = "0.26"
 # in the terminal.
 arboard = { version = "3.7", default-features = false }
 dirs = "7.0"
+# The one-time token of Claude Code's link to Studio's tools (S096).
+getrandom = "0.3"
 eframe.workspace = true
 ignore = "0.4"
 # The local time a kept profile is named by (M7).
@@ -25,6 +27,8 @@ regex = "1.13"
 rfd = "0.17"
 # Keeps the order of wowlua's config.json when Studio writes `wow.path`.
 serde_json = { workspace = true, features = ["preserve_order"] }
+# The installation's art and spells for the world profiles (M8, S060).
+wowlua-casc.workspace = true
 # A game session hosted in process, its screen drawn on eframe's device
 # (M5, S055).
 wowlua-debug.workspace = true
@@ -36,13 +40,21 @@ wowlua-vm.workspace = true
 wowlua-driver.workspace = true
 wowlua-flavors.workspace = true
 wowlua-manifest.workspace = true
+# The dependencies page: updates and a registry package's versions (M10).
+wowlua-pkg.workspace = true
+semver = "1"
 wowlua-studio-app.workspace = true
 wowlua-studio-ui.workspace = true
 wowlua-lsp.workspace = true
 wowlua-span.workspace = true
 wowlua-syntax.workspace = true
+wowlua-fmt.workspace = true
 # The test runner with the renderer's camera, for screenshot tests (M4).
 wowlua-test = { workspace = true, features = ["native", "camera"] }
+
+[dev-dependencies]
+# The ship page's tests: repositories in temporary folders (M9).
+tempfile = "3"
 
 # The system menu bar and the window buttons in Studio's bar (S013, S022);
 # a test run kept from App Nap (S054).
@@ -51,6 +63,11 @@ block2 = { version = "0.6", default-features = false, features = ["std"] }
 muda = { version = "0.21", default-features = false }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSButton", "NSControl", "NSResponder", "NSView", "NSWindow"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSGeometry", "NSProcessInfo", "NSString", "block2"] }
+
+# The local socket of Claude Code's link to Studio's tools on Windows
+# (S096; Windows 10 and later have Unix sockets).
+[target.'cfg(windows)'.dependencies]
+uds_windows = "1.2"
 
 [lints]
 workspace = true
