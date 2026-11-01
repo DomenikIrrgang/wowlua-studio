@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
+# egui-wgpu with one change, patched in below; not a member.
+exclude = ["patches/egui-wgpu"]
 
 [workspace.package]
 version = "0.1.0"
@@ -24,18 +26,41 @@ wowlua-studio-app = { path = "crates/wowlua-studio-app" }
 # wowlua, pinned to a release (decision S004). To work on both repositories
 # at once, point these at a local checkout in `.cargo/config.toml` (see
 # CLAUDE.md); that file stays out of git.
-# 0.13.3: `wowlua new --check …`, `init --no-pkgmeta`, release notes and
+# 0.13.5: `wowlua new --check …`, `init --no-pkgmeta`, release notes and
 # cached_ui_source (M2); the server's semantic tokens, folding, inlay hints,
 # quick fixes, references lenses and overloads one per line (M3); a test
 # run's steps as a library with progress, stop, each test's functions and
-# the renderer's camera (M4).
-wowlua-driver = { git = "https://github.com/DomenikIrrgang/wowlua", tag = "v0.13.3" }
-wowlua-flavors = { git = "https://github.com/DomenikIrrgang/wowlua", tag = "v0.13.3" }
-wowlua-manifest = { git = "https://github.com/DomenikIrrgang/wowlua", tag = "v0.13.3" }
-wowlua-test = { git = "https://github.com/DomenikIrrgang/wowlua", tag = "v0.13.3" }
-wowlua-lsp = { git = "https://github.com/DomenikIrrgang/wowlua", tag = "v0.13.3" }
-wowlua-span = { git = "https://github.com/DomenikIrrgang/wowlua", tag = "v0.13.3" }
-wowlua-syntax = { git = "https://github.com/DomenikIrrgang/wowlua", tag = "v0.13.3" }
+# the renderer's camera (M4); the game's settings at runtime and sessions
+# hosted in process, with the event log, the inspector and the units (M5).
+# The debugger page's pause, hit counts, stop details, clock, the world as a
+# profile and the frame hook at a stop (M6).
+# Until it is released: wowlua's main with pull request #104 (on 0.13.6).
+# #96: the profiler's per-frame call trees, the speedscope file that keeps the
+# whole profile, the game's recordings in a library and function breakpoints
+# by definition (M7). #97: watches that only read, Blizzard's code stepped
+# into while a session runs, Blizzard's frames marked (before M8). #98: the
+# renderer writes through a staging belt (S059). #99: unit:update, /wl
+# snapshot and its library (M8). #100: camelot's client in _forever_. #101:
+# a profile's trained spells, its nameplates after the login (M8). #102:
+# credentials for an app, install records and the build's progress (M9). #104:
+# the language server's settings, auto-import, cache parts (M10). #105: the
+# flavor table's names and support, four flavors (M10).
+wowlua-casc = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "7c4908009092f80a1dd6b2620584217d5f280eb1" }
+wowlua-debug = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "7c4908009092f80a1dd6b2620584217d5f280eb1" }
+wowlua-diagnostics = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "7c4908009092f80a1dd6b2620584217d5f280eb1" }
+wowlua-engine = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "7c4908009092f80a1dd6b2620584217d5f280eb1" }
+wowlua-render = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "7c4908009092f80a1dd6b2620584217d5f280eb1" }
+wowlua-vm = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "7c4908009092f80a1dd6b2620584217d5f280eb1" }
+wowlua-driver = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "7c4908009092f80a1dd6b2620584217d5f280eb1" }
+wowlua-flavors = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "7c4908009092f80a1dd6b2620584217d5f280eb1" }
+wowlua-manifest = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "7c4908009092f80a1dd6b2620584217d5f280eb1" }
+wowlua-pkg = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "7c4908009092f80a1dd6b2620584217d5f280eb1" }
+wowlua-test = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "7c4908009092f80a1dd6b2620584217d5f280eb1" }
+wowlua-lsp = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "7c4908009092f80a1dd6b2620584217d5f280eb1" }
+wowlua-span = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "7c4908009092f80a1dd6b2620584217d5f280eb1" }
+wowlua-toc = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "7c4908009092f80a1dd6b2620584217d5f280eb1" }
+wowlua-syntax = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "7c4908009092f80a1dd6b2620584217d5f280eb1" }
+wowlua-fmt = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "7c4908009092f80a1dd6b2620584217d5f280eb1" }
 
 [workspace.lints.rust]
 # Denied, not forbidden: one macOS module may allow it (decision S022).
@@ -43,6 +68,12 @@ unsafe_code = "deny"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
+
+[patch.crates-io]
+# egui-wgpu 0.37.0 writing its vertices and indices through a staging belt
+# kept between frames (patches/README.md, S059): `write_buffer_with` makes a
+# GPU buffer per write, and on macOS that call can wait for milliseconds.
+egui-wgpu = { path = "patches/egui-wgpu" }
 
 [profile.release]
 lto = "thin"
