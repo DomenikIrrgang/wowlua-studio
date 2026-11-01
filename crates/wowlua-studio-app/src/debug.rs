@@ -19,7 +19,10 @@ use crate::system::{FunctionBp, GameEvent, GameRequest, Launch, LineBp, System, 
 
 /// The debugger's requests' ids: apart from the game page's.
 pub const IDS: u64 = 1 << 40;
-const ROW_H: f32 = 22.0;
+/// A row, at the settings' density (S062).
+fn row_h() -> f32 {
+    wowlua_studio_ui::row(22.0)
+}
 /// The most console lines kept.
 const CONSOLE_KEPT: usize = 2000;
 
@@ -45,6 +48,11 @@ pub struct Config {
     pub debug_blizzard_ui: bool,
     /// Read from VS Code's `launch.json` (Studio writes its own).
     pub vscode: bool,
+    /// The workspace's addon to run (the title bar's package).
+    pub package: Option<PathBuf>,
+    /// Run without the debugger: no breakpoints, no stops (the title
+    /// bar's run, ctrl f5).
+    pub no_debug: bool,
 }
 
 impl Config {
@@ -75,11 +83,13 @@ impl Config {
                 .test
                 .as_ref()
                 .map(|t| (t.clone(), self.filters.clone())),
+            package: self.package.clone(),
             flavor: self.flavor.clone(),
             profile: self.profile.clone(),
             manual: self.manual,
             stop_on_entry: self.stop_on_entry,
             debug_blizzard_ui: self.debug_blizzard_ui,
+            ..Launch::default()
         }
     }
 
@@ -133,6 +143,8 @@ impl Config {
             stop_on_entry: j["stopOnEntry"].as_bool().unwrap_or(false),
             debug_blizzard_ui: j["debugBlizzardUI"].as_bool().unwrap_or(false),
             vscode,
+            package: None,
+            no_debug: false,
         })
     }
 }
@@ -242,6 +254,18 @@ pub struct Kept {
     /// Recent sessions: the configuration, how it ended, when.
     pub recent: Vec<(String, String, u64)>,
     pub chosen: Option<String>,
+    /// What the title bar runs: the addon (its folder from the
+    /// workspace's root), the flavor, the world profile.
+    #[serde(default)]
+    pub run_package: Option<String>,
+    #[serde(default)]
+    pub run_flavor: Option<String>,
+    #[serde(default)]
+    pub run_profile: Option<String>,
+    /// The call stack leaves out dispatch frames (events, scripts,
+    /// OnUpdate, timers).
+    #[serde(default)]
+    pub hide_dispatch: bool,
 }
 
 /// A request asked, by its id.
@@ -282,6 +306,10 @@ pub struct Ended {
 
 #[derive(Default)]
 pub struct DebugState {
+    /// The settings' (S062): a secret's value shows; a new configuration's
+    /// clock is manual.
+    pub reveal_secrets: bool,
+    pub default_manual: bool,
     pub kept: Kept,
     pub configs: Vec<Config>,
     pub configs_read: bool,
@@ -314,6 +342,9 @@ pub struct DebugState {
     function: String,
     watch_input: String,
     pub ended: Option<Ended>,
+    /// The session's start, step by step (the sessions board's
+    /// "starting"): what it did, and whether that is done.
+    pub steps: Vec<(String, bool)>,
     stops: u32,
     logs: u32,
     errors: u32,
@@ -340,6 +371,8 @@ pub enum Action {
     SaveProfile(PathBuf, String),
     /// Write `.wowlua/launch.json` with these configurations.
     SaveConfigs(Vec<Config>),
+    /// Ask Claude to explain the stop (S100).
+    AskClaude,
 }
 
 impl DebugState {
@@ -360,6 +393,22 @@ impl DebugState {
         self.session.is_some()
     }
 
+    /// Where a paused session stopped, shortly: `ThreatMeter:66`.
+    pub fn paused_at(&self) -> Option<String> {
+        self.stopped.as_ref()?;
+        let f = self.frames.first()?;
+        let name = f["source"]["name"]
+            .as_str()
+            .or(f["source"]["path"].as_str())?;
+        let stem = name
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or(name)
+            .trim_end_matches(".wowlua")
+            .trim_end_matches(".lua");
+        Some(format!("{stem}:{}", f["line"].as_u64().unwrap_or(1)))
+    }
+
     /// A new session's state; the requests to ask before it runs (its
     /// breakpoints, each with its id).
     pub fn begin(
@@ -378,11 +427,17 @@ impl DebugState {
         self.ids.clear();
         self.states.clear();
         self.ended = None;
+        self.steps.clear();
         self.stops = 0;
         self.logs = 0;
         self.errors = 0;
         self.console.clear();
         self.asked.clear();
+        // A run without the debugger: nothing stops it.
+        if self.config.as_ref().is_some_and(|c| c.no_debug) {
+            let id = self.id(Asked::Plain);
+            return vec![(id, GameRequest::SetStopOn(Vec::new()))];
+        }
         let mut setup = Vec::new();
         let files: Vec<PathBuf> = self.kept.lines.keys().cloned().collect();
         for file in files {
@@ -408,7 +463,16 @@ impl DebugState {
     }
 
     fn lines_request(&mut self, file: &Path, workspace: &Workspace) -> Option<(u64, GameRequest)> {
-        let lines = self.kept.lines.get(file).cloned().unwrap_or_default();
+        // The ones turned on.
+        let lines: Vec<LineBp> = self
+            .kept
+            .lines
+            .get(file)
+            .into_iter()
+            .flatten()
+            .filter(|b| !b.disabled)
+            .cloned()
+            .collect();
         let source = crate::tests::rel_of(workspace, file);
         let id = self.id(Asked::Lines(
             file.to_path_buf(),
@@ -419,10 +483,14 @@ impl DebugState {
 
     fn functions_request(&mut self) -> (u64, GameRequest) {
         let id = self.id(Asked::Functions);
-        (
-            id,
-            GameRequest::SetFunctionBreakpoints(self.kept.functions.clone()),
-        )
+        let on = self
+            .kept
+            .functions
+            .iter()
+            .filter(|f| !f.disabled)
+            .cloned()
+            .collect();
+        (id, GameRequest::SetFunctionBreakpoints(on))
     }
 
     fn ask(&mut self, system: &dyn System, asked: Asked, request: GameRequest) {
@@ -434,6 +502,12 @@ impl DebugState {
     }
 
     /// The request to send: a step, the clock, the world (the bar's).
+    /// Saves the running world as the profile `path` (its JSON, when
+    /// the session answers).
+    pub fn save_world(&mut self, system: &dyn System, path: PathBuf) {
+        self.ask(system, Asked::SaveWorld(path), GameRequest::SaveWorld);
+    }
+
     pub fn send(&mut self, system: &dyn System, request: GameRequest) {
         self.ask(system, Asked::Plain, request);
     }
@@ -455,6 +529,43 @@ impl DebugState {
         }
         self.changed = true;
         self.sync_file(system, workspace, file);
+    }
+
+    /// Turns a line breakpoint on or off; a running session hears it.
+    pub fn switch_line(
+        &mut self,
+        system: &dyn System,
+        workspace: &Workspace,
+        file: &Path,
+        line: u32,
+    ) {
+        if let Some(b) = self
+            .kept
+            .lines
+            .get_mut(file)
+            .and_then(|l| l.iter_mut().find(|b| b.line == line))
+        {
+            b.disabled = !b.disabled;
+            self.changed = true;
+            self.sync_file(system, workspace, file);
+        }
+    }
+
+    /// Turns every breakpoint off, or on again when all are off.
+    pub fn switch_all(&mut self, system: &dyn System, workspace: &Workspace) {
+        let all_off = self.kept.lines.values().flatten().all(|b| b.disabled)
+            && self.kept.functions.iter().all(|f| f.disabled);
+        for b in self.kept.lines.values_mut().flatten() {
+            b.disabled = !all_off;
+        }
+        for f in &mut self.kept.functions {
+            f.disabled = !all_off;
+        }
+        let files: Vec<PathBuf> = self.kept.lines.keys().cloned().collect();
+        for file in files {
+            self.sync_file(system, workspace, &file);
+        }
+        self.sync_functions(system);
     }
 
     /// A line breakpoint changed (the editor dialog's).
@@ -501,7 +612,7 @@ impl DebugState {
             if !self.kept.functions.iter().any(|f| f.name == name) {
                 self.kept.functions.push(FunctionBp {
                     name,
-                    condition: None,
+                    ..FunctionBp::default()
                 });
             }
         }
@@ -522,8 +633,9 @@ impl DebugState {
                 });
                 BpMark {
                     line: b.line.saturating_sub(1) as usize,
+                    disabled: b.disabled,
                     // (without a session: as set)
-                    verified: self.session.is_none() || state.is_some_and(|s| s.0),
+                    verified: b.disabled || self.session.is_none() || state.is_some_and(|s| s.0),
                     kind: if b.log_message.is_some() {
                         BpKind::Log
                     } else if b.condition.is_some() || b.hit_condition.is_some() {
@@ -536,12 +648,94 @@ impl DebugState {
             .collect()
     }
 
+    /// The values shown after the lines of `file` at a stop (lines from
+    /// 0): on the 40 lines up to the stopped one, each local and upvalue of
+    /// the selected frame the line names, as `name = value`.
+    pub fn inline_values(
+        &self,
+        file: &Path,
+        workspace: &Workspace,
+        line_text: &dyn Fn(usize) -> Option<String>,
+    ) -> Vec<(usize, String)> {
+        let Some(stop) = self.stopped_line(file, workspace) else {
+            return Vec::new();
+        };
+        // The frame's locals and upvalues, by name (the first of a name).
+        let mut values: Vec<(String, String)> = Vec::new();
+        for scope in &self.scopes {
+            let name = scope["name"].as_str().unwrap_or("");
+            if !matches!(name, "Locals" | "Upvalues") {
+                continue;
+            }
+            let Some(r) = scope["reference"].as_u64() else {
+                continue;
+            };
+            for v in self.vars.get(&(r as u32)).into_iter().flatten() {
+                let n = v["name"].as_str().unwrap_or("");
+                if n.is_empty() || n.starts_with('(') || values.iter().any(|(k, _)| k == n) {
+                    continue;
+                }
+                let mut text = value_text(v, self.reveal_secrets);
+                if text.chars().count() > 40 {
+                    text = text.chars().take(39).collect::<String>() + "…";
+                }
+                values.push((n.to_owned(), text));
+            }
+        }
+        if values.is_empty() {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        for line in stop.saturating_sub(40)..=stop {
+            let Some(text) = line_text(line) else {
+                continue;
+            };
+            // The line's names, as words; a comment's left out.
+            let code = text.split("--").next().unwrap_or("");
+            let words: Vec<&str> = code
+                .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                .filter(|w| !w.is_empty())
+                .collect();
+            let shown: Vec<String> = values
+                .iter()
+                .filter(|(n, _)| words.contains(&n.as_str()))
+                .take(4)
+                .map(|(n, v)| format!("{n} = {v}"))
+                .collect();
+            if !shown.is_empty() {
+                out.push((line, shown.join(", ")));
+            }
+        }
+        out
+    }
+
     /// The line (from 0) of `file` the selected frame of the stop is at.
     pub fn stopped_line(&self, file: &Path, workspace: &Workspace) -> Option<usize> {
         self.stopped.as_ref()?;
         let f = self.selected_frame()?;
         let path = frame_path(f, workspace)?;
         (path == file).then(|| f["line"].as_u64().unwrap_or(1).saturating_sub(1) as usize)
+    }
+
+    /// Where the session stopped, for Claude (S099): why, and the top
+    /// frames with their places.
+    pub fn stop_summary(&self) -> Option<String> {
+        let stop = self.stopped.as_ref()?;
+        let mut out = format!("stopped ({})", stop.reason);
+        if let Some(t) = &stop.text {
+            out.push_str(&format!(": {t}"));
+        }
+        for f in self.frames.iter().take(8) {
+            let place = match (f["source"].as_str(), f["line"].as_u64()) {
+                (Some(s), Some(l)) => format!(" at {s}:{l}"),
+                _ => String::new(),
+            };
+            out.push_str(&format!("\n  {}{place}", f["name"].as_str().unwrap_or("?")));
+        }
+        if let Some(d) = &stop.detail {
+            out.push_str(&format!("\n  detail: {d}"));
+        }
+        Some(out)
     }
 
     fn selected_frame(&self) -> Option<&Json> {
@@ -563,7 +757,15 @@ impl DebugState {
             return;
         }
         match event {
-            GameEvent::Started { .. } => {}
+            GameEvent::Started { addon, flavor, .. } => {
+                if let Some(last) = self.steps.last_mut() {
+                    last.1 = true;
+                }
+                self.steps.push((
+                    format!("{addon} runs on {flavor}, under the debugger"),
+                    true,
+                ));
+            }
             GameEvent::Stopped {
                 reason,
                 text,
@@ -637,8 +839,39 @@ impl DebugState {
                 };
                 self.answer(asked, result.clone(), system, workspace);
             }
-            GameEvent::Status(_) => {}
+            GameEvent::Status(s) => {
+                if let Some(last) = self.steps.last_mut() {
+                    last.1 = true;
+                }
+                self.steps.push((s.clone(), false));
+            }
         }
+    }
+
+    /// The breakpoints placed of those set: placed, set, the first not
+    /// placed (its file and line).
+    fn placed(&self) -> (usize, usize, Option<String>) {
+        let mut set = 0;
+        let mut placed = 0;
+        let mut first = None;
+        let mut ids: Vec<(&u32, &(Option<PathBuf>, u32))> = self.ids.iter().collect();
+        ids.sort_by(|a, b| a.1.cmp(b.1));
+        for (id, (file, line)) in ids {
+            set += 1;
+            if self.states.get(id).is_some_and(|s| s.0) {
+                placed += 1;
+            } else if first.is_none() {
+                first = file.as_ref().map(|f| {
+                    format!(
+                        "{}:{line}",
+                        f.file_name()
+                            .map(|n| n.to_string_lossy())
+                            .unwrap_or_default()
+                    )
+                });
+            }
+        }
+        (placed, set, first)
     }
 
     fn push_console(&mut self, category: &str, text: &str) {
@@ -747,13 +980,13 @@ impl DebugState {
                     .insert(r, data["variables"].as_array().cloned().unwrap_or_default());
             }
             Asked::Watch(i) => {
-                let text = value_text(&data["variable"]);
+                let text = value_text(&data["variable"], self.reveal_secrets);
                 if let Some(v) = self.watch_values.get_mut(i) {
                     *v = Some(Ok(text));
                 }
             }
             Asked::Eval => {
-                let text = value_text(&data["variable"]);
+                let text = value_text(&data["variable"], self.reveal_secrets);
                 self.push_console("result", &format!("= {text}"));
             }
             Asked::Units => self.units = data.as_array().cloned().unwrap_or_default(),
@@ -824,10 +1057,15 @@ fn frame_path(f: &Json, workspace: &Workspace) -> Option<PathBuf> {
     f["file"].as_str().map(PathBuf::from)
 }
 
-/// A variable's value as shown: its text, secret and taint marked.
-fn value_text(v: &Json) -> String {
+/// A variable's value as shown: its text, secret and taint marked; a
+/// secret only as `secret` unless the settings show what it hides (S062).
+fn value_text(v: &Json, reveal: bool) -> String {
+    let secret = v["secret"].as_bool() == Some(true);
+    if secret && !reveal {
+        return "secret".into();
+    }
     let mut s = v["value"].as_str().unwrap_or("nil").to_owned();
-    if v["secret"].as_bool() == Some(true) {
+    if secret {
         s.push_str("  (secret)");
     }
     s
@@ -859,15 +1097,15 @@ pub fn bar(ui: &mut Ui, state: &mut DebugState, system: &dyn System) -> Option<A
                     ("step into", GameRequest::StepIn),
                     ("step out", GameRequest::StepOut),
                 ] {
-                    if widgets::button(ui, ButtonKind::Ghost, label, true, None).clicked() {
+                    if widgets::button(ui, ButtonKind::Tertiary, label, true, None).clicked() {
                         state.send(system, r);
                     }
                 }
             });
-            if widgets::button(ui, ButtonKind::Ghost, "restart", true, None).clicked() {
+            if widgets::button(ui, ButtonKind::Tertiary, "restart", true, None).clicked() {
                 action = Some(Action::Restart);
             }
-            if widgets::button(ui, ButtonKind::Ghost, "stop", true, None).clicked() {
+            if widgets::button(ui, ButtonKind::Tertiary, "stop", true, None).clicked() {
                 action = Some(Action::Stop);
             }
             if forms::text_button(ui, "/reload").clicked() {
@@ -899,7 +1137,7 @@ pub fn bar(ui: &mut Ui, state: &mut DebugState, system: &dyn System) -> Option<A
                         ("+100 ms", None, Some(0.1)),
                         ("+1 frame", Some(1), None),
                     ] {
-                        if widgets::button(ui, ButtonKind::Ghost, label, true, None).clicked() {
+                        if widgets::button(ui, ButtonKind::Tertiary, label, true, None).clicked() {
                             state.send(system, GameRequest::Advance { frames, seconds });
                         }
                     }
@@ -920,8 +1158,10 @@ pub fn bar(ui: &mut Ui, state: &mut DebugState, system: &dyn System) -> Option<A
             });
         });
     });
-    if let Some(stop) = state.stopped.clone() {
-        banner(ui, &stop, p);
+    if let Some(stop) = state.stopped.clone()
+        && banner(ui, &stop, p)
+    {
+        action = Some(Action::AskClaude);
     }
     let (r, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), Sense::hover());
     ui.painter().rect_filled(r, CornerRadius::ZERO, p.line);
@@ -944,8 +1184,10 @@ pub fn describe(c: &Config) -> String {
     parts.join(" · ")
 }
 
-/// The stop's banner: why, the details, a hint.
-fn banner(ui: &mut Ui, stop: &Stop, p: &Palette) {
+/// The stop's banner: why, the details, a hint; whether "explain this
+/// stop" was clicked (S100).
+fn banner(ui: &mut Ui, stop: &Stop, p: &Palette) -> bool {
+    let mut ask = false;
     let (kind, word) = match stop.reason.as_str() {
         "exception" => (CalloutKind::Error, "stopped on an error"),
         "breakpoint" => (CalloutKind::Warning, "breakpoint"),
@@ -1019,8 +1261,13 @@ fn banner(ui: &mut Ui, stop: &Stop, p: &Palette) {
             if let Some(h) = help {
                 forms::paragraph(ui, &format!("help: {h}"), 11.5, 17.0, p.ink_muted);
             }
+            if widgets::button(ui, ButtonKind::Tertiary, "explain this stop", true, None).clicked()
+            {
+                ask = true;
+            }
         });
     });
+    ask
 }
 
 // ----------------------------------------------------------- the call stack
@@ -1042,20 +1289,24 @@ pub fn call_stack(
     if !state.running() {
         return run_and_debug(ui, state, workspace, p);
     }
-    if let Some(s) = status {
-        empty(ui, &format!("{s}…"), p);
+    if status.is_some() || state.stopped.is_none() {
+        checklist(ui, state, status.is_some(), p);
         return None;
     }
-    if state.stopped.is_none() {
-        empty(ui, "running · pause (f6) to see where", p);
-        return None;
-    }
-    let frames = state.frames.clone();
+    let hide_dispatch = state.kept.hide_dispatch;
+    let frames: Vec<Json> = state
+        .frames
+        .iter()
+        .filter(|f| !(hide_dispatch && f["kind"].as_str() == Some("dispatch")))
+        .cloned()
+        .collect();
     let selected = state.frame;
     let mut picked = None;
+    let list_h = (ui.available_height() - 64.0).max(68.0);
     egui::ScrollArea::vertical()
         .id_salt("debug-stack")
         .auto_shrink(false)
+        .max_height(list_h)
         .show(ui, |ui| {
             for f in &frames {
                 let (rect, resp) =
@@ -1102,10 +1353,94 @@ pub fn call_stack(
                 }
             }
         });
+    // The board's switches: dispatch frames shown, Blizzard's code stepped
+    // into (the session's from now on).
+    forms::padded(ui, 10, 6, |ui| {
+        let mut show = !state.kept.hide_dispatch;
+        if forms::checkbox(
+            ui,
+            &mut show,
+            "show dispatch frames (events, scripts, OnUpdate, timers)",
+            None,
+        ) {
+            state.kept.hide_dispatch = !show;
+            state.changed = true;
+        }
+        let mut blizzard = state.config.as_ref().is_some_and(|c| c.debug_blizzard_ui);
+        if forms::checkbox(ui, &mut blizzard, "step into Blizzard's UI code", None) {
+            if let Some(c) = state.config.as_mut() {
+                c.debug_blizzard_ui = blizzard;
+            }
+            state.send(system, GameRequest::SetDebugBlizzardUi { on: blizzard });
+        }
+    });
     if let Some(f) = picked {
         state.pick_frame(system, workspace, &f);
     }
     None
+}
+
+/// The session's start step by step, its breakpoints placed; then that it
+/// runs.
+fn checklist(ui: &mut Ui, state: &DebugState, starting: bool, p: &Palette) {
+    forms::padded(ui, 12, 10, |ui| {
+        ui.label(
+            egui::RichText::new(if starting { "starting" } else { "running" })
+                .font(Face::PlexMedium.at(12.0))
+                .color(p.ink),
+        );
+        ui.add_space(6.0);
+        let row = |ui: &mut Ui, mark: &str, color: egui::Color32, text: &str| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(mark)
+                        .font(Face::Plex.at(12.0))
+                        .color(color),
+                );
+                ui.label(
+                    egui::RichText::new(text)
+                        .font(Face::Plex.at(12.0))
+                        .color(p.ink),
+                );
+            });
+        };
+        for (step, done) in &state.steps {
+            if *done {
+                row(ui, "✓", p.success, step);
+            } else {
+                row(ui, "→", p.amber_ink, &format!("{step}…"));
+            }
+        }
+        let (placed, set, first) = state.placed();
+        if !starting && set > 0 {
+            let text = match first {
+                Some(f) if placed < set => format!(
+                    "breakpoints: {placed} of {set} placed · {f} not loaded yet, or no code at or after it"
+                ),
+                _ => format!("breakpoints: {placed} of {set} placed"),
+            };
+            row(
+                ui,
+                if placed == set { "✓" } else { "→" },
+                if placed == set {
+                    p.success
+                } else {
+                    p.amber_ink
+                },
+                &text,
+            );
+        }
+        if !starting {
+            ui.add_space(8.0);
+            forms::paragraph(
+                ui,
+                "running · pause (f6) to see where",
+                12.0,
+                18.0,
+                p.ink_muted,
+            );
+        }
+    });
 }
 
 fn run_and_debug(
@@ -1187,7 +1522,13 @@ fn run_and_debug(
                         state.editing = Some((at, configs[chosen].clone()));
                     }
                     if forms::text_button(ui, "new").clicked() {
-                        state.editing = Some((None, Config::addon("a new configuration")));
+                        state.editing = Some((
+                            None,
+                            Config {
+                                manual: state.default_manual,
+                                ..Config::addon("a new configuration")
+                            },
+                        ));
                     }
                 });
                 if let Some(e) = &state.ended {
@@ -1270,6 +1611,8 @@ pub fn breakpoints(
     let mut action = None;
     let mut remove: Option<(PathBuf, u32)> = None;
     let mut remove_fn = None;
+    let mut switch: Option<(Option<PathBuf>, u32)> = None;
+    let mut switch_all = false;
     // The rows, painted (only those seen): a breakpoint each.
     struct BpRow {
         file: Option<PathBuf>,
@@ -1277,6 +1620,7 @@ pub fn breakpoints(
         text: String,
         hits: u32,
         unplaced: bool,
+        on: bool,
     }
     let mut rows: Vec<BpRow> = Vec::new();
     for (file, list) in &state.kept.lines {
@@ -1299,7 +1643,8 @@ pub fn breakpoints(
                 line: b.line,
                 text: format!("{rel}:{}  {detail}", b.line),
                 hits: st.map_or(0, |s| s.2),
-                unplaced: state.running() && !st.is_some_and(|s| s.0),
+                unplaced: state.running() && !b.disabled && !st.is_some_and(|s| s.0),
+                on: !b.disabled,
             });
         }
     }
@@ -1310,9 +1655,24 @@ pub fn breakpoints(
             text: f.name.clone(),
             hits: 0,
             unplaced: false,
+            on: !f.disabled,
         });
     }
-    let list_h = (ui.available_height() - 200.0).max(ROW_H * 2.0);
+    // Every breakpoint off (or on again), as the board's button does.
+    if !rows.is_empty() {
+        forms::padded(ui, 10, 4, |ui| {
+            let all_off = rows.iter().all(|r| !r.on);
+            let label = if all_off {
+                "turn every breakpoint on"
+            } else {
+                "turn every breakpoint off"
+            };
+            if forms::text_button(ui, label).clicked() {
+                switch_all = true;
+            }
+        });
+    }
+    let list_h = (ui.available_height() - 200.0).max(row_h() * 2.0);
     if rows.is_empty() {
         forms::padded(ui, 10, 8, |ui| {
             forms::paragraph(
@@ -1329,25 +1689,41 @@ pub fn breakpoints(
             .id_salt("debug-bps")
             .auto_shrink(false)
             .max_height(list_h)
-            .show_rows(ui, ROW_H, rows.len(), |ui, range| {
+            .show_rows(ui, row_h(), rows.len(), |ui, range| {
                 for r in &rows[range] {
                     let (rect, resp) = ui.allocate_exact_size(
-                        Vec2::new(ui.available_width(), ROW_H),
+                        Vec2::new(ui.available_width(), row_h()),
                         Sense::click(),
                     );
                     if resp.hovered() {
                         ui.painter().rect_filled(rect, CornerRadius::ZERO, p.bg_200);
                     }
                     let y = rect.center().y;
-                    let color = match (&r.file, r.unplaced) {
-                        (None, _) => p.warning,
-                        (_, true) => p.ink_faint,
+                    // Its check box: on or off.
+                    let check = egui::Rect::from_center_size(
+                        Pos2::new(rect.left() + 14.0, y),
+                        Vec2::splat(12.0),
+                    );
+                    let check_resp = ui.interact(check, resp.id.with("on"), Sense::click());
+                    ui.painter().rect_stroke(
+                        check,
+                        CornerRadius::ZERO,
+                        egui::Stroke::new(1.0, p.line_strong),
+                        egui::StrokeKind::Inside,
+                    );
+                    if r.on {
+                        wowlua_studio_ui::widgets::check_mark(ui.painter(), check.center(), p.ink);
+                    }
+                    let color = match (&r.file, r.unplaced, r.on) {
+                        (_, _, false) => p.ink_faint,
+                        (None, _, _) => p.warning,
+                        (_, true, _) => p.ink_faint,
                         _ => p.error,
                     };
                     ui.painter()
-                        .circle_filled(Pos2::new(rect.left() + 16.0, y), 4.0, color);
+                        .circle_filled(Pos2::new(rect.left() + 32.0, y), 4.0, color);
                     let text_rect = egui::Rect::from_min_max(
-                        Pos2::new(rect.left() + 26.0, rect.top()),
+                        Pos2::new(rect.left() + 42.0, rect.top()),
                         Pos2::new(rect.right() - 70.0, rect.bottom()),
                     );
                     ui.painter().with_clip_rect(text_rect).text(
@@ -1355,7 +1731,11 @@ pub fn breakpoints(
                         Align2::LEFT_CENTER,
                         &r.text,
                         Face::Plex.at(12.0),
-                        if r.unplaced { p.ink_muted } else { p.ink },
+                        if r.unplaced || !r.on {
+                            p.ink_muted
+                        } else {
+                            p.ink
+                        },
                     );
                     let x = egui::Rect::from_center_size(
                         Pos2::new(rect.right() - 14.0, y),
@@ -1383,7 +1763,9 @@ pub fn breakpoints(
                     } else {
                         resp
                     };
-                    if x_resp.clicked() {
+                    if check_resp.clicked() {
+                        switch = Some((r.file.clone(), r.line));
+                    } else if x_resp.clicked() {
                         match &r.file {
                             Some(f) => remove = Some((f.clone(), r.line)),
                             None => remove_fn = Some(r.line as usize),
@@ -1444,6 +1826,19 @@ pub fn breakpoints(
         });
     if let Some((file, line)) = remove {
         state.toggle(system, workspace, &file, line);
+    }
+    match switch {
+        Some((Some(file), line)) => state.switch_line(system, workspace, &file, line),
+        Some((None, i)) => {
+            if let Some(f) = state.kept.functions.get_mut(i as usize) {
+                f.disabled = !f.disabled;
+            }
+            state.sync_functions(system);
+        }
+        None => {}
+    }
+    if switch_all {
+        state.switch_all(system, workspace);
     }
     if let Some(i) = remove_fn {
         state.kept.functions.remove(i);
@@ -1526,7 +1921,7 @@ fn var_rows(
             open,
             child != 0,
             v["name"].as_str().unwrap_or(""),
-            &value_text(v),
+            &value_text(v, state.reveal_secrets),
             &meta,
             p,
         )
@@ -1553,7 +1948,7 @@ fn row(
     p: &Palette,
 ) -> egui::Response {
     let (rect, resp) =
-        ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::click());
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), row_h()), Sense::click());
     if resp.hovered() {
         ui.painter().rect_filled(rect, CornerRadius::ZERO, p.bg_200);
     }
@@ -1645,8 +2040,8 @@ pub fn watch(ui: &mut Ui, state: &mut DebugState, system: &dyn System) {
         ui.add_space(4.0);
         forms::paragraph(
             ui,
-            "Watches run in the frame selected at each stop. Note: a watch that calls a function \
-             runs it, side effects too.",
+            "Watches run in the frame selected at each stop, and only read: a call that may \
+             change the game is refused (evaluate it in the console instead).",
             11.0,
             16.0,
             p.ink_faint,
@@ -1905,6 +2300,8 @@ pub fn dialogs(
     state: &mut DebugState,
     workspace: &Workspace,
     system: &dyn System,
+    tests: &std::collections::BTreeMap<PathBuf, Vec<crate::lsp::Discovered>>,
+    profiles: &[String],
 ) -> Option<Action> {
     let mut action = None;
     if let Some((at, mut c)) = state.editing.take() {
@@ -1926,27 +2323,99 @@ pub fn dialogs(
                     c.test = (k == 1).then(String::new);
                 }
                 if kind == 1 {
-                    let mut t = c.test.clone().unwrap_or_default();
-                    forms::text_input(ui, &mut t, 320.0, "tests/unit/x.test.wowlua");
-                    c.test = Some(t);
-                    let mut f = c.filters.join(", ");
-                    forms::label(ui, "only tests whose names contain");
-                    forms::text_input(ui, &mut f, 320.0, "secret");
-                    c.filters = f
-                        .split(',')
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty())
-                        .map(str::to_owned)
+                    // The workspace's test files (S065), by their path in it.
+                    let files: Vec<(String, &PathBuf)> = tests
+                        .keys()
+                        .map(|p| {
+                            let shown = p.strip_prefix(&workspace.root).unwrap_or(p);
+                            (shown.to_string_lossy().replace('\\', "/"), p)
+                        })
                         .collect();
+                    let current = c.test.clone().unwrap_or_default();
+                    let mut names: Vec<String> = vec!["pick a test file".into()];
+                    names.extend(files.iter().map(|(n, _)| n.clone()));
+                    let mut at = files
+                        .iter()
+                        .position(|(n, _)| *n == current)
+                        .map_or(0, |i| i + 1);
+                    let opts: Vec<(&str, bool)> =
+                        names.iter().map(|n| (n.as_str(), true)).collect();
+                    if forms::select(ui, "cfg-test-file", &opts, &mut at, 320.0) && at > 0 {
+                        c.test = Some(files[at - 1].0.clone());
+                        c.filters.clear();
+                    }
+                    // Its tests: all, one, or those whose names contain…
+                    forms::label(ui, "only tests");
+                    let in_file: Vec<&str> = files
+                        .iter()
+                        .find(|(n, _)| Some(n) == c.test.as_ref())
+                        .and_then(|(_, p)| tests.get(*p))
+                        .map(|list| list.iter().map(|t| t.name.as_str()).collect())
+                        .unwrap_or_default();
+                    let mut choices: Vec<String> = vec!["all tests".into()];
+                    choices.extend(in_file.iter().map(|n| (*n).to_owned()));
+                    choices.push("names containing…".into());
+                    let custom = choices.len() - 1;
+                    let mut at = match c.filters.as_slice() {
+                        [] => 0,
+                        [one] => in_file
+                            .iter()
+                            .position(|n| n == one)
+                            .map_or(custom, |i| i + 1),
+                        _ => custom,
+                    };
+                    let opts: Vec<(&str, bool)> =
+                        choices.iter().map(|n| (n.as_str(), true)).collect();
+                    if forms::select(ui, "cfg-test-filter", &opts, &mut at, 320.0) {
+                        c.filters = if at == 0 {
+                            Vec::new()
+                        } else if at == custom {
+                            vec![String::new()]
+                        } else {
+                            vec![choices[at].clone()]
+                        };
+                    }
+                    if at == custom {
+                        let mut f = c.filters.join(", ");
+                        forms::text_input(ui, &mut f, 320.0, "secret");
+                        c.filters = f.split(',').map(str::trim).map(str::to_owned).collect();
+                    }
                 }
-                let mut flavor = c.flavor.clone().unwrap_or_default();
-                forms::label(ui, "flavor (empty: the package's first)");
-                forms::text_input(ui, &mut flavor, 320.0, "camelot");
-                c.flavor = Some(flavor.trim().to_owned()).filter(|f| !f.is_empty());
-                let mut profile = c.profile.clone().unwrap_or_default();
-                forms::label(ui, "world profile (empty: test.profile)");
-                forms::text_input(ui, &mut profile, 320.0, "raid-pull");
-                c.profile = Some(profile.trim().to_owned()).filter(|f| !f.is_empty());
+                // The package's flavors (S064); one coming soon is named, not
+                // picked: the emulated client doesn't run it yet.
+                forms::label(ui, "flavor");
+                let first = workspace.flavors.first().cloned().unwrap_or_default();
+                let mut labels = vec![format!("the package's first · {first}")];
+                labels.extend(workspace.flavors.iter().map(|f| crate::flavors::label(f)));
+                let mut opts: Vec<(&str, bool)> = vec![(labels[0].as_str(), true)];
+                opts.extend(
+                    workspace
+                        .flavors
+                        .iter()
+                        .zip(&labels[1..])
+                        .map(|(f, l)| (l.as_str(), crate::flavors::supported(f))),
+                );
+                let mut picked = c
+                    .flavor
+                    .as_ref()
+                    .and_then(|f| workspace.flavors.iter().position(|w| w == f))
+                    .map_or(0, |i| i + 1);
+                if forms::select(ui, "launch-flavor", &opts, &mut picked, 320.0) {
+                    c.flavor = (picked > 0).then(|| workspace.flavors[picked - 1].clone());
+                }
+                // The package's world profiles (S065).
+                forms::label(ui, "world profile");
+                let mut names: Vec<String> = vec!["test.profile · the package's".into()];
+                names.extend(profiles.iter().cloned());
+                let mut picked = c
+                    .profile
+                    .as_ref()
+                    .and_then(|p| profiles.iter().position(|n| n == p))
+                    .map_or(0, |i| i + 1);
+                let opts: Vec<(&str, bool)> = names.iter().map(|n| (n.as_str(), true)).collect();
+                if forms::select(ui, "cfg-profile", &opts, &mut picked, 320.0) {
+                    c.profile = profiles.get(picked.wrapping_sub(1)).cloned();
+                }
                 forms::checkbox(
                     ui,
                     &mut c.manual,
@@ -1970,11 +2439,11 @@ pub fn dialogs(
                     if widgets::button(ui, ButtonKind::Primary, "save", true, None).clicked() {
                         done = Some(true);
                     }
-                    if widgets::button(ui, ButtonKind::Ghost, "cancel", true, None).clicked() {
+                    if widgets::button(ui, ButtonKind::Tertiary, "cancel", true, None).clicked() {
                         done = Some(false);
                     }
                     if at.is_some()
-                        && widgets::button(ui, ButtonKind::Ghost, "remove", true, None).clicked()
+                        && widgets::button(ui, ButtonKind::Tertiary, "remove", true, None).clicked()
                     {
                         done = Some(false);
                         if let Some(i) = at {
@@ -2053,7 +2522,7 @@ pub fn dialogs(
                     if widgets::button(ui, ButtonKind::Primary, "save", true, None).clicked() {
                         done = Some(true);
                     }
-                    if widgets::button(ui, ButtonKind::Ghost, "cancel", true, None).clicked() {
+                    if widgets::button(ui, ButtonKind::Tertiary, "cancel", true, None).clicked() {
                         done = Some(false);
                     }
                 });
@@ -2087,6 +2556,16 @@ fn empty(ui: &mut Ui, text: &str, p: &Palette) {
 mod unit {
     use super::*;
     use crate::system::NoSystem;
+
+    /// A secret shows what it hides only when the settings say (S062).
+    #[test]
+    fn secrets_show_as_the_settings_say() {
+        let v = serde_json::json!({ "value": "5", "secret": true });
+        assert_eq!(value_text(&v, true), "5  (secret)");
+        assert_eq!(value_text(&v, false), "secret");
+        let plain = serde_json::json!({ "value": "5" });
+        assert_eq!(value_text(&plain, false), "5");
+    }
 
     fn workspace() -> Workspace {
         Workspace {
@@ -2147,6 +2626,46 @@ mod unit {
                 json!("target")
             ]
         );
+    }
+
+    /// A breakpoint turned off is kept, drawn off and not set in a
+    /// session; every breakpoint off, then on again.
+    #[test]
+    fn a_breakpoint_turned_off_is_kept_and_not_set() {
+        let w = workspace();
+        let file = Path::new("/p/demo/src/a.wowlua");
+        let mut state = DebugState::default();
+        state.restore(Kept::default());
+        state.toggle(&NoSystem, &w, file, 5);
+        state.toggle(&NoSystem, &w, file, 9);
+        state.add_functions(&NoSystem, vec!["Module:Update".into()]);
+        state.switch_line(&NoSystem, &w, file, 5);
+        assert_eq!(
+            state
+                .marks(file)
+                .iter()
+                .map(|m| m.disabled)
+                .collect::<Vec<_>>(),
+            [true, false]
+        );
+        let setup = state.begin(1, Config::addon("demo"), &w);
+        let sent = |setup: &[(u64, GameRequest)]| -> Vec<u32> {
+            setup
+                .iter()
+                .find_map(|(_, r)| match r {
+                    GameRequest::SetBreakpoints { lines, .. } => {
+                        Some(lines.iter().map(|b| b.line).collect())
+                    }
+                    _ => None,
+                })
+                .unwrap_or_default()
+        };
+        assert_eq!(sent(&setup), [9]);
+        state.switch_all(&NoSystem, &w);
+        assert!(state.kept.lines[file].iter().all(|b| b.disabled));
+        assert!(state.kept.functions.iter().all(|f| f.disabled));
+        state.switch_all(&NoSystem, &w);
+        assert!(state.kept.lines[file].iter().all(|b| !b.disabled));
     }
 
     /// Breakpoints set and removed; a session starts with them, its
@@ -2234,6 +2753,49 @@ mod unit {
         assert_eq!(state.frame, Some(1));
         assert_eq!(state.show, Some((file.to_path_buf(), 9)));
         assert_eq!(state.stopped_line(file, &w), Some(8));
+
+        // Its locals: shown after the lines that name them, up to the
+        // stop (a comment's names left out).
+        let scopes_id = IDS + state.next;
+        state.event(
+            1,
+            &GameEvent::Reply {
+                id: scopes_id,
+                result: Ok(json!({ "kind": "scopes", "scopes": [
+                    { "name": "Locals", "reference": 7 }
+                ] })),
+            },
+            &NoSystem,
+            &w,
+        );
+        let vars_id = IDS + state.next;
+        state.event(
+            1,
+            &GameEvent::Reply {
+                id: vars_id,
+                result: Ok(json!({ "kind": "variables", "variables": [
+                    { "name": "s", "value": "2", "type": "number" },
+                    { "name": "count", "value": "7", "type": "number" }
+                ] })),
+            },
+            &NoSystem,
+            &w,
+        );
+        let lines = [
+            "local function update()",
+            "    foo(s)",
+            "    -- count here",
+            "    local x = s + count",
+        ];
+        let inline = state.inline_values(file, &w, &|l| {
+            l.checked_sub(5)
+                .and_then(|i| lines.get(i))
+                .map(|s| (*s).to_owned())
+        });
+        assert_eq!(
+            inline,
+            [(6, "s = 2".to_owned()), (8, "s = 2, count = 7".to_owned())]
+        );
 
         // Going on clears the stop; the end sums the session up.
         state.event(1, &GameEvent::Continued, &NoSystem, &w);

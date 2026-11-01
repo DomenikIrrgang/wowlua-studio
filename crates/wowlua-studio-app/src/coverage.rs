@@ -14,7 +14,10 @@ use wowlua_studio_ui::{Face, Palette, palette};
 use crate::system::{Count, Coverage, CoverageFile, System, TestRequest, Workspace};
 use crate::tests::{Action, TestsState};
 
-const ROW_H: f32 = 24.0;
+/// A row, at the settings' density (S062).
+fn row_h() -> f32 {
+    wowlua_studio_ui::row(24.0)
+}
 
 /// The files' list: where to test next (what is not run, most first), or
 /// every file, sorted by a column.
@@ -484,10 +487,10 @@ fn files_list(
     egui::ScrollArea::vertical()
         .id_salt("wowlua-studio-coverage-files")
         .auto_shrink(false)
-        .show_rows(ui, ROW_H, rows.len(), |ui, range| {
+        .show_rows(ui, row_h(), rows.len(), |ui, range| {
             for (path, f, missed) in &rows[range] {
-                let (r, resp) =
-                    ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::click());
+                let (r, resp) = ui
+                    .allocate_exact_size(Vec2::new(ui.available_width(), row_h()), Sense::click());
                 if state.cov.file.as_deref() == Some(path.as_path()) {
                     ui.painter().rect_filled(r, CornerRadius::ZERO, p.bg_400);
                 } else if resp.hovered() {

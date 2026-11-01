@@ -9,7 +9,7 @@ pub mod find;
 pub mod json;
 pub mod view;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::system::{Highlight, Syntax, System};
@@ -55,6 +55,9 @@ pub struct Tab {
     highlights: Option<(u64, LineHighlights)>,
     /// The longest line's width in characters, for the version.
     widest: Option<(u64, usize)>,
+    /// Each line's rows when lines wrap: for the version and the columns
+    /// (S062).
+    wraps: Option<(u64, usize, Vec<usize>)>,
     /// The columns of the lines too long to lay out whole (a data file on
     /// one line), for the version: they are drawn where they are seen.
     pub long: Option<(u64, HashMap<usize, view::Columns>)>,
@@ -65,6 +68,9 @@ pub struct Tab {
     /// Opened to look at (from the search panel): the next preview
     /// replaces it, an edit keeps it.
     pub preview: bool,
+    /// Held by another page (a world profile's form, S060), not shown in
+    /// the tab bar until the file is opened.
+    pub hidden: bool,
     /// The path as the language server names it (links resolved).
     pub canonical: PathBuf,
     /// The language server's hover where the pointer rests.
@@ -134,15 +140,54 @@ pub struct Editors {
     pub focus: bool,
     /// The find bar, the window's (S051).
     pub finder: find::Finder,
+    /// The wowlua.json files shown as json, not their form (S063): kept
+    /// for the session, the tab closed or not.
+    pub as_json: HashSet<PathBuf>,
+}
+
+/// Whether the file is a package's manifest, shown as its form (S063).
+pub fn is_manifest(path: &Path) -> bool {
+    path.file_name().is_some_and(|n| n == "wowlua.json")
 }
 
 impl Editors {
+    /// The document of `path`, held without showing a tab when it is not
+    /// open: its index.
+    pub fn held(&mut self, path: &Path, system: &dyn System) -> Result<usize, String> {
+        if let Some(i) = self.find(path) {
+            return Ok(i);
+        }
+        let text = system.read_file(path)?;
+        let mut tab = Tab::new(Document::new(path.to_path_buf(), &text));
+        tab.hidden = true;
+        tab.canonical = system.canonical(path);
+        self.tabs.push(tab);
+        Ok(self.tabs.len() - 1)
+    }
+
+    /// A document of a text of no file (a built-in world profile, S081),
+    /// held without showing a tab: its index.
+    pub fn held_text(&mut self, path: &Path, text: &str) -> usize {
+        if let Some(i) = self.find(path) {
+            return i;
+        }
+        let mut tab = Tab::new(Document::new(path.to_path_buf(), text));
+        tab.hidden = true;
+        self.tabs.push(tab);
+        self.tabs.len() - 1
+    }
+
+    /// Whether any tab is shown.
+    pub fn shown(&self) -> bool {
+        self.tabs.iter().any(|t| !t.hidden)
+    }
+
     pub fn active(&self) -> Option<&Tab> {
-        self.tabs.get(self.active)
+        self.tabs.get(self.active).filter(|t| !t.hidden)
     }
 
     pub fn active_mut(&mut self) -> Option<&mut Tab> {
-        self.tabs.get_mut(self.active)
+        self.tabs.get_mut(self.active).filter(|t| !t.hidden)
     }
 
     pub fn find(&self, path: &Path) -> Option<usize> {
@@ -152,6 +197,7 @@ impl Editors {
     /// Opens `path`, or shows it when it is open.
     pub fn open(&mut self, path: &Path, system: &dyn System) -> Result<(), String> {
         if let Some(i) = self.find(path) {
+            self.tabs[i].hidden = false;
             self.active = i;
             self.focus = true;
             return Ok(());
@@ -168,6 +214,7 @@ impl Editors {
     /// Opens `path` to look at: in the preview tab, which it replaces.
     pub fn preview(&mut self, path: &Path, system: &dyn System) -> Result<(), String> {
         if let Some(i) = self.find(path) {
+            self.tabs[i].hidden = false;
             self.active = i;
             return Ok(());
         }
@@ -281,10 +328,12 @@ impl Tab {
             doc,
             highlights: None,
             widest: None,
+            wraps: None,
             long: None,
             clash: None,
             reveal: true,
             preview: false,
+            hidden: false,
             canonical: PathBuf::new(),
             hover: None,
             completion: None,
@@ -375,6 +424,19 @@ impl Tab {
             self.widest = Some((version, w));
         }
         self.widest.expect("made").1
+    }
+
+    /// Each line's rows wrapped at `columns` (S062).
+    pub fn wrap_parts(&mut self, columns: usize) -> Vec<usize> {
+        let version = self.doc.version;
+        if self
+            .wraps
+            .as_ref()
+            .is_none_or(|(v, c, _)| *v != version || *c != columns)
+        {
+            self.wraps = Some((version, columns, view::parts_of(&self.doc, columns)));
+        }
+        self.wraps.as_ref().expect("made").2.clone()
     }
 }
 
@@ -504,6 +566,14 @@ mod tests {
         assert_eq!(lines[0], [(0, 5, Syntax::Comment)]);
         // Characters: the tab is one.
         assert_eq!(lines[1], [(0, 4, Syntax::Comment)]);
+    }
+
+    #[test]
+    fn manifests_are_the_files_named_wowlua_json() {
+        assert!(is_manifest(Path::new("/w/wowlua.json")));
+        assert!(is_manifest(Path::new("/w/libs/lib/wowlua.json")));
+        assert!(!is_manifest(Path::new("/w/tests/profiles/raid.json")));
+        assert!(!is_manifest(Path::new("/w/wowlua.lock")));
     }
 
     #[test]
