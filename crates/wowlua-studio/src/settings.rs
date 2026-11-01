@@ -102,6 +102,7 @@ pub fn info() -> SettingsInfo {
         log: crate::log::path().filter(|p| p.exists()),
         github: accounts["github"].as_str().map(str::to_owned),
         claude_key: accounts["claude"].as_bool() == Some(true),
+        claude: crate::claude::status(),
     }
 }
 
@@ -184,6 +185,13 @@ pub fn claude_key(key: Option<&str>) {
 /// The GitHub sign-in's token, for pushing, pulling and fetching from
 /// github.com (M11); none when signed out.
 pub fn github_token() -> Option<String> {
+    // (a token from the environment first: the screenshot harness's, which
+    // keeps the OS credential store out)
+    if let Ok(t) = std::env::var("WOWLUA_STUDIO_GITHUB_TOKEN")
+        && !t.is_empty()
+    {
+        return Some(t);
+    }
     wowlua_driver::credentials::get(GITHUB)
         .ok()
         .filter(|t| !t.is_empty())

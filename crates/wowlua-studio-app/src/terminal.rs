@@ -29,6 +29,8 @@ pub struct TerminalState {
     wheel: f32,
     /// A drag is selecting.
     selecting: bool,
+    /// A line to type once the shell runs (Claude Code's sign-in, S095).
+    pending: Option<String>,
 }
 
 impl TerminalState {
@@ -38,6 +40,11 @@ impl TerminalState {
             system.terminal_close(id);
         }
         *self = TerminalState::default();
+    }
+
+    /// Types `line` and Enter into the shell (once it runs).
+    pub fn run(&mut self, line: &str) {
+        self.pending = Some(line.to_owned());
     }
 }
 
@@ -76,6 +83,9 @@ pub fn show(ui: &mut Ui, state: &mut TerminalState, system: &dyn System, cwd: &P
             }
         },
     };
+    if let Some(line) = state.pending.take() {
+        system.terminal_input(id, format!("{line}\r").as_bytes());
+    }
     let Some(screen) = system.terminal_screen(id) else {
         return;
     };

@@ -19,6 +19,8 @@ pub enum Action {
     Open(std::path::PathBuf, Option<u32>),
     /// The settings' GitHub sign-in.
     SignIn,
+    /// The pull requests page's form for a new one from the branch (M12).
+    CreatePull(String),
 }
 
 const ROW_H: f32 = 24.0;
@@ -47,7 +49,7 @@ pub(crate) fn change_color(change: Change, p: &Palette) -> Color32 {
     }
 }
 
-fn caption(ui: &mut Ui, text: &str) {
+pub(crate) fn caption(ui: &mut Ui, text: &str) {
     let p = palette(ui.ctx());
     ui.label(
         egui::RichText::new(text)
@@ -57,7 +59,7 @@ fn caption(ui: &mut Ui, text: &str) {
 }
 
 /// `text` cut with an ellipsis to fit `width` in `font`.
-fn fit(ui: &Ui, text: &str, font: &egui::FontId, width: f32) -> String {
+pub(crate) fn fit(ui: &Ui, text: &str, font: &egui::FontId, width: f32) -> String {
     let w = |s: &str| {
         ui.fonts_mut(|f| {
             f.layout_no_wrap(s.to_owned(), font.clone(), Color32::WHITE)
@@ -101,7 +103,7 @@ fn row_button(ui: &mut Ui, rect: Rect, id: egui::Id, icon: Icon, label: &str, sh
 
 /// A section's head: its name and count, and a button for all its files
 /// (stage all, unstage all); whether that was clicked.
-fn section(
+pub(crate) fn section(
     ui: &mut Ui,
     name: &str,
     count: usize,
@@ -146,7 +148,7 @@ fn section(
 /// A file's row: its name and folder, a note, the stage or unstage button,
 /// its letter; the name and folder stop before the right's parts. (clicked,
 /// button clicked)
-fn file_row(
+pub(crate) fn file_row(
     ui: &mut Ui,
     path: &str,
     note: &str,
@@ -597,7 +599,14 @@ pub fn history(ui: &mut Ui, state: &mut GitState, _system: &dyn System) -> Optio
 
 /// The main view: what the last change did, the merge under way, then a
 /// file's hunks or a commit.
-pub fn main(ui: &mut Ui, state: &mut GitState, system: &dyn System) -> Option<Action> {
+/// `pull_hint` is the branch just pushed and the base, when the branch
+/// has no pull request on GitHub yet (M12).
+pub fn main(
+    ui: &mut Ui,
+    state: &mut GitState,
+    system: &dyn System,
+    pull_hint: Option<(&str, &str)>,
+) -> Option<Action> {
     let p = palette(ui.ctx());
     let mut action = None;
     state.page_shown(system);
@@ -683,6 +692,37 @@ pub fn main(ui: &mut Ui, state: &mut GitState, system: &dyn System) -> Option<Ac
         && let Some(a) = callout(ui, state, system, &c)
     {
         action = Some(a);
+    }
+    if let Some((branch, base)) = pull_hint {
+        forms::callout(ui, CalloutKind::Note, |ui| {
+            forms::paragraph(
+                ui,
+                &format!(
+                    "pushed {branch} · it has no pull request yet. The pull requests page opens one from it: base {base}, the title from its first commit."
+                ),
+                12.5,
+                19.0,
+                p.ink,
+            );
+            ui.horizontal(|ui| {
+                if widgets::button(
+                    ui,
+                    ButtonKind::Primary,
+                    "create a pull request",
+                    true,
+                    Some(Icon::PullRequest),
+                )
+                .clicked()
+                {
+                    action = Some(Action::CreatePull(branch.to_owned()));
+                }
+                if widgets::button(ui, ButtonKind::Tertiary, "not now", true, Some(Icon::Close))
+                    .clicked()
+                {
+                    state.pushed = None;
+                }
+            });
+        });
     }
     match state.selected.clone() {
         Some(Selected::File(path, of)) => file_view(ui, state, system, &path, &of, &mut action),
@@ -822,7 +862,7 @@ fn callout(ui: &mut Ui, state: &mut GitState, system: &dyn System, c: &Callout) 
 }
 
 /// A line's text in the editor's syntax colours.
-fn code_line(ui: &Ui, system: &dyn System, text: &str, color: Color32) -> LayoutJob {
+pub(crate) fn code_line(ui: &Ui, system: &dyn System, text: &str, color: Color32) -> LayoutJob {
     let p = palette(ui.ctx());
     let font = Face::Plex.at(crate::editor::view::font_size());
     let (shown, _) = crate::editor::view::display(text);
@@ -897,7 +937,13 @@ pub(crate) fn diff_row(
 
 /// A hunk's head: where it is, which of how many, staged or not, its
 /// buttons.
-fn hunk_head(ui: &mut Ui, hunk: &Hunk, n: usize, of: usize, staged: Option<bool>) -> Option<Apply> {
+pub(crate) fn hunk_head(
+    ui: &mut Ui,
+    hunk: &Hunk,
+    n: usize,
+    of: usize,
+    staged: Option<bool>,
+) -> Option<Apply> {
     let p = palette(ui.ctx());
     let mut out = None;
     let frame = egui::Frame::new()
@@ -962,7 +1008,7 @@ fn hunk_head(ui: &mut Ui, hunk: &Hunk, n: usize, of: usize, staged: Option<bool>
 }
 
 /// A hunk's lines: side by side (before | after) or inline.
-fn hunk_lines(ui: &mut Ui, system: &dyn System, hunk: &Hunk, side_by_side: bool) {
+pub(crate) fn hunk_lines(ui: &mut Ui, system: &dyn System, hunk: &Hunk, side_by_side: bool) {
     let p = palette(ui.ctx());
     if !side_by_side {
         for l in &hunk.lines {
@@ -1435,7 +1481,7 @@ pub fn dialogs(ctx: &egui::Context, state: &mut GitState, system: &dyn System) {
 
 /// A choice of a dialog: a title and why, picked or not; whether it was
 /// clicked.
-fn option(ui: &mut Ui, title: &str, text: &str, on: bool, enabled: bool) -> bool {
+pub(crate) fn option(ui: &mut Ui, title: &str, text: &str, on: bool, enabled: bool) -> bool {
     let p = palette(ui.ctx());
     let (fill, stroke) = if on && enabled {
         (p.amber_soft, p.amber_ink)
