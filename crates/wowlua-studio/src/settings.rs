@@ -102,6 +102,7 @@ pub fn info() -> SettingsInfo {
         log: crate::log::path().filter(|p| p.exists()),
         github: accounts["github"].as_str().map(str::to_owned),
         claude_key: accounts["claude"].as_bool() == Some(true),
+        claude: crate::claude::status(),
     }
 }
 

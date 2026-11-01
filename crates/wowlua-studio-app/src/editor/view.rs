@@ -111,6 +111,8 @@ pub enum Action {
     Fixes(Pos),
     /// Apply a quick fix.
     ApplyFix(Fix),
+    /// "Fix with Claude" at the place (S100).
+    AskClaude(Pos),
     /// A lens of Studio's was clicked.
     Lens(LensClick),
     /// The breakpoint column clicked on a line (from 0): set or remove its
@@ -238,6 +240,11 @@ pub enum LensClick {
     Debug { file: PathBuf, test: Option<String> },
     /// Profile a test file, or one test of it (S057).
     Profile { file: PathBuf, test: Option<String> },
+    /// Ask Claude why a test failed (S100).
+    AskWhyFailed { file: PathBuf, test: String },
+    /// Ask Claude to help with the merge conflict starting at `line`
+    /// (from 0, S100).
+    AskConflict { file: PathBuf, line: usize },
     /// A merge conflict starting at `line` (from 0) resolved to a side.
     Conflict {
         file: PathBuf,
@@ -2315,7 +2322,12 @@ fn fixes_popup(
         |ui| {
             ui.set_width(420.0);
             ui.spacing_mut().item_spacing.y = 0.0;
-            for (i, fix) in fixes.iter().enumerate() {
+            // (the last row: fix with Claude, S100)
+            let titles = fixes
+                .iter()
+                .map(|f| f.title.as_str())
+                .chain(["fix with Claude"]);
+            for (i, title) in titles.enumerate() {
                 let (r, resp) = ui.allocate_exact_size(Vec2::new(420.0, 26.0), Sense::click());
                 if i == *selected {
                     ui.painter().rect_filled(r, CornerRadius::ZERO, p.bg_400);
@@ -2325,9 +2337,9 @@ fn fixes_popup(
                 ui.painter().with_clip_rect(r).text(
                     Pos2::new(r.left() + 10.0, r.center().y),
                     Align2::LEFT_CENTER,
-                    &fix.title,
+                    title,
                     Face::Plex.at(12.5),
-                    p.ink,
+                    if i == fixes.len() { p.amber_ink } else { p.ink },
                 );
                 if resp.clicked() {
                     picked = Some(i);
@@ -2338,7 +2350,10 @@ fn fixes_popup(
     if let Some(i) = picked {
         *selected = i;
         if let Some((fixes, i)) = tab.fixes.take() {
-            actions.push(Action::ApplyFix(fixes[i].clone()));
+            match fixes.get(i) {
+                Some(fix) => actions.push(Action::ApplyFix(fix.clone())),
+                None => actions.push(Action::AskClaude(tab.doc.selection.head)),
+            }
         }
     }
 }
@@ -2578,19 +2593,21 @@ fn keyboard(ui: &Ui, tab: &mut Tab, mac: bool, page: usize, actions: &mut Vec<Ac
             } = &event
         {
             match key {
+                // (the fixes and "fix with Claude")
                 Key::ArrowDown => {
-                    *selected = (*selected + 1) % fixes.len().max(1);
+                    *selected = (*selected + 1) % (fixes.len() + 1);
                     continue;
                 }
                 Key::ArrowUp => {
-                    *selected = (*selected + fixes.len().max(1) - 1) % fixes.len().max(1);
+                    *selected = (*selected + fixes.len()) % (fixes.len() + 1);
                     continue;
                 }
                 Key::Enter => {
-                    if let Some((fixes, i)) = tab.fixes.take()
-                        && let Some(fix) = fixes.get(i)
-                    {
-                        actions.push(Action::ApplyFix(fix.clone()));
+                    if let Some((fixes, i)) = tab.fixes.take() {
+                        match fixes.get(i) {
+                            Some(fix) => actions.push(Action::ApplyFix(fix.clone())),
+                            None => actions.push(Action::AskClaude(tab.doc.selection.head)),
+                        }
                     }
                     continue;
                 }

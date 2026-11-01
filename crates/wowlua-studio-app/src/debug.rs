@@ -371,6 +371,8 @@ pub enum Action {
     SaveProfile(PathBuf, String),
     /// Write `.wowlua/launch.json` with these configurations.
     SaveConfigs(Vec<Config>),
+    /// Ask Claude to explain the stop (S100).
+    AskClaude,
 }
 
 impl DebugState {
@@ -713,6 +715,27 @@ impl DebugState {
         let f = self.selected_frame()?;
         let path = frame_path(f, workspace)?;
         (path == file).then(|| f["line"].as_u64().unwrap_or(1).saturating_sub(1) as usize)
+    }
+
+    /// Where the session stopped, for Claude (S099): why, and the top
+    /// frames with their places.
+    pub fn stop_summary(&self) -> Option<String> {
+        let stop = self.stopped.as_ref()?;
+        let mut out = format!("stopped ({})", stop.reason);
+        if let Some(t) = &stop.text {
+            out.push_str(&format!(": {t}"));
+        }
+        for f in self.frames.iter().take(8) {
+            let place = match (f["source"].as_str(), f["line"].as_u64()) {
+                (Some(s), Some(l)) => format!(" at {s}:{l}"),
+                _ => String::new(),
+            };
+            out.push_str(&format!("\n  {}{place}", f["name"].as_str().unwrap_or("?")));
+        }
+        if let Some(d) = &stop.detail {
+            out.push_str(&format!("\n  detail: {d}"));
+        }
+        Some(out)
     }
 
     fn selected_frame(&self) -> Option<&Json> {
@@ -1135,8 +1158,10 @@ pub fn bar(ui: &mut Ui, state: &mut DebugState, system: &dyn System) -> Option<A
             });
         });
     });
-    if let Some(stop) = state.stopped.clone() {
-        banner(ui, &stop, p);
+    if let Some(stop) = state.stopped.clone()
+        && banner(ui, &stop, p)
+    {
+        action = Some(Action::AskClaude);
     }
     let (r, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), Sense::hover());
     ui.painter().rect_filled(r, CornerRadius::ZERO, p.line);
@@ -1159,8 +1184,10 @@ pub fn describe(c: &Config) -> String {
     parts.join(" · ")
 }
 
-/// The stop's banner: why, the details, a hint.
-fn banner(ui: &mut Ui, stop: &Stop, p: &Palette) {
+/// The stop's banner: why, the details, a hint; whether "explain this
+/// stop" was clicked (S100).
+fn banner(ui: &mut Ui, stop: &Stop, p: &Palette) -> bool {
+    let mut ask = false;
     let (kind, word) = match stop.reason.as_str() {
         "exception" => (CalloutKind::Error, "stopped on an error"),
         "breakpoint" => (CalloutKind::Warning, "breakpoint"),
@@ -1234,8 +1261,13 @@ fn banner(ui: &mut Ui, stop: &Stop, p: &Palette) {
             if let Some(h) = help {
                 forms::paragraph(ui, &format!("help: {h}"), 11.5, 17.0, p.ink_muted);
             }
+            if widgets::button(ui, ButtonKind::Tertiary, "explain this stop", true, None).clicked()
+            {
+                ask = true;
+            }
         });
     });
+    ask
 }
 
 // ----------------------------------------------------------- the call stack

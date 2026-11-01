@@ -5564,38 +5564,39 @@ dependencies = [
 
 [[package]]
 name = "wowlua-api"
-version = "0.13.6"
-source = "git+https://github.com/DomenikIrrgang/wowlua?rev=2875af24af57008cb143400408e8ac195539ca85#2875af24af57008cb143400408e8ac195539ca85"
+version = "0.13.8"
+source = "git+https://github.com/DomenikIrrgang/wowlua?rev=7c4908009092f80a1dd6b2620584217d5f280eb1#7c4908009092f80a1dd6b2620584217d5f280eb1"
 dependencies = [
  "wowlua-flavors",
 ]
 
 [[package]]
 name = "wowlua-casc"
-version = "0.13.6"
-source = "git+https://github.com/DomenikIrrgang/wowlua?rev=2875af24af57008cb143400408e8ac195539ca85#2875af24af57008cb143400408e8ac195539ca85"
+version = "0.13.8"
+source = "git+https://github.com/DomenikIrrgang/wowlua?rev=7c4908009092f80a1dd6b2620584217d5f280eb1#7c4908009092f80a1dd6b2620584217d5f280eb1"
 dependencies = [
  "flate2",
 ]
 
 [[package]]
 name = "wowlua-debug"
-version = "0.13.6"
-source = "git+https://github.com/DomenikIrrgang/wowlua?rev=2875af24af57008cb143400408e8ac195539ca85#2875af24af57008cb143400408e8ac195539ca85"
+version = "0.13.8"
+source = "git+https://github.com/DomenikIrrgang/wowlua?rev=7c4908009092f80a1dd6b2620584217d5f280eb1#7c4908009092f80a1dd6b2620584217d5f280eb1"
 dependencies = [
  "rustc-hash 2.1.3",
  "serde",
  "serde_json",
  "wowlua-driver",
  "wowlua-engine",
+ "wowlua-stdlib",
  "wowlua-test",
  "wowlua-vm",
 ]
 
 [[package]]
 name = "wowlua-diagnostics"
-version = "0.13.6"
-source = "git+https://github.com/DomenikIrrgang/wowlua?rev=2875af24af57008cb143400408e8ac195539ca85#2875af24af57008cb143400408e8ac195539ca85"
+version = "0.13.8"
+source = "git+https://github.com/DomenikIrrgang/wowlua?rev=7c4908009092f80a1dd6b2620584217d5f280eb1#7c4908009092f80a1dd6b2620584217d5f280eb1"
 dependencies = [
  "codespan-reporting",
  "serde_json",
@@ -5604,8 +5605,8 @@ dependencies = [
 
 [[package]]
 name = "wowlua-driver"
-version = "0.13.6"
-source = "git+https://github.com/DomenikIrrgang/wowlua?rev=2875af24af57008cb143400408e8ac195539ca85#2875af24af57008cb143400408e8ac195539ca85"
+version = "0.13.8"
+source = "git+https://github.com/DomenikIrrgang/wowlua?rev=7c4908009092f80a1dd6b2620584217d5f280eb1#7c4908009092f80a1dd6b2620584217d5f280eb1"
 dependencies = [
  "blake3",
  "dirs",
@@ -5644,8 +5645,8 @@ dependencies = [
 
 [[package]]
 name = "wowlua-engine"
-version = "0.13.6"
-source = "git+https://github.com/DomenikIrrgang/wowlua?rev=2875af24af57008cb143400408e8ac195539ca85#2875af24af57008cb143400408e8ac195539ca85"
+version = "0.13.8"
+source = "git+https://github.com/DomenikIrrgang/wowlua?rev=7c4908009092f80a1dd6b2620584217d5f280eb1#7c4908009092f80a1dd6b2620584217d5f280eb1"
 dependencies = [
  "flate2",
  "quick-xml 0.42.0",
@@ -5660,8 +5661,8 @@ dependencies = [
 
 [[package]]
 name = "wowlua-flavors"
-version = "0.13.6"
-source = "git+https://github.com/DomenikIrrgang/wowlua?rev=2875af24af57008cb143400408e8ac195539ca85#2875af24af57008cb143400408e8ac195539ca85"
+version = "0.13.8"
+source = "git+https://github.com/DomenikIrrgang/wowlua?rev=7c4908009092f80a1dd6b2620584217d5f280eb1#7c4908009092f80a1dd6b2620584217d5f280eb1"
 dependencies = [
  "serde",
  "serde_json",
@@ -5669,8 +5670,8 @@ dependencies = [
 
 [[package]]
 name = "wowlua-fmt"
-version = "0.13.6"
-source = "git+https://github.com/DomenikIrrgang/wowlua?rev=2875af24af57008cb143400408e8ac195539ca85#2875af24af57008cb143400408e8ac195539ca85"
+version = "0.13.8"
+source = "git+https://github.com/DomenikIrrgang/wowlua?rev=7c4908009092f80a1dd6b2620584217d5f280eb1#7c4908009092f80a1dd6b2620584217d5f280eb1"
 dependencies = [
  "regex",
  "stacker",
@@ -5681,16 +5682,16 @@ dependencies = [
 
 [[package]]
 name = "wowlua-host"
-version = "0.13.6"
-source = "git+https://github.com/DomenikIrrgang/wowlua?rev=2875af24af57008cb143400408e8ac195539ca85#2875af24af57008cb143400408e8ac195539ca85"
+version = "0.13.8"
+source = "git+https://github.com/DomenikIrrgang/wowlua?rev=7c4908009092f80a1dd6b2620584217d5f280eb1#7c4908009092f80a1dd6b2620584217d5f280eb1"
 dependencies = [
  "walkdir",
 ]
 
 [[package]]
 name = "wowlua-lower"
-version = "0.13.6"
-source = "git+https://github.com/DomenikIrrgang/wowlua?rev=2875af24af57008cb143400408e8ac195539ca85#2875af24af57008cb143400408e8ac195539ca85"
+version = "0.13.8"
+source = "git+https://github.com/DomenikIrrgang/wowlua?rev=7c4908009092f80a1dd6b2620584217d5f280eb1#7c4908009092f80a1dd6b2620584217d5f280eb1"
 dependencies = [
  "stacker",
  "wowlua-diagnostics",
@@ -5703,8 +5704,8 @@ dependencies = [
 
 [[package]]
 name = "wowlua-lsp"
-version = "0.13.6"
-source = "git+https://github.com/DomenikIrrgang/wowlua?rev=2875af24af57008cb143400408e8ac195539ca85#2875af24af57008cb143400408e8ac195539ca85"
+version = "0.13.8"
+source = "git+https://github.com/DomenikIrrgang/wowlua?rev=7c4908009092f80a1dd6b2620584217d5f280eb1#7c4908009092f80a1dd6b2620584217d5f280eb1"
 dependencies = [
  "serde_json",
  "wowlua-diagnostics",
@@ -5718,8 +5719,8 @@ dependencies = [
 
 [[package]]
 name = "wowlua-luair"
-version = "0.13.6"
-source = "git+https://github.com/DomenikIrrgang/wowlua?rev=2875af24af57008cb143400408e8ac195539ca85#2875af24af57008cb143400408e8ac195539ca85"
+version = "0.13.8"
+source = "git+https://github.com/DomenikIrrgang/wowlua?rev=7c4908009092f80a1dd6b2620584217d5f280eb1#7c4908009092f80a1dd6b2620584217d5f280eb1"
 dependencies = [
  "serde_json",
  "stacker",
@@ -5727,8 +5728,8 @@ dependencies = [
 
 [[package]]
 name = "wowlua-manifest"
-version = "0.13.6"
-source = "git+https://github.com/DomenikIrrgang/wowlua?rev=2875af24af57008cb143400408e8ac195539ca85#2875af24af57008cb143400408e8ac195539ca85"
+version = "0.13.8"
+source = "git+https://github.com/DomenikIrrgang/wowlua?rev=7c4908009092f80a1dd6b2620584217d5f280eb1#7c4908009092f80a1dd6b2620584217d5f280eb1"
 dependencies = [
  "globset",
  "indexmap",
@@ -5746,8 +5747,8 @@ dependencies = [
 
 [[package]]
 name = "wowlua-pkg"
-version = "0.13.6"
-source = "git+https://github.com/DomenikIrrgang/wowlua?rev=2875af24af57008cb143400408e8ac195539ca85#2875af24af57008cb143400408e8ac195539ca85"
+version = "0.13.8"
+source = "git+https://github.com/DomenikIrrgang/wowlua?rev=7c4908009092f80a1dd6b2620584217d5f280eb1#7c4908009092f80a1dd6b2620584217d5f280eb1"
 dependencies = [
  "dirs",
  "flate2",
@@ -5770,8 +5771,8 @@ dependencies = [
 
 [[package]]
 name = "wowlua-render"
-version = "0.13.6"
-source = "git+https://github.com/DomenikIrrgang/wowlua?rev=2875af24af57008cb143400408e8ac195539ca85#2875af24af57008cb143400408e8ac195539ca85"
+version = "0.13.8"
+source = "git+https://github.com/DomenikIrrgang/wowlua?rev=7c4908009092f80a1dd6b2620584217d5f280eb1#7c4908009092f80a1dd6b2620584217d5f280eb1"
 dependencies = [
  "bytemuck",
  "fontdue",
@@ -5785,13 +5786,13 @@ dependencies = [
 
 [[package]]
 name = "wowlua-runtime"
-version = "0.13.6"
-source = "git+https://github.com/DomenikIrrgang/wowlua?rev=2875af24af57008cb143400408e8ac195539ca85#2875af24af57008cb143400408e8ac195539ca85"
+version = "0.13.8"
+source = "git+https://github.com/DomenikIrrgang/wowlua?rev=7c4908009092f80a1dd6b2620584217d5f280eb1#7c4908009092f80a1dd6b2620584217d5f280eb1"
 
 [[package]]
 name = "wowlua-sema"
-version = "0.13.6"
-source = "git+https://github.com/DomenikIrrgang/wowlua?rev=2875af24af57008cb143400408e8ac195539ca85#2875af24af57008cb143400408e8ac195539ca85"
+version = "0.13.8"
+source = "git+https://github.com/DomenikIrrgang/wowlua?rev=7c4908009092f80a1dd6b2620584217d5f280eb1#7c4908009092f80a1dd6b2620584217d5f280eb1"
 dependencies = [
  "hashbrown 0.17.1",
  "indexmap",
@@ -5808,13 +5809,13 @@ dependencies = [
 
 [[package]]
 name = "wowlua-span"
-version = "0.13.6"
-source = "git+https://github.com/DomenikIrrgang/wowlua?rev=2875af24af57008cb143400408e8ac195539ca85#2875af24af57008cb143400408e8ac195539ca85"
+version = "0.13.8"
+source = "git+https://github.com/DomenikIrrgang/wowlua?rev=7c4908009092f80a1dd6b2620584217d5f280eb1#7c4908009092f80a1dd6b2620584217d5f280eb1"
 
 [[package]]
 name = "wowlua-stdlib"
-version = "0.13.6"
-source = "git+https://github.com/DomenikIrrgang/wowlua?rev=2875af24af57008cb143400408e8ac195539ca85#2875af24af57008cb143400408e8ac195539ca85"
+version = "0.13.8"
+source = "git+https://github.com/DomenikIrrgang/wowlua?rev=7c4908009092f80a1dd6b2620584217d5f280eb1#7c4908009092f80a1dd6b2620584217d5f280eb1"
 
 [[package]]
 name = "wowlua-studio"
@@ -5825,6 +5826,7 @@ dependencies = [
  "block2 0.6.2",
  "dirs",
  "eframe",
+ "getrandom 0.3.4",
  "ignore",
  "jiff",
  "muda",
@@ -5838,6 +5840,7 @@ dependencies = [
  "semver",
  "serde_json",
  "tempfile",
+ "uds_windows",
  "wowlua-casc",
  "wowlua-debug",
  "wowlua-diagnostics",
@@ -5879,8 +5882,8 @@ dependencies = [
 
 [[package]]
 name = "wowlua-syntax"
-version = "0.13.6"
-source = "git+https://github.com/DomenikIrrgang/wowlua?rev=2875af24af57008cb143400408e8ac195539ca85#2875af24af57008cb143400408e8ac195539ca85"
+version = "0.13.8"
+source = "git+https://github.com/DomenikIrrgang/wowlua?rev=7c4908009092f80a1dd6b2620584217d5f280eb1#7c4908009092f80a1dd6b2620584217d5f280eb1"
 dependencies = [
  "stacker",
  "wowlua-diagnostics",
@@ -5889,8 +5892,8 @@ dependencies = [
 
 [[package]]
 name = "wowlua-test"
-version = "0.13.6"
-source = "git+https://github.com/DomenikIrrgang/wowlua?rev=2875af24af57008cb143400408e8ac195539ca85#2875af24af57008cb143400408e8ac195539ca85"
+version = "0.13.8"
+source = "git+https://github.com/DomenikIrrgang/wowlua?rev=7c4908009092f80a1dd6b2620584217d5f280eb1#7c4908009092f80a1dd6b2620584217d5f280eb1"
 dependencies = [
  "regex",
  "serde_json",
@@ -5909,16 +5912,16 @@ dependencies = [
 
 [[package]]
 name = "wowlua-toc"
-version = "0.13.6"
-source = "git+https://github.com/DomenikIrrgang/wowlua?rev=2875af24af57008cb143400408e8ac195539ca85#2875af24af57008cb143400408e8ac195539ca85"
+version = "0.13.8"
+source = "git+https://github.com/DomenikIrrgang/wowlua?rev=7c4908009092f80a1dd6b2620584217d5f280eb1#7c4908009092f80a1dd6b2620584217d5f280eb1"
 dependencies = [
  "wowlua-flavors",
 ]
 
 [[package]]
 name = "wowlua-types-gen"
-version = "0.13.6"
-source = "git+https://github.com/DomenikIrrgang/wowlua?rev=2875af24af57008cb143400408e8ac195539ca85#2875af24af57008cb143400408e8ac195539ca85"
+version = "0.13.8"
+source = "git+https://github.com/DomenikIrrgang/wowlua?rev=7c4908009092f80a1dd6b2620584217d5f280eb1#7c4908009092f80a1dd6b2620584217d5f280eb1"
 dependencies = [
  "indexmap",
  "mlua",
@@ -5931,8 +5934,8 @@ dependencies = [
 
 [[package]]
 name = "wowlua-vm"
-version = "0.13.6"
-source = "git+https://github.com/DomenikIrrgang/wowlua?rev=2875af24af57008cb143400408e8ac195539ca85#2875af24af57008cb143400408e8ac195539ca85"
+version = "0.13.8"
+source = "git+https://github.com/DomenikIrrgang/wowlua?rev=7c4908009092f80a1dd6b2620584217d5f280eb1#7c4908009092f80a1dd6b2620584217d5f280eb1"
 dependencies = [
  "indexmap",
  "rustc-hash 2.1.3",
@@ -5943,8 +5946,8 @@ dependencies = [
 
 [[package]]
 name = "wowlua-xml"
-version = "0.13.6"
-source = "git+https://github.com/DomenikIrrgang/wowlua?rev=2875af24af57008cb143400408e8ac195539ca85#2875af24af57008cb143400408e8ac195539ca85"
+version = "0.13.8"
+source = "git+https://github.com/DomenikIrrgang/wowlua?rev=7c4908009092f80a1dd6b2620584217d5f280eb1#7c4908009092f80a1dd6b2620584217d5f280eb1"
 dependencies = [
  "quick-xml 0.42.0",
  "wowlua-toc",
