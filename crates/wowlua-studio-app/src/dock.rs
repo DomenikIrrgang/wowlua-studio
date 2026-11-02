@@ -143,7 +143,7 @@ impl Layout {
                 vec![g(&[Conversations])],
                 vec![g(&[Chat, ClaudeChanges])],
                 vec![],
-                vec![g(&[Tools])],
+                vec![],
             ),
             Page::Settings => (
                 vec![g(&[SettingsSections])],
@@ -941,6 +941,20 @@ mod tests {
         assert!(!l.contains(Panel::World3d));
         assert!(l.contains(Panel::Game));
         assert!(!Layout::preset(Page::Game).contains(Panel::World3d));
+    }
+
+    #[test]
+    fn a_layout_saved_with_the_tools_panel_loads_without_it() {
+        let mut old = Layout::preset(Page::Claude);
+        old.right.push(Group::of(&[Panel::Tools]));
+        let text = serde_json::to_string(&old).unwrap();
+        assert!(text.contains("\"tools\""));
+        let mut l: Layout = serde_json::from_str(&text).unwrap();
+        l.remove(Panel::Tools);
+        assert!(!l.contains(Panel::Tools));
+        assert!(l.right.is_empty(), "its empty group went too");
+        assert!(l.contains(Panel::Chat));
+        assert!(!Layout::preset(Page::Claude).contains(Panel::Tools));
     }
 
     #[test]

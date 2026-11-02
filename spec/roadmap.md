@@ -504,10 +504,12 @@ The plan, in this order:
    HTTP endpoint with a token) is to be decided when built.
 3. **The conversation** (the claude page): messages as they stream, each
    tool call as a row (what it read, ran or changed), an edit's diff with
-   allow, "allow edits in this conversation" and deny; the tools and
-   permissions panel (allow, ask, never per tool group; answers last for
-   the conversation, S091); the screenshot of a game call with "open the
-   session" (the game page shows Claude's session, S092).
+   allow, "allow edits in this conversation" and deny; the permissions
+   (allow, ask, never per tool group; answers last for the conversation,
+   S091) in the settings' claude section, which a running conversation
+   follows (S103, first a panel of the claude page); the screenshot of a
+   game call with "open the session" (the game page shows Claude's
+   session, S092).
 4. **Changes and checkpoints** (the claude's changes board, S091): Studio
    keeps a file before Claude's first edit after each of your messages;
    the conversation's changed files, per-hunk undo and redo, going back
@@ -609,7 +611,7 @@ Asked when their milestone starts; nothing here is decided yet.
 ## Design changes owed
 
 Where Studio was decided to differ from the canvas, or the canvas is
-missing a part; the canvas is updated to match. On 2026-10-30 the settings board got the git section (fetch every) and the editor's blame row, the git board the changes' stage all and the staged files' unstage all (S070). None are owed now: on 2026-10-30 the start board got a clone's progress ("from GitHub, cloning") and the from-GitHub board the closing dialog's "discard them and close" (S075). On 2026-11-01 the settings board's claude section got Claude Code, the model, the effort, the tool groups' permissions and the saved key's removal (S095); the claude boards lost their planned marks, the conversation's footer got the model and effort and the cost, and the claude's changes board is the tab beside the conversation (S097 to S101).
+missing a part; the canvas is updated to match. On 2026-10-30 the settings board got the git section (fetch every) and the editor's blame row, the git board the changes' stage all and the staged files' unstage all (S070). None are owed now: on 2026-10-30 the start board got a clone's progress ("from GitHub, cloning") and the from-GitHub board the closing dialog's "discard them and close" (S075). On 2026-11-01 the settings board's claude section got Claude Code, the model, the effort, the tool groups' permissions and the saved key's removal (S095); the claude boards lost their planned marks, the conversation's footer got the model and effort and the cost, and the claude's changes board is the tab beside the conversation (S097 to S101). On 2026-11-02 the claude board lost its tools and permissions panel, the settings board's claude section got what the permissions do and the running conversation's "this conversation: allow", and the panels board's claude preset has no right dock (S103).
 
 Brought up to date on 2026-10-27: the panels board's presets
 for every page (S017), the palette's prompt (S018), the menus (S019), the

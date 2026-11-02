@@ -850,6 +850,7 @@ fn the_settings_page_stays_within_the_budget() {
                         Some(&workspace),
                         None,
                         wowlua_studio_app::Platform::MacOs,
+                        None,
                     );
                 });
             } else {

@@ -1,8 +1,9 @@
 //! The claude page (M14): Claude Code as Studio found it and signing in
 //! through it (S090, S095), and the conversation (S097): your messages,
 //! Claude's text as it streams, each tool call with its answer, and what
-//! Studio's tools ask first (S096), answered in place; the tools panel
-//! holds the conversation's permissions.
+//! Studio's tools ask first (S096), answered in place; the conversation's
+//! permissions start from the settings' claude section and follow its
+//! changes (S103).
 
 use std::collections::BTreeMap;
 
@@ -12,7 +13,7 @@ use wowlua_studio_ui::widgets::{self, ButtonKind};
 use wowlua_studio_ui::{Face, Palette, forms, palette};
 
 use crate::settings::SettingsState;
-use crate::state::{CLAUDE_PERMISSIONS, CLAUDE_TOOLS, Settings};
+use crate::state::{CLAUDE_TOOLS, Settings};
 use crate::system::{ClaudeChanges, ClaudeCode, ClaudeReply, ConversationEvent, System};
 
 /// What the page asks the app to do.
@@ -86,7 +87,8 @@ pub struct Conversation {
     pub limited: Option<Option<u64>>,
     pub used: Option<f64>,
     /// Each tool group's permission in this conversation (from the
-    /// settings at its start).
+    /// settings at its start, then their changes and the groups allowed
+    /// when asked, S103).
     pub permissions: BTreeMap<String, String>,
     /// What Claude changed (S098), as last read; read again when stale
     /// (an edit tool answered, a hunk undone).
@@ -340,6 +342,17 @@ impl Conversation {
         system.claude_reply(id, ClaudeReply::Allowed(allowed));
     }
 
+    /// A group's permission was changed in the settings (S103): it holds
+    /// in this conversation from now on too, once the conversation has
+    /// begun (before, it starts from the settings anyway).
+    pub fn permission_set(&mut self, group: &str, permission: &str, system: &dyn System) {
+        if !self.permissions.is_empty() {
+            self.permissions
+                .insert(group.to_owned(), permission.to_owned());
+            system.claude_permission(group, permission);
+        }
+    }
+
     /// Questions still open (a new conversation answers them no).
     pub fn open_asks(&self) -> Vec<u64> {
         self.entries
@@ -386,7 +399,7 @@ pub fn chat(
                     if c.entries.is_empty() {
                         forms::paragraph(
                             ui,
-                            "Ask Claude to build, fix, test or explain. It works through Studio's tools: the workspace's files, git, and wowlua's checks, tests, game and debugger. What it may do without asking is in the tools panel.",
+                            "Ask Claude to build, fix, test or explain. It works through Studio's tools: the workspace's files, git, and wowlua's checks, tests, game and debugger. What it may do without asking is set in the settings' claude section.",
                             12.5,
                             19.0,
                             p.ink_muted,
@@ -954,34 +967,6 @@ pub fn conversations(ui: &mut Ui, kept: &[Kept], current: u64, busy: bool) -> Op
     action
 }
 
-/// The tools panel: this conversation's permission per tool group.
-pub fn tools(ui: &mut Ui, c: &mut Conversation, settings: &Settings, system: &dyn System) {
-    let p = palette(ui.ctx());
-    c.begin(settings, system.now());
-    ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-        forms::padded(ui, 14, 12, |ui| {
-            forms::paragraph(
-                ui,
-                "What Claude may do in this conversation. A new conversation starts from the settings. Publishing and your WoW folder stay yours.",
-                11.5,
-                17.0,
-                p.ink_muted,
-            );
-            ui.add_space(8.0);
-            for (key, label, _, _) in CLAUDE_TOOLS {
-                ui.label(egui::RichText::new(*label).font(Face::Plex.at(12.0)).color(p.ink));
-                let now = c.permissions.get(*key).cloned().unwrap_or_else(|| "ask".into());
-                let at = CLAUDE_PERMISSIONS.iter().position(|o| *o == now).unwrap_or(1);
-                if let Some(i) = widgets::seg(ui, &format!("claude-{key}"), CLAUDE_PERMISSIONS, at, true) {
-                    c.permissions.insert((*key).to_owned(), CLAUDE_PERMISSIONS[i].to_owned());
-                    system.claude_permission(key, CLAUDE_PERMISSIONS[i]);
-                }
-                ui.add_space(6.0);
-            }
-        });
-    });
-}
-
 /// A tool group's label (its key's, S095).
 fn group_label(group: &str) -> &str {
     CLAUDE_TOOLS
@@ -1201,5 +1186,25 @@ mod tests {
         assert_eq!(again.session.as_deref(), Some("s1"));
         assert!(!again.running);
         assert!(again.open_asks().is_empty());
+    }
+
+    /// A permission set in the settings (S103): a conversation not begun
+    /// takes it when it begins; a running one from now on, the other
+    /// groups as they were.
+    #[test]
+    fn a_permission_set_in_the_settings_holds_in_the_conversation() {
+        let system = crate::system::NoSystem;
+        let mut settings = Settings::default();
+        let mut c = Conversation::default();
+        settings.set_claude_permission("git.push", "allow");
+        c.permission_set("git.push", "allow", &system);
+        assert!(c.permissions.is_empty(), "not begun: nothing kept yet");
+        c.begin(&settings, 100);
+        assert_eq!(c.permissions["git.push"], "allow");
+        assert_eq!(c.permissions["files.edit"], "ask");
+        c.permission_set("files.edit", "never", &system);
+        assert_eq!(c.permissions["files.edit"], "never");
+        assert_eq!(c.permissions["git.push"], "allow");
+        assert_eq!(c.permissions.len(), CLAUDE_TOOLS.len());
     }
 }
