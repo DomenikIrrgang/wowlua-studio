@@ -787,6 +787,15 @@ mod tests {
                 shadows: Default::default(),
                 weather: (0, 0.0),
                 weather_density: 0.0,
+                msaa: 1,
+                post_aa: 0,
+                filtering: 0,
+                specular: false,
+                terrain_mip: 0,
+                horizon: 1000.0,
+                spells: Vec::new(),
+                ao: Default::default(),
+                gi: 0,
             };
             let seen = WorldSeen {
                 eye,
