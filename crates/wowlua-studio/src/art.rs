@@ -145,6 +145,28 @@ impl Assets for CachedAssets {
     fn minimap_tile(&mut self, map: u32, x: i32, y: i32) -> Option<u32> {
         self.inner.minimap_tile(map, x, y)
     }
+
+    fn light(
+        &mut self,
+        map: u32,
+        at: [f64; 3],
+        day_time: f64,
+        kind: wowlua_casc::light::Kind,
+    ) -> Option<wowlua_casc::light::Sky> {
+        self.inner.light(map, at, day_time, kind)
+    }
+
+    fn weathers(&mut self) -> Option<std::sync::Arc<wowlua_casc::weather::Weathers>> {
+        self.inner.weathers()
+    }
+
+    fn liquids(&mut self) -> Option<std::sync::Arc<wowlua_casc::liquid::Liquids>> {
+        self.inner.liquids()
+    }
+
+    fn clutter(&mut self) -> Option<std::sync::Arc<wowlua_casc::clutter::Clutter>> {
+        self.inner.clutter()
+    }
 }
 
 #[cfg(test)]
