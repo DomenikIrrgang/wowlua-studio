@@ -277,6 +277,8 @@ impl GameData {
                 alpha: 1.0,
                 animation: 0,
                 variation: 0,
+                placement: None,
+                phase: 0,
             }],
             camera: scene::ModelCamera::Frame {
                 portrait_zoom: 0.0,

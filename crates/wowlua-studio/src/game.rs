@@ -781,6 +781,12 @@ mod tests {
                 render_scale: 1.0,
                 units: Vec::new(),
                 time: 0.0,
+                day_time: 1440.0,
+                clutter_dist: 0.0,
+                clutter_density: 0.0,
+                shadows: Default::default(),
+                weather: (0, 0.0),
+                weather_density: 0.0,
             };
             let seen = WorldSeen {
                 eye,
