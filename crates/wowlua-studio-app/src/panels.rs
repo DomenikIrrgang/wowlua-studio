@@ -57,6 +57,9 @@ pub enum Panel {
     Inspector,
     LiveWorld,
     Function,
+    /// A tab of layouts saved before Claude's tools and permissions moved
+    /// into the settings' claude section (S103): read, then taken out of
+    /// them.
     Tools,
 }
 

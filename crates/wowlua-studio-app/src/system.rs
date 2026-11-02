@@ -2333,7 +2333,8 @@ pub trait System {
     }
     fn claude_link_close(&self) {}
     /// A tool group's permission from now on, in the running conversation
-    /// (S097: "allow edits in this conversation", the tools panel).
+    /// (S097: "allow edits in this conversation"; S103: a group set in the
+    /// settings).
     fn claude_permission(&self, _group: &str, _permission: &str) {}
     /// Starts Claude Code in the workspace at `root` (S097).
     fn claude_start(&self, _root: &Path, _start: ClaudeStart) -> Result<(), String> {

@@ -271,10 +271,12 @@ impl Studio {
     pub fn new(ctx: &Context, host: Host) -> Self {
         let settings: Settings = state::parse(host.store.load(SETTINGS_FILE));
         let mut layouts: Layouts = state::parse(host.store.load(LAYOUTS_FILE));
-        // (the 3D world is the game screen's toggle now, no tab of its own)
+        // (the 3D world is the game screen's toggle now, no tab of its own;
+        // Claude's permissions are in the settings, S103)
         for pages in layouts.workspaces.values_mut() {
             for layout in pages.values_mut() {
                 layout.remove(Panel::World3d);
+                layout.remove(Panel::Tools);
             }
         }
         let recents: Recents = state::parse(host.store.load(RECENTS_FILE));
@@ -1401,6 +1403,7 @@ impl Studio {
                     Some(workspace),
                     installation,
                     platform,
+                    Some(&conversation.permissions).filter(|p| !p.is_empty()),
                 ) {
                     settings_action = Some(a);
                 }
@@ -1483,10 +1486,11 @@ impl Studio {
                 }
             }
             Panel::Chat => {
+                // (its model, effort and permissions: the settings' at its start)
+                conversation.begin(studio_settings, system.now());
                 claude_action =
                     claude::chat(ui, settings_page, system, claude_waiting, conversation);
             }
-            Panel::Tools => claude::tools(ui, conversation, studio_settings, system),
             Panel::Conversations => {
                 if let Some(a) =
                     claude::conversations(ui, claude_kept, conversation.id, conversation.busy)
@@ -3701,6 +3705,12 @@ impl Studio {
         match action {
             settings::Action::ClaudeSignIn(line) => self.claude_sign_in(&line, ctx),
             settings::Action::Changed => {
+                self.apply_settings(ctx);
+                self.touch(ctx);
+            }
+            settings::Action::ClaudePermission { group, permission } => {
+                self.claude
+                    .permission_set(&group, &permission, &*self.host.system);
                 self.apply_settings(ctx);
                 self.touch(ctx);
             }

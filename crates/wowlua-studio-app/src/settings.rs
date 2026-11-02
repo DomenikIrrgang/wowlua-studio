@@ -3,6 +3,7 @@
 //! is kept with the others (`settings.json` in Studio's data). A package's
 //! `wowlua.json` is its tab's form, not a setting of Studio's.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use egui::{CornerRadius, Sense, Ui, Vec2};
@@ -81,6 +82,12 @@ pub enum Action {
     OpenLog,
     /// Runs Claude Code's sign-in in the terminal: this line (S095).
     ClaudeSignIn(String),
+    /// A Claude tool group's permission was set (kept like any setting):
+    /// the running conversation takes it too (S103).
+    ClaudePermission {
+        group: String,
+        permission: String,
+    },
 }
 
 #[derive(Default)]
@@ -806,6 +813,8 @@ fn act_value(
 }
 
 /// The main panel for Studio's settings: a section, or what matches.
+/// `conversation`: the running conversation's permissions per tool group,
+/// once it has begun (S103).
 #[allow(clippy::too_many_arguments)]
 pub fn studio(
     ui: &mut Ui,
@@ -815,6 +824,7 @@ pub fn studio(
     workspace: Option<&Workspace>,
     installation: Option<&Installation>,
     platform: crate::Platform,
+    conversation: Option<&BTreeMap<String, String>>,
 ) -> Option<Action> {
     let p = palette(ui.ctx());
     if !state.asked {
@@ -862,12 +872,7 @@ pub fn studio(
                 if query.is_empty() {
                     match section {
                         Section::Claude => {
-                            forms::callout(ui, CalloutKind::Plain, |ui| {
-                                ui.horizontal_wrapped(|ui| {
-                                    widgets::badge(ui, "M14", BadgeKind::Planned);
-                                    forms::paragraph(ui, "Claude in Studio is being built (M14): Claude Code is found and signed in here now; the permissions, model and effort take effect when the conversations come.", 12.5, 19.0, p.ink);
-                                });
-                            });
+                            forms::paragraph(ui, CLAUDE_PERMISSIONS_NOTE, 11.5, 17.0, p.ink_muted);
                         }
                         Section::Github => {
                             forms::callout(ui, CalloutKind::Plain, |ui| {
@@ -942,7 +947,7 @@ pub fn studio(
                 }
                 for r in shown {
                     let where_ = (!query.is_empty()).then(|| r.section.label());
-                    let a = row(ui, r, where_, state, settings, system, installation, &flavors, &flavor, p);
+                    let a = row(ui, r, where_, state, settings, system, installation, &flavors, &flavor, conversation, p);
                     if a.is_some() {
                         action = a;
                     }
@@ -950,6 +955,20 @@ pub fn studio(
             });
         });
     action
+}
+
+/// What the claude section says above its tool groups (S103).
+const CLAUDE_PERMISSIONS_NOTE: &str = "What Claude may do without asking, per tool group. A new conversation starts from these, and a change here holds in the running conversation too. Allowing a group when Claude asks lasts for that conversation only. Publishing your addon and your WoW folder stay yours.";
+
+/// The running conversation's permission for a group, where it differs
+/// from the setting (S103).
+fn conversation_note(
+    conversation: Option<&BTreeMap<String, String>>,
+    key: &str,
+    setting: &str,
+) -> Option<String> {
+    let now = conversation?.get(key)?;
+    (now != setting).then(|| format!("this conversation: {now}"))
 }
 
 fn caption(ui: &mut Ui, text: &str, p: &Palette) {
@@ -972,6 +991,7 @@ fn row(
     installation: Option<&Installation>,
     flavors: &[String],
     flavor: &str,
+    conversation: Option<&BTreeMap<String, String>>,
     p: &Palette,
 ) -> Option<Action> {
     let mut action = None;
@@ -1103,7 +1123,15 @@ fn row(
                     let id = format!("set-{}", r.label);
                     if let Some(i) = widgets::seg(ui, &id, CLAUDE_PERMISSIONS, at, true) {
                         settings.set_claude_permission(key, CLAUDE_PERMISSIONS[i]);
-                        action = Some(Action::Changed);
+                        action = Some(Action::ClaudePermission {
+                            group: (*key).to_owned(),
+                            permission: CLAUDE_PERMISSIONS[i].to_owned(),
+                        });
+                    }
+                    // (the running conversation's, where it differs:
+                    // allowed when Claude asked, or kept from before)
+                    if let Some(note) = conversation_note(conversation, key, &now) {
+                        caption(ui, &note, p);
                     }
                 }
                 Kind::Action(act) => {
@@ -1292,6 +1320,20 @@ mod tests {
                 .count()
                 == CLAUDE_TOOLS.len()
         );
+        // The running conversation's permission shows where it differs
+        // (S103): allowed when Claude asked, while the setting asks.
+        let mut conversation = BTreeMap::new();
+        conversation.insert("files.edit".to_owned(), "allow".to_owned());
+        conversation.insert("git.read".to_owned(), "allow".to_owned());
+        assert_eq!(
+            conversation_note(Some(&conversation), "files.edit", "ask").as_deref(),
+            Some("this conversation: allow")
+        );
+        assert_eq!(
+            conversation_note(Some(&conversation), "git.read", "allow"),
+            None
+        );
+        assert_eq!(conversation_note(None, "files.edit", "ask"), None);
         let size = rows()
             .into_iter()
             .find(|r| r.label == "interface size")
