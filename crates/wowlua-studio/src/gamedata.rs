@@ -279,6 +279,7 @@ impl GameData {
                 variation: 0,
                 placement: None,
                 phase: 0,
+                effects: Vec::new(),
             }],
             camera: scene::ModelCamera::Frame {
                 portrait_zoom: 0.0,
