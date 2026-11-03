@@ -46,23 +46,24 @@ wowlua-studio-app = { path = "crates/wowlua-studio-app" }
 # the language server's settings, auto-import, cache parts (M10). #105: the
 # flavor table's names and support, four flavors (M10). #172 to #175: the 3D
 # world's anti-aliasing, sharper terrain, far horizon, spells, WoW Forever's
-# water, ambient occlusion and bounce light.
-wowlua-casc = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "2a145ea135d05436cdc34ad17477e9ab4759b095" }
-wowlua-debug = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "2a145ea135d05436cdc34ad17477e9ab4759b095" }
-wowlua-diagnostics = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "2a145ea135d05436cdc34ad17477e9ab4759b095" }
-wowlua-engine = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "2a145ea135d05436cdc34ad17477e9ab4759b095" }
-wowlua-render = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "2a145ea135d05436cdc34ad17477e9ab4759b095" }
-wowlua-vm = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "2a145ea135d05436cdc34ad17477e9ab4759b095" }
-wowlua-driver = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "2a145ea135d05436cdc34ad17477e9ab4759b095" }
-wowlua-flavors = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "2a145ea135d05436cdc34ad17477e9ab4759b095" }
-wowlua-manifest = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "2a145ea135d05436cdc34ad17477e9ab4759b095" }
-wowlua-pkg = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "2a145ea135d05436cdc34ad17477e9ab4759b095" }
-wowlua-test = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "2a145ea135d05436cdc34ad17477e9ab4759b095" }
-wowlua-lsp = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "2a145ea135d05436cdc34ad17477e9ab4759b095" }
-wowlua-span = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "2a145ea135d05436cdc34ad17477e9ab4759b095" }
-wowlua-toc = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "2a145ea135d05436cdc34ad17477e9ab4759b095" }
-wowlua-syntax = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "2a145ea135d05436cdc34ad17477e9ab4759b095" }
-wowlua-fmt = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "2a145ea135d05436cdc34ad17477e9ab4759b095" }
+# water, ambient occlusion and bounce light. #176: a top-level frame comes to
+# the front when shown or clicked.
+wowlua-casc = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "b2f80e41c6cc937c8996688fcd2ecb82165dfc1c" }
+wowlua-debug = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "b2f80e41c6cc937c8996688fcd2ecb82165dfc1c" }
+wowlua-diagnostics = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "b2f80e41c6cc937c8996688fcd2ecb82165dfc1c" }
+wowlua-engine = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "b2f80e41c6cc937c8996688fcd2ecb82165dfc1c" }
+wowlua-render = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "b2f80e41c6cc937c8996688fcd2ecb82165dfc1c" }
+wowlua-vm = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "b2f80e41c6cc937c8996688fcd2ecb82165dfc1c" }
+wowlua-driver = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "b2f80e41c6cc937c8996688fcd2ecb82165dfc1c" }
+wowlua-flavors = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "b2f80e41c6cc937c8996688fcd2ecb82165dfc1c" }
+wowlua-manifest = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "b2f80e41c6cc937c8996688fcd2ecb82165dfc1c" }
+wowlua-pkg = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "b2f80e41c6cc937c8996688fcd2ecb82165dfc1c" }
+wowlua-test = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "b2f80e41c6cc937c8996688fcd2ecb82165dfc1c" }
+wowlua-lsp = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "b2f80e41c6cc937c8996688fcd2ecb82165dfc1c" }
+wowlua-span = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "b2f80e41c6cc937c8996688fcd2ecb82165dfc1c" }
+wowlua-toc = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "b2f80e41c6cc937c8996688fcd2ecb82165dfc1c" }
+wowlua-syntax = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "b2f80e41c6cc937c8996688fcd2ecb82165dfc1c" }
+wowlua-fmt = { git = "https://github.com/DomenikIrrgang/wowlua", rev = "b2f80e41c6cc937c8996688fcd2ecb82165dfc1c" }
 
 [workspace.lints.rust]
 # Denied, not forbidden: one macOS module may allow it (decision S022).
